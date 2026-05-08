@@ -178,6 +178,14 @@ class NanoflowWidgetRepository(private val context: Context) {
     )
   }
 
+  suspend fun resolveDisplayedGateEntries(
+    appWidgetId: Int,
+    summary: WidgetSummaryResponse,
+  ): List<WidgetGatePreview> {
+    val privacyMode = store.isPrivacyModeEnabled()
+    return resolveDisplayedGateEntries(appWidgetId, summary, privacyMode)
+  }
+
   suspend fun consumeBootstrapUri(uri: Uri?): Boolean {
     val payload = NanoflowBootstrapContract.parseBootstrapPayload(uri)
     if (payload == null) {
@@ -1297,20 +1305,12 @@ class NanoflowWidgetRepository(private val context: Context) {
     val metricsLine = buildMetricsLine(summary)
 
     if (isGateMode) {
-      val displayedGateEntries = if (gateEntries.isEmpty()) {
-        gateEntries
-      } else {
-        val selectedGateIndex = resolveGatePageIndex(appWidgetId, gateEntries)
-        if (selectedGateIndex <= 0) {
-          gateEntries
-        } else {
-          gateEntries.drop(selectedGateIndex) + gateEntries.take(selectedGateIndex)
-        }
-      }
+      val displayedGateEntries = resolveDisplayedGateEntries(appWidgetId, summary, privacyMode)
       val gateContentCards = if (isGateEmpty) buildGateEmptyContentCards()
         else buildGateContentCards(summary, displayedGateEntries, privacyMode)
       val primaryGateCard = gateContentCards.firstOrNull()
       val displayedGateEntryId = displayedGateEntries.firstOrNull()?.entryId?.takeIf { it.isNotBlank() }
+      val displayedGateEntryIsRead = displayedGateEntries.firstOrNull()?.isRead == true
       // 空大门点击 = 进入项目（OPEN_WORKSPACE）；非空大门点击只提示用户使用已读/完成按钮。
       val rootPrimaryAction = if (isGateEmpty) WidgetPrimaryAction.OPEN_WORKSPACE
         else WidgetPrimaryAction.BLOCK_GATE_ACTIONS
@@ -1340,6 +1340,7 @@ class NanoflowWidgetRepository(private val context: Context) {
         showAuthRequired = false,
         showUntrusted = false,
         displayedGateEntryId = displayedGateEntryId,
+        displayedGateEntryIsRead = displayedGateEntryIsRead,
         contentCards = gateContentCards,
         syncBadgeLabel = buildCompactSyncBadge(summary, appWidgetId),
       )
@@ -1498,7 +1499,9 @@ class NanoflowWidgetRepository(private val context: Context) {
     privacyMode: Boolean,
   ): List<WidgetContentCard> {
     val gateQueueCount = resolveGateQueueCount(summary)
-    // privacy 隐藏了明细但仍有 pendingCount > 0：回退到聚合卡片（仍视为非空大门）。
+    // 极端兜底：pendingCount 仍有值，但 summary 没带出任何可回退 preview。
+    // 继续保持非空大门，避免误判成空大门；正常路径会在 resolveRenderableGateEntries() 中
+    // 先回退一条真实 preview，恢复日期与操作按钮。
     if (gateEntries.isEmpty() && gateQueueCount > 0) {
       return listOf(
         WidgetContentCard(
@@ -1767,28 +1770,65 @@ class NanoflowWidgetRepository(private val context: Context) {
     privacyMode: Boolean,
   ): List<WidgetGatePreview> {
     val entries = mutableListOf<WidgetGatePreview>()
+    val fallbackEntries = mutableListOf<WidgetGatePreview>()
 
     fun appendIfRenderable(preview: WidgetGatePreview) {
       if (!preview.valid) {
         return
       }
 
-      if (isGateReadCoolingDown(preview)) {
+      val hiddenByCooldown = isGateReadCoolingDown(preview)
+      val hiddenByMissingContent = !privacyMode && preview.content.isNullOrBlank()
+      val renderableIndex = entries.indexOfFirst { existing -> isSameGatePreview(existing, preview) }
+      if (renderableIndex >= 0) {
+        if (!hiddenByCooldown && !hiddenByMissingContent) {
+          entries[renderableIndex] = preferRicherGatePreview(entries[renderableIndex], preview)
+        }
         return
       }
 
-      if (!privacyMode && preview.content.isNullOrBlank()) {
+      val fallbackIndex = fallbackEntries.indexOfFirst { existing -> isSameGatePreview(existing, preview) }
+
+      if (hiddenByCooldown || hiddenByMissingContent) {
+        if (fallbackIndex >= 0) {
+          fallbackEntries[fallbackIndex] = preferRicherGatePreview(fallbackEntries[fallbackIndex], preview)
+        } else {
+          fallbackEntries.add(preview)
+        }
         return
       }
 
-      if (entries.none { existing -> isSameGatePreview(existing, preview) }) {
-        entries.add(preview)
+      if (fallbackIndex >= 0) {
+        fallbackEntries.removeAt(fallbackIndex)
       }
+      entries.add(preview)
     }
 
     summary.blackBox.previews.forEach(::appendIfRenderable)
     appendIfRenderable(summary.blackBox.gatePreview)
-    return entries
+
+    if (entries.isNotEmpty() || resolveGateQueueCount(summary) <= 0) {
+      return entries
+    }
+
+    // 还有 pendingCount，但所有 preview 都因冷却/缺正文被过滤时，保留一条真实 preview 兜底，
+    // 避免 UI 落入“待处理沉积 + 无日期 + 无按钮”的假死状态。
+    val fallbackPreview = fallbackEntries.firstOrNull { !it.entryId.isNullOrBlank() }
+      ?: fallbackEntries.firstOrNull()
+    return fallbackPreview?.let(::listOf) ?: emptyList()
+  }
+
+  private fun preferRicherGatePreview(current: WidgetGatePreview, candidate: WidgetGatePreview): WidgetGatePreview {
+    return if (gatePreviewRichness(candidate) >= gatePreviewRichness(current)) candidate else current
+  }
+
+  private fun gatePreviewRichness(preview: WidgetGatePreview): Int {
+    var score = 0
+    if (!preview.entryId.isNullOrBlank()) score += 8
+    if (!preview.content.isNullOrBlank()) score += 4
+    if (!preview.createdAt.isNullOrBlank()) score += 2
+    if (!preview.projectTitle.isNullOrBlank()) score += 1
+    return score
   }
 
   private fun isGateReadCoolingDown(preview: WidgetGatePreview): Boolean {
@@ -1818,6 +1858,24 @@ class NanoflowWidgetRepository(private val context: Context) {
     return left.content == right.content
       && left.createdAt == right.createdAt
       && left.projectId == right.projectId
+  }
+
+  private suspend fun resolveDisplayedGateEntries(
+    appWidgetId: Int,
+    summary: WidgetSummaryResponse,
+    privacyMode: Boolean,
+  ): List<WidgetGatePreview> {
+    val gateEntries = resolveRenderableGateEntries(summary, privacyMode)
+    if (gateEntries.isEmpty()) {
+      return gateEntries
+    }
+
+    val selectedGateIndex = resolveGatePageIndex(appWidgetId, gateEntries)
+    return if (selectedGateIndex <= 0) {
+      gateEntries
+    } else {
+      gateEntries.drop(selectedGateIndex) + gateEntries.take(selectedGateIndex)
+    }
   }
 
   private fun rotateGateEntriesAfter(

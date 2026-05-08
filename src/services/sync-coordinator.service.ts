@@ -17,7 +17,7 @@
  */
 import { Injectable, inject, signal, computed, DestroyRef } from '@angular/core';
 import { Subject } from 'rxjs';
-import { SimpleSyncService, RetryQueueService } from '../core-bridge';
+import { SimpleSyncService, RetryQueueService, type SyncConflictData } from '../core-bridge';
 import { ActionQueueService } from './action-queue.service';
 import { ActionQueueProcessorsService } from './action-queue-processors.service';
 import { DeltaSyncCoordinatorService } from './delta-sync-coordinator.service';
@@ -1415,13 +1415,14 @@ export class SyncCoordinatorService {
     void this.saveConflictSilently(localProject, remoteProject, [], ownerUserId, pendingTaskDeleteIds, conflictedAt).catch(error => {
       this.logger.warn('保存冲突隔离区记录失败', { error, projectId: localProject.id });
     });
-    this.core.setConflict({
+    const conflictData: SyncConflictData = {
       local: localProject,
       remote: remoteProject,
       projectId: localProject.id,
       conflictedAt,
       pendingTaskDeleteIds,
-    });
+    };
+    this.core.setConflict(conflictData);
     this.conflict$.next({
       localProject,
       remoteProject,

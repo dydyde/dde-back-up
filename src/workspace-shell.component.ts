@@ -1663,8 +1663,9 @@ export class WorkspaceShellComponent implements OnInit, OnDestroy, AfterViewInit
       return;
     }
 
-    const isAndroidBrowser = typeof navigator !== 'undefined' && /Android/i.test(navigator.userAgent);
-    if (!isAndroidBrowser || typeof document === 'undefined') {
+    const runtimePlatform = readRuntimePlatformSnapshot();
+    const requiresManualCallback = runtimePlatform.isAndroid && !runtimePlatform.isTwa && typeof document !== 'undefined';
+    if (!requiresManualCallback) {
       window.location.assign(callback.callbackUrl);
       return;
     }

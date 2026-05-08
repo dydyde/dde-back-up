@@ -13,7 +13,7 @@ import { RetryQueueService } from './retry-queue.service';
 import { SyncStateService } from './sync-state.service';
 import { SentryLazyLoaderService } from '../../../../services/sentry-lazy-loader.service';
 import { TombstoneService } from './tombstone.service';
-import { SyncRpcClientService } from '../../../../services/sync-rpc-client.service';
+import { SyncRpcClientService, type SyncRpcResult } from '../../../../services/sync-rpc-client.service';
 import type { Connection } from '../../../../models';
 import { PermanentFailureError } from '../../../../utils/permanent-failure-error';
 import {
@@ -27,6 +27,18 @@ function setVisibilityState(state: DocumentVisibilityState): void {
     value: state,
   });
 }
+
+function createSyncRpcResult(overrides: Partial<SyncRpcResult> = {}): SyncRpcResult {
+  return {
+    status: 'applied',
+    raw: {},
+    ...overrides,
+  };
+}
+
+const upsertConnectionRpcMock = vi.fn<SyncRpcClientService['upsertConnection']>();
+const isConnectionSyncRpcFeatureEnabledMock = vi.fn(() => false);
+const isConnectionSyncRpcClientRejectedMock = vi.fn(() => false);
 
 describe('ConnectionSyncOperationsService', () => {
   let service: ConnectionSyncOperationsService;
@@ -45,10 +57,14 @@ describe('ConnectionSyncOperationsService', () => {
     recordCircuitSuccess: vi.fn(),
     length: 0,
   };
-  const mockSyncRpcClient = {
-    isFeatureEnabled: vi.fn(() => false),
-    isClientRejected: vi.fn(() => false),
-    upsertConnection: vi.fn(async () => ({ status: 'applied', entityId: 'connection-1', raw: {} })),
+  const mockSyncRpcClient: {
+    isFeatureEnabled: typeof isConnectionSyncRpcFeatureEnabledMock;
+    isClientRejected: typeof isConnectionSyncRpcClientRejectedMock;
+    upsertConnection: typeof upsertConnectionRpcMock;
+  } = {
+    isFeatureEnabled: isConnectionSyncRpcFeatureEnabledMock,
+    isClientRejected: isConnectionSyncRpcClientRejectedMock,
+    upsertConnection: upsertConnectionRpcMock,
   };
 
   const mockSessionManager = {
@@ -212,7 +228,8 @@ describe('ConnectionSyncOperationsService', () => {
     setVisibilityState('visible');
     mockSyncRpcClient.isFeatureEnabled.mockReturnValue(false);
     mockSyncRpcClient.isClientRejected.mockReturnValue(false);
-    mockSyncRpcClient.upsertConnection.mockResolvedValue({ status: 'applied', entityId: 'connection-1', raw: {} });
+    const defaultUpsertConnectionRpcResult: SyncRpcResult = createSyncRpcResult({ entityId: 'connection-1' });
+    mockSyncRpcClient.upsertConnection.mockImplementation(async () => defaultUpsertConnectionRpcResult);
     connectionTombstoneResult = { data: null, error: null };
     connectionEndpointTombstoneResult = { data: null, error: null };
     legacyConnectionTombstoneResult = { data: null, error: null };
@@ -297,12 +314,11 @@ describe('ConnectionSyncOperationsService', () => {
 
   it('pushConnection 在 sync RPC flag 开启时应走 RPC/CAS 而不是直接 table upsert', async () => {
     mockSyncRpcClient.isFeatureEnabled.mockReturnValue(true);
-    mockSyncRpcClient.upsertConnection.mockResolvedValueOnce({
-      status: 'applied',
+    const rpcResult: SyncRpcResult = createSyncRpcResult({
       entityId: 'connection-rpc',
       serverUpdatedAt: '2026-04-30T00:02:00.000Z',
-      raw: {},
     });
+    mockSyncRpcClient.upsertConnection.mockImplementationOnce(async () => rpcResult);
     const connection: Connection = {
       id: 'connection-rpc',
       source: 'task-a',
@@ -326,11 +342,11 @@ describe('ConnectionSyncOperationsService', () => {
 
   it('pushConnection sync RPC 遇到 remote-newer 时应保留本地意图并阻止直接 table upsert', async () => {
     mockSyncRpcClient.isFeatureEnabled.mockReturnValue(true);
-    mockSyncRpcClient.upsertConnection.mockResolvedValueOnce({
+    const rpcResult: SyncRpcResult = createSyncRpcResult({
       status: 'remote-newer',
       remoteUpdatedAt: '2026-04-30T00:01:00.000Z',
-      raw: {},
     });
+    mockSyncRpcClient.upsertConnection.mockImplementationOnce(async () => rpcResult);
     const connection: Connection = {
       id: 'connection-rpc-remote-newer',
       source: 'task-a',

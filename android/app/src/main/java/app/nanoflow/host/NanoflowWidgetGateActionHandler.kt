@@ -67,17 +67,21 @@ object NanoflowWidgetGateActionHandler {
     val cached = runCatching {
       store.readSummary(appWidgetId)
     }.getOrNull()
-    val previewEntryId = cached?.blackBox?.gatePreview?.entryId?.takeIf { it.isNotBlank() }
-    val firstPreviewEntryId = cached?.blackBox?.previews
-      ?.firstOrNull { !it.entryId.isNullOrBlank() }
-      ?.entryId
-      ?.takeIf { it.isNotBlank() }
+    val displayedGateEntries = cached?.let {
+      runCatching {
+        repository.resolveDisplayedGateEntries(appWidgetId, it)
+      }.getOrDefault(emptyList())
+    }.orEmpty()
+    val displayedGateEntryId = displayedGateEntries.firstOrNull()?.entryId?.takeIf { it.isNotBlank() }
     val persistedEntryId = runCatching {
       store.readGateSelectedEntryId(appWidgetId)
     }.getOrNull()?.takeIf { it.isNotBlank() }
 
-    val entryId = fillInEntryId ?: previewEntryId ?: firstPreviewEntryId ?: persistedEntryId
-    val currentVisibleEntryId = fillInEntryId ?: previewEntryId ?: firstPreviewEntryId
+    val entryId = fillInEntryId
+      ?: displayedGateEntryId
+      ?: persistedEntryId
+    val currentVisibleEntryId = fillInEntryId
+      ?: displayedGateEntryId
     if (currentVisibleEntryId != null && currentVisibleEntryId != persistedEntryId) {
       runCatching {
         store.persistGateSelectedEntryId(appWidgetId, currentVisibleEntryId)
@@ -92,8 +96,8 @@ object NanoflowWidgetGateActionHandler {
         "hasEntryId" to !entryId.isNullOrBlank(),
         "entryIdSource" to when {
           fillInEntryId != null -> "fill-in-intent"
-          previewEntryId != null -> "summary-gate-preview"
-          firstPreviewEntryId != null -> "summary-head"
+          displayedGateEntryId != null && displayedGateEntryId == persistedEntryId -> "rendered-selected-entry"
+          displayedGateEntryId != null -> "rendered-entry"
           persistedEntryId != null -> "persisted-fallback"
           else -> "none"
         },
@@ -113,6 +117,34 @@ object NanoflowWidgetGateActionHandler {
         Toast.makeText(appContext, "大门暂无待处理条目", Toast.LENGTH_SHORT).show()
       }
       NanoflowWidgetRefreshWorker.enqueue(appContext, reason = "gate-action-${entryAction.wireValue}-empty")
+      return
+    }
+
+    val currentTargetPreview = displayedGateEntries.firstOrNull { it.entryId == entryId }
+      ?: cached?.blackBox?.previews?.firstOrNull { it.entryId == entryId }
+      ?: cached?.blackBox?.gatePreview?.takeIf { it.entryId == entryId && it.valid }
+    if (entryAction == BlackBoxEntryAction.READ && currentTargetPreview?.isRead == true) {
+      NanoflowWidgetTelemetry.info(
+        "widget_click_gate_action_skipped_already_read",
+        mapOf(
+          "appWidgetId" to appWidgetId,
+          "entryId" to NanoflowWidgetTelemetry.redactId(entryId),
+        ),
+      )
+      runCatching {
+        renderCurrentWidget()
+      }.onFailure { error ->
+        NanoflowWidgetTelemetry.warn(
+          "widget_click_gate_action_local_render_failed",
+          mapOf(
+            "appWidgetId" to appWidgetId,
+            "gateAction" to entryAction.wireValue,
+            "phase" to "already-read",
+          ),
+          error,
+        )
+      }
+      NanoflowWidgetRefreshWorker.enqueue(appContext, reason = "gate-action-read-already-read")
       return
     }
 

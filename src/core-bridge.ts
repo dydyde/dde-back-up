@@ -12,6 +12,7 @@
 
 // SimpleSyncService — 被 9 个 services 使用
 export { SimpleSyncService } from './app/core/services/simple-sync.service';
+export type { ConflictData as SyncConflictData } from './app/core/services/sync/sync-state.service';
 
 // RetryQueueService + RetryableEntityType — 被 sync-coordinator, action-queue 使用
 export { RetryQueueService } from './app/core/services/sync/retry-queue.service';

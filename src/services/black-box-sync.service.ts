@@ -2182,26 +2182,35 @@ export class BlackBoxSyncService {
         .select('*')
         .gt('updated_at', cursor.updatedAt);
 
-    const lteQuery = (query as {
-      lte?: (column: string, value: string) => unknown;
-    }).lte;
+    const getOptionalQueryMethod = <TArgs extends unknown[]>(
+      target: unknown,
+      methodName: string,
+    ): ((...args: TArgs) => unknown) | undefined => {
+      const targetObject = target as Record<string, unknown>;
+      const candidate = targetObject[methodName];
+      if (typeof candidate !== 'function') {
+        return undefined;
+      }
+
+      return (...args: TArgs) => Reflect.apply(candidate, target as object, args);
+    };
+
+    const lteQuery = getOptionalQueryMethod<[string, string]>(query, 'lte');
     if (upperWatermark && typeof lteQuery === 'function') {
-      query = lteQuery.call(query, 'updated_at', upperWatermark) as typeof query;
+      query = lteQuery('updated_at', upperWatermark) as typeof query;
     }
 
     const orderedQuery = query
       .order('updated_at', { ascending: true })
       .order('id', { ascending: true });
 
-    const limitQuery = (orderedQuery as {
-      limit?: (count: number) => Promise<{ data: unknown[] | null; error: unknown }>;
-    }).limit;
+    const limitQuery = getOptionalQueryMethod<[number]>(orderedQuery, 'limit');
 
     if (typeof limitQuery !== 'function') {
       return orderedQuery as unknown as Promise<{ data: unknown[] | null; error: unknown }>;
     }
 
-    return limitQuery.call(orderedQuery, this.BLACKBOX_PULL_PAGE_SIZE);
+    return limitQuery(this.BLACKBOX_PULL_PAGE_SIZE) as Promise<{ data: unknown[] | null; error: unknown }>;
   }
 
   private isValidBlackBoxCursor(cursor: BlackBoxSyncCursor): boolean {

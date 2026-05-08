@@ -18,7 +18,7 @@ import { ProjectDataService } from './project-data.service';
 import { RetryQueueService } from './retry-queue.service';
 import { SyncStateService } from './sync-state.service';
 import { SentryLazyLoaderService } from '../../../../services/sentry-lazy-loader.service';
-import { SyncRpcClientService } from '../../../../services/sync-rpc-client.service';
+import { SyncRpcClientService, type SyncRpcResult } from '../../../../services/sync-rpc-client.service';
 import { Task } from '../../../../models';
 import { TaskStore } from '../../state/stores';
 import { PermanentFailureError } from '../../../../utils/permanent-failure-error';
@@ -33,6 +33,19 @@ function setVisibilityState(state: DocumentVisibilityState): void {
     value: state,
   });
 }
+
+function createSyncRpcResult(overrides: Partial<SyncRpcResult> = {}): SyncRpcResult {
+  return {
+    status: 'applied',
+    raw: {},
+    ...overrides,
+  };
+}
+
+const upsertTaskRpcMock = vi.fn<SyncRpcClientService['upsertTask']>();
+const deleteTasksRpcMock = vi.fn<SyncRpcClientService['deleteTasks']>();
+const isSyncRpcFeatureEnabledMock = vi.fn(() => false);
+const isSyncRpcClientRejectedMock = vi.fn(() => false);
 
 describe('TaskSyncOperationsService', () => {
   let service: TaskSyncOperationsService;
@@ -64,20 +77,19 @@ describe('TaskSyncOperationsService', () => {
     length: 0,
     recordCircuitSuccess: vi.fn(),
     recordCircuitFailure: vi.fn(),
-    removeByEntities: vi.fn((): string[] => []),
-    removeConnectionsReferencingTasks: vi.fn((): string[] => []),
+    removeByEntities: vi.fn((_entityType: string, _entityIds: string[]): string[] => []),
+    removeConnectionsReferencingTasks: vi.fn((_projectId: string, _taskIds: string[]): string[] => []),
   };
-  const mockSyncRpcClient = {
-    isFeatureEnabled: vi.fn(() => false),
-    isClientRejected: vi.fn(() => false),
-    upsertTask: vi.fn(async () => ({ status: 'applied', entityId: 'task-1', raw: {} })),
-    deleteTasks: vi.fn(async () => ({
-      status: 'applied',
-      entityId: 'project-1',
-      affectedCount: 1,
-      attachmentPaths: [],
-      raw: {},
-    })),
+  const mockSyncRpcClient: {
+    isFeatureEnabled: typeof isSyncRpcFeatureEnabledMock;
+    isClientRejected: typeof isSyncRpcClientRejectedMock;
+    upsertTask: typeof upsertTaskRpcMock;
+    deleteTasks: typeof deleteTasksRpcMock;
+  } = {
+    isFeatureEnabled: isSyncRpcFeatureEnabledMock,
+    isClientRejected: isSyncRpcClientRejectedMock,
+    upsertTask: upsertTaskRpcMock,
+    deleteTasks: deleteTasksRpcMock,
   };
   const mockSyncState = {
     isSessionExpired: vi.fn(() => false),
@@ -164,16 +176,16 @@ describe('TaskSyncOperationsService', () => {
     setVisibilityState('visible');
     mockSyncRpcClient.isFeatureEnabled.mockReturnValue(false);
     mockSyncRpcClient.isClientRejected.mockReturnValue(false);
-    mockSyncRpcClient.upsertTask.mockResolvedValue({ status: 'applied', entityId: 'task-1', raw: {} });
+    const defaultUpsertTaskRpcResult: SyncRpcResult = createSyncRpcResult({ entityId: 'task-1' });
+    mockSyncRpcClient.upsertTask.mockImplementation(async () => defaultUpsertTaskRpcResult);
     mockTaskStore.getTask.mockReturnValue(undefined);
     mockTaskStore.setTask.mockReset();
-    mockSyncRpcClient.deleteTasks.mockResolvedValue({
-      status: 'applied',
+    const defaultDeleteTasksRpcResult: SyncRpcResult = createSyncRpcResult({
       entityId: 'project-1',
       affectedCount: 1,
-      attachmentPaths: [],
-      raw: {},
+      attachmentPaths: [] as string[],
     });
+    mockSyncRpcClient.deleteTasks.mockImplementation(async () => defaultDeleteTasksRpcResult);
     mockClient.rpc.mockImplementation(async (fn: string, args: Record<string, unknown>) => {
       if (fn === 'purge_tasks_v3') {
         return {
@@ -317,12 +329,11 @@ describe('TaskSyncOperationsService', () => {
 
   it('pushTaskPosition 在 sync RPC 开启且有任务快照时应走受 CAS 保护的 task upsert', async () => {
     mockSyncRpcClient.isFeatureEnabled.mockReturnValue(true);
-    mockSyncRpcClient.upsertTask.mockResolvedValueOnce({
-      status: 'applied',
+    const rpcResult: SyncRpcResult = createSyncRpcResult({
       entityId: 'task-position-rpc',
       serverUpdatedAt: '2026-04-30T08:00:00.000Z',
-      raw: {},
     });
+    mockSyncRpcClient.upsertTask.mockImplementationOnce(async () => rpcResult);
     const fallbackTask = {
       id: 'task-position-rpc',
       title: 'Position task',
@@ -560,12 +571,11 @@ describe('TaskSyncOperationsService', () => {
   it('pushTask sync RPC 成功后应把服务端 canonical updated_at 写回本地任务', async () => {
     const serverUpdatedAt = '2026-04-30T08:20:00.000Z';
     mockSyncRpcClient.isFeatureEnabled.mockReturnValue(true);
-    mockSyncRpcClient.upsertTask.mockResolvedValueOnce({
-      status: 'applied',
+    const rpcResult: SyncRpcResult = createSyncRpcResult({
       entityId: 'task-rpc-canonical',
       serverUpdatedAt,
-      raw: {},
     });
+    mockSyncRpcClient.upsertTask.mockImplementationOnce(async () => rpcResult);
     const task: Task = {
       id: 'task-rpc-canonical',
       title: '任务',
@@ -591,11 +601,11 @@ describe('TaskSyncOperationsService', () => {
 
   it('pushTask sync RPC 遇到 remote-newer 时应保留本地意图并阻止直接 table upsert', async () => {
     mockSyncRpcClient.isFeatureEnabled.mockReturnValue(true);
-    mockSyncRpcClient.upsertTask.mockResolvedValueOnce({
+    const rpcResult: SyncRpcResult = createSyncRpcResult({
       status: 'remote-newer',
       remoteUpdatedAt: '2026-04-30T00:01:00.000Z',
-      raw: {},
     });
+    mockSyncRpcClient.upsertTask.mockImplementationOnce(async () => rpcResult);
     const task: Task = {
       id: 'task-rpc-remote-newer',
       title: '任务',
@@ -688,13 +698,12 @@ describe('TaskSyncOperationsService', () => {
 
   it('purgeTasksFromCloud 在 sync RPC 开启时应走 sync_delete_tasks 并清理附件与依赖重试项', async () => {
     mockSyncRpcClient.isFeatureEnabled.mockReturnValue(true);
-    mockSyncRpcClient.deleteTasks.mockResolvedValueOnce({
-      status: 'applied',
+    const rpcResult: SyncRpcResult = createSyncRpcResult({
       entityId: 'project-1',
       affectedCount: 2,
       attachmentPaths: ['user/project/task/file.png'],
-      raw: {},
     });
+    mockSyncRpcClient.deleteTasks.mockImplementationOnce(async () => rpcResult);
 
     const result = await service.purgeTasksFromCloud('project-1', ['task-rpc-a', 'task-rpc-b'], 'user-1');
 
@@ -718,11 +727,11 @@ describe('TaskSyncOperationsService', () => {
 
   it('purgeTasksFromCloud 在 sync RPC 返回 deleted-remote-newer 时保留删除意图等待拉取合并', async () => {
     mockSyncRpcClient.isFeatureEnabled.mockReturnValue(true);
-    mockSyncRpcClient.deleteTasks.mockResolvedValueOnce({
+    const rpcResult: SyncRpcResult = createSyncRpcResult({
       status: 'deleted-remote-newer',
       remoteUpdatedAt: '2026-04-30T05:00:00.000Z',
-      raw: {},
     });
+    mockSyncRpcClient.deleteTasks.mockImplementationOnce(async () => rpcResult);
 
     const result = await service.purgeTasksFromCloud('project-1', ['task-rpc-conflict'], 'user-1');
 
@@ -738,13 +747,12 @@ describe('TaskSyncOperationsService', () => {
 
   it('softDeleteTasksBatch 在 sync RPC 开启时应走 sync_delete_tasks 而不是旧 safe_delete_tasks', async () => {
     mockSyncRpcClient.isFeatureEnabled.mockReturnValue(true);
-    mockSyncRpcClient.deleteTasks.mockResolvedValueOnce({
-      status: 'applied',
+    const rpcResult: SyncRpcResult = createSyncRpcResult({
       entityId: 'project-1',
       affectedCount: 2,
-      attachmentPaths: [],
-      raw: {},
+      attachmentPaths: [] as string[],
     });
+    mockSyncRpcClient.deleteTasks.mockImplementationOnce(async () => rpcResult);
 
     const result = await service.softDeleteTasksBatch('project-1', ['task-soft-rpc-a', 'task-soft-rpc-b']);
 

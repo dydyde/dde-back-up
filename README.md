@@ -755,8 +755,8 @@ NanoFlow 采用多层数据保护策略，从前端到后端构建了完整的�
 ### 7. 语音转写失败怎么排查？
 
 按以下顺序检查：
-1. Edge Function 是否已部署（`supabase functions list`）
-2. `GROQ_API_KEY` 是否已设置（`supabase secrets list`）
+1. Edge Function 是否已部署（优先用 `npx supabase functions list`；如果你已全局安装 CLI，也可用 `supabase functions list`）
+2. `GROQ_API_KEY` 是否已设置（优先用 `npx supabase secrets list`；如果你已全局安装 CLI，也可用 `supabase secrets list`）
 3. `transcription_usage` 表是否存在且 RLS 已启用
 4. 今日额度是否已用完（每日 50 次）
 5. 详细排查见 [docs/transcribe-troubleshooting.md](docs/transcribe-troubleshooting.md)

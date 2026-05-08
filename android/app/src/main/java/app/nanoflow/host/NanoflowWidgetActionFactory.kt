@@ -352,26 +352,32 @@ class NanoflowWidgetActionFactory(
       if (!model.isGateMode || model.contentCards.firstOrNull()?.isGateEmptyState == true || displayedGateEntryId == null) {
         return emptyList()
       }
-      return listOf(
-        ActionItem(
-          label = context.getString(R.string.nanoflow_widget_gate_action_read),
-          selected = false,
-          kind = ActionItem.Kind.GATE_ACTION,
-          gateAction = GATE_ACTION_READ,
-          gateEntryId = displayedGateEntryId,
-          clickable = true,
-          primaryAction = WidgetPrimaryAction.OPEN_FOCUS_TOOLS,
-        ),
-        ActionItem(
-          label = context.getString(R.string.nanoflow_widget_gate_action_complete),
-          selected = false,
-          kind = ActionItem.Kind.GATE_ACTION,
-          gateAction = GATE_ACTION_COMPLETE,
-          gateEntryId = displayedGateEntryId,
-          clickable = true,
-          primaryAction = WidgetPrimaryAction.OPEN_FOCUS_TOOLS,
-        ),
-      )
+      return buildList {
+        if (!model.displayedGateEntryIsRead) {
+          add(
+            ActionItem(
+              label = context.getString(R.string.nanoflow_widget_gate_action_read),
+              selected = false,
+              kind = ActionItem.Kind.GATE_ACTION,
+              gateAction = GATE_ACTION_READ,
+              gateEntryId = displayedGateEntryId,
+              clickable = true,
+              primaryAction = WidgetPrimaryAction.OPEN_FOCUS_TOOLS,
+            )
+          )
+        }
+        add(
+          ActionItem(
+            label = context.getString(R.string.nanoflow_widget_gate_action_complete),
+            selected = false,
+            kind = ActionItem.Kind.GATE_ACTION,
+            gateAction = GATE_ACTION_COMPLETE,
+            gateEntryId = displayedGateEntryId,
+            clickable = true,
+            primaryAction = WidgetPrimaryAction.OPEN_FOCUS_TOOLS,
+          )
+        )
+      }
     }
 
     if (listKind == LIST_KIND_FOCUS_ACTIONS) {

@@ -81,7 +81,7 @@ import { BlackBoxSyncService } from '../../../services/black-box-sync.service';
 import { ChangeTrackerService } from '../../../services/change-tracker.service';
 import { BlackBoxEntry } from '../../../models/focus';
 import { ProjectStore } from '../state/stores';
-import { SyncStateService } from './sync/sync-state.service';
+import { SyncStateService, type ConflictData } from './sync/sync-state.service';
 import {
   getRemainingBrowserNetworkResumeDelayMs,
   isBrowserNetworkSuspendedError,
@@ -100,16 +100,6 @@ import {
 } from '../state/persistence';
 
 export type { ProjectSyncCursor, ProjectSyncCursorEntityType } from '../state/persistence';
-
-/**
- * 冲突数据
- */
-interface ConflictData {
-  local: Project;
-  remote: Project;
-  projectId: string;
-  pendingTaskDeleteIds?: string[];
-}
 
 export interface ProjectDeltaDrift {
   tasks: Task[];

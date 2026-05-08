@@ -150,7 +150,7 @@ describe('AppLifecycleOrchestratorService', () => {
     if (originalRequestIdleCallbackDescriptor) {
       Object.defineProperty(window, 'requestIdleCallback', originalRequestIdleCallbackDescriptor);
     } else {
-      delete (window as Window & { requestIdleCallback?: Window['requestIdleCallback'] }).requestIdleCallback;
+      Reflect.deleteProperty(window as unknown as Record<string, unknown>, 'requestIdleCallback');
     }
     vi.useRealTimers();
   });

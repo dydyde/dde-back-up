@@ -20,7 +20,6 @@
     "moduleDetection": "force",
     "allowJs": true,
     "allowSyntheticDefaultImports": true,
-    "downlevelIteration": true,
     "noEmit": true,
     "paths": {
       "@/*": [

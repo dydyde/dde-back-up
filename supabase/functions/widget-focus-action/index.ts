@@ -192,6 +192,10 @@ async function handleRequest(req: Request): Promise<Response> {
   }
 
   const action = body.action;
+  const requestedTaskId = typeof body.taskId === 'string' ? body.taskId : undefined;
+  const requestedWaitMinutes = typeof body.waitMinutes === 'number'
+    ? Math.floor(body.waitMinutes)
+    : undefined;
   if (action !== 'promote-secondary' && !FRONT_ACTIONS.has(action ?? '')) {
     return errorResponse(
       responseHeaders,
@@ -201,15 +205,15 @@ async function handleRequest(req: Request): Promise<Response> {
     );
   }
   if (action === 'promote-secondary') {
-    if (!isUuidLike(body.taskId)) {
+    if (!isUuidLike(requestedTaskId)) {
       return errorResponse(responseHeaders, 400, 'INVALID_TASK_ID', 'taskId must be a UUID');
     }
-  } else if (body.taskId !== undefined && !isUuidLike(body.taskId)) {
+  } else if (requestedTaskId !== undefined && !isUuidLike(requestedTaskId)) {
     return errorResponse(responseHeaders, 400, 'INVALID_TASK_ID', 'taskId must be a UUID');
   }
   if (
     action === 'wait-front'
-    && (typeof body.waitMinutes !== 'number' || !Number.isFinite(body.waitMinutes) || body.waitMinutes <= 0)
+    && (requestedWaitMinutes === undefined || requestedWaitMinutes <= 0)
   ) {
     return errorResponse(responseHeaders, 400, 'INVALID_WAIT_MINUTES', 'waitMinutes must be a positive number');
   }
@@ -245,11 +249,26 @@ async function handleRequest(req: Request): Promise<Response> {
   }
 
   const nowIso = new Date().toISOString();
-  const actionResult = action === 'promote-secondary'
-    ? promoteSecondaryTaskToC2(session.session_state, body.taskId, nowIso)
-    : action === 'complete-front'
-      ? completeFrontTask(session.session_state, body.taskId, nowIso)
-      : suspendFrontTask(session.session_state, body.taskId, Math.floor(body.waitMinutes!), nowIso);
+  const actionResult = (() => {
+    if (action === 'promote-secondary') {
+      if (requestedTaskId === undefined) {
+        return { ok: false, code: 'INVALID_TASK_ID', error: 'taskId must be a UUID' } as const;
+      }
+      const promoteTaskId = requestedTaskId as string;
+      return promoteSecondaryTaskToC2(session.session_state, promoteTaskId, nowIso);
+    }
+
+    if (action === 'complete-front') {
+      return completeFrontTask(session.session_state, requestedTaskId, nowIso);
+    }
+
+    if (requestedWaitMinutes === undefined) {
+      return { ok: false, code: 'INVALID_WAIT_MINUTES', error: 'waitMinutes must be a positive number' } as const;
+    }
+
+    const waitMinutes = requestedWaitMinutes as number;
+    return suspendFrontTask(session.session_state, requestedTaskId, waitMinutes, nowIso);
+  })();
   if (!actionResult.ok) {
     return errorResponse(responseHeaders, actionErrorStatus(actionResult.code), actionResult.code, actionResult.error);
   }
@@ -287,7 +306,7 @@ async function handleRequest(req: Request): Promise<Response> {
       });
     } else if (suspendedTaskId) {
       await maybePatchOwnedTask(client, device.user_id, suspendedTaskId, {
-        wait_minutes: Math.floor(body.waitMinutes!),
+        wait_minutes: requestedWaitMinutes,
         updated_at: nowIso,
       });
     }

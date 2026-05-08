@@ -19,6 +19,10 @@ import app.nanoflow.host.R
 object NanoflowWidgetRenderer {
 
   fun render(context: Context, appWidgetId: Int, model: WidgetRenderModel): RemoteViews {
+    if (shouldUseStaticStatusLayout(model)) {
+      return renderCompact(context, appWidgetId, model)
+    }
+
     // 2026-04-22 蓝图 UI：LARGE / MEDIUM 共用 large layout（focus 或 gate 二选一），
     // 仅 SMALL 继续使用 compact 单行样式。这保证 2×4 倒下长方体与海报 1:1 还原。
     return when (model.sizeTier) {
@@ -44,6 +48,10 @@ object NanoflowWidgetRenderer {
    * hostView，彻底清掉旧结构。
    */
   fun resolveLayoutSignature(model: WidgetRenderModel): String {
+    if (shouldUseStaticStatusLayout(model)) {
+      return "compact-status"
+    }
+
     val tierTag = when (model.sizeTier) {
       WidgetSizeTier.LARGE, WidgetSizeTier.MEDIUM -> "large"
       else -> "compact"
@@ -79,6 +87,12 @@ object NanoflowWidgetRenderer {
   private fun renderMedium(context: Context, appWidgetId: Int, model: WidgetRenderModel): RemoteViews {
     // 保留函数签名以兼容旧路径；当前所有 MEDIUM/LARGE 都走 renderLarge。
     return renderLarge(context, appWidgetId, model)
+  }
+
+  private fun shouldUseStaticStatusLayout(model: WidgetRenderModel): Boolean {
+    // 首次放置后的 setup/auth/untrusted 页面必须绕开 collection-view，避免 launcher
+    // 还没绑定 content factory 时中心区域变成死区，导致用户第一次点击无法进入应用完成绑定。
+    return model.showSetup || model.showAuthRequired || model.showUntrusted
   }
 
   private fun renderLarge(context: Context, appWidgetId: Int, model: WidgetRenderModel): RemoteViews {
