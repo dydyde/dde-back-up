@@ -188,6 +188,27 @@ describe('FlowOverviewService', () => {
     expect(finalCenteredBounds.y).toBe(diagramPosition.y);
   });
 
+  it('pointerup 后的 lostpointercapture 不应清空待同步的释放视口', () => {
+    const overview = service.overviewInstance as unknown as {
+      centerRect: ReturnType<typeof vi.fn>;
+    };
+
+    dispatchPointer('pointerdown', 20, 20);
+    vi.runOnlyPendingTimers();
+    dispatchPointer('pointermove', 120, 90);
+    vi.runOnlyPendingTimers();
+    const callsBeforeRelease = overview.centerRect.mock.calls.length;
+
+    dispatchPointer('pointerup', 120, 90);
+    dispatchPointer('lostpointercapture', 120, 90);
+    vi.runOnlyPendingTimers();
+
+    expect(overview.centerRect.mock.calls.length).toBe(callsBeforeRelease + 1);
+    const finalCenteredBounds = overview.centerRect.mock.calls.at(-1)?.[0] as InstanceType<typeof go.Rect>;
+    expect(finalCenteredBounds.x).toBe(diagramPosition.x);
+    expect(finalCenteredBounds.y).toBe(diagramPosition.y);
+  });
+
   function createDiagramMock(): go.Diagram {
     const listeners = new Map<string, () => void>();
     const diagram = {

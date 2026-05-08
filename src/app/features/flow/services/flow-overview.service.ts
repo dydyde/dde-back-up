@@ -871,14 +871,17 @@ export class FlowOverviewService {
 
       isResettingOverviewInteraction = true;
       const pointerIdToRelease = hasPointerCapture ? capturedPointerId : null;
+      const wasBoxDragReset = isDraggingBox || isMouseDraggingBox || this.isOverviewBoxDragging;
 
       capturedPointerId = null;
       hasPointerCapture = false;
       isDraggingBox = false;
       isMouseDraggingBox = false;
-      this.overviewReleaseViewportBounds = this.overviewBoxViewportBounds?.isReal()
-        ? this.overviewBoxViewportBounds.copy()
-        : null;
+      if (wasBoxDragReset) {
+        this.overviewReleaseViewportBounds = this.overviewBoxViewportBounds?.isReal()
+          ? this.overviewBoxViewportBounds.copy()
+          : null;
+      }
       this.isOverviewBoxDragging = false;
       this.isOverviewInteracting = false;
       this.overviewInteractionLastApplyAt = 0;
