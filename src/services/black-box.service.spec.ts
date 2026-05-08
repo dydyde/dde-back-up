@@ -21,6 +21,7 @@ describe('BlackBoxService', () => {
     scheduleSync: ReturnType<typeof vi.fn>;
     pullChanges: ReturnType<typeof vi.fn>;
     loadFromLocal: ReturnType<typeof vi.fn>;
+    saveToLocal: ReturnType<typeof vi.fn>;
   };
   let mockAuthService: {
     currentUserId: ReturnType<typeof vi.fn>;
@@ -43,7 +44,8 @@ describe('BlackBoxService', () => {
     mockSyncService = {
       scheduleSync: vi.fn(),
       pullChanges: vi.fn().mockResolvedValue(undefined),
-      loadFromLocal: vi.fn().mockResolvedValue([])
+      loadFromLocal: vi.fn().mockResolvedValue([]),
+      saveToLocal: vi.fn().mockResolvedValue(undefined),
     };
 
     mockAuthService = {
@@ -113,6 +115,24 @@ describe('BlackBoxService', () => {
       if (result.ok) {
         expect(result.value.userId).toBe(AUTH_CONFIG.LOCAL_MODE_USER_ID);
       }
+    });
+
+    it('本地模式条目应标记为本地已保存而不是远端待同步', () => {
+      mockAuthService.currentUserId.mockReturnValue(null);
+      localStorage.setItem(AUTH_CONFIG.LOCAL_MODE_CACHE_KEY, 'true');
+
+      const result = service.create({ content: '本地模式条目' });
+
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.value.syncStatus).toBe('synced');
+        expect(mockSyncService.saveToLocal).toHaveBeenCalledWith(expect.objectContaining({
+          id: result.value.id,
+          syncStatus: 'synced',
+          userId: AUTH_CONFIG.LOCAL_MODE_USER_ID,
+        }));
+      }
+      expect(mockSyncService.scheduleSync).not.toHaveBeenCalled();
     });
 
     it('未配置 Supabase 时无用户也应该回退到 local-user', () => {
@@ -209,6 +229,37 @@ describe('BlackBoxService', () => {
       if (result.ok) {
         expect(result.value.syncStatus).toBe('pending');
       }
+    });
+
+    it('本地模式条目更新后不应显示为远端待同步', () => {
+      setBlackBoxEntries([
+        {
+          id: 'entry-local-only',
+          projectId: null,
+          userId: AUTH_CONFIG.LOCAL_MODE_USER_ID,
+          content: '本地内容',
+          date: '2026-04-21',
+          createdAt: '2026-04-21T00:00:00.000Z',
+          updatedAt: '2026-04-21T00:00:00.000Z',
+          isRead: false,
+          isCompleted: false,
+          isArchived: false,
+          deletedAt: null,
+          syncStatus: 'synced',
+        },
+      ]);
+
+      const result = service.update('entry-local-only', { content: '本地更新' });
+
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.value.syncStatus).toBe('synced');
+      }
+      expect(mockSyncService.saveToLocal).toHaveBeenCalledWith(expect.objectContaining({
+        id: 'entry-local-only',
+        syncStatus: 'synced',
+      }));
+      expect(mockSyncService.scheduleSync).not.toHaveBeenCalled();
     });
 
     it('空 content 更新不能覆盖已有黑匣子正文', () => {

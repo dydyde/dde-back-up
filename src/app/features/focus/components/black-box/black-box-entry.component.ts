@@ -13,6 +13,7 @@ import {
 } from '@angular/core';
 import { CommonModule, DatePipe } from '@angular/common';
 import { BlackBoxEntry } from '../../../../../models';
+import { AUTH_CONFIG } from '../../../../../config/auth.config';
 
 @Component({
   selector: 'app-black-box-entry',
@@ -43,7 +44,7 @@ import { BlackBoxEntry } from '../../../../../models';
         </span>
 
         <!-- 同步状态指示 -->
-        @if (entry().syncStatus === 'pending') {
+        @if (shouldShowSyncPendingIndicator()) {
           <span class="text-[9px]" [class]="syncPendingClass()"
                 data-testid="sync-pending-indicator">
             ⏳ 待同步
@@ -191,6 +192,12 @@ export class BlackBoxEntryComponent {
       return 'text-amber-300';
     }
     return 'text-amber-500 dark:text-amber-300';
+  }
+
+  shouldShowSyncPendingIndicator(): boolean {
+    const currentEntry = this.entry();
+    return currentEntry.syncStatus === 'pending'
+      && currentEntry.userId !== AUTH_CONFIG.LOCAL_MODE_USER_ID;
   }
 
   readBadgeClass(): string {

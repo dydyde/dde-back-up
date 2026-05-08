@@ -72,17 +72,17 @@ export class BlackBoxService {
       isCompleted: false,
       isArchived: false,
       deletedAt: null,
-      syncStatus: 'pending',
       localCreatedAt: now,
       snoozeCount: 0,
-      ...safeData
+      ...safeData,
+      syncStatus: this.resolveNextSyncStatus(userId),
     };
     
     // 1. 更新状态（立即 UI 响应）
     updateBlackBoxEntry(entry);
     
-    // 2. 后台同步（防抖 3s）
-    this.syncService.scheduleSync(entry);
+    // 2. 后台同步（防抖 3s）或本地模式持久化
+    this.persistAfterLocalChange(entry);
     
     return success(entry);
   }
@@ -165,14 +165,14 @@ export class BlackBoxService {
       ...entry,
       ...safeUpdates,
       updatedAt: new Date().toISOString(),
-      syncStatus: 'pending',
+      syncStatus: this.resolveNextSyncStatus(entry.userId),
     };
     
     // 本地优先更新
     updateBlackBoxEntry(updated);
     
-    // 后台同步
-    this.syncService.scheduleSync(updated);
+    // 后台同步或本地模式持久化
+    this.persistAfterLocalChange(updated);
     
     return success(updated);
   }
@@ -241,13 +241,13 @@ export class BlackBoxService {
       ...entry,
       deletedAt: now,
       updatedAt: now,
-      syncStatus: 'pending',
+      syncStatus: this.resolveNextSyncStatus(entry.userId),
     };
 
     updateBlackBoxEntry(deleted);
     
-    // 同步删除操作到服务器
-    this.syncService.scheduleSync(deleted);
+    // 同步删除操作到服务器，或本地模式仅持久化 tombstone
+    this.persistAfterLocalChange(deleted);
     
     return success(undefined);
   }
@@ -374,5 +374,27 @@ export class BlackBoxService {
 
   private resolveLocalHydrationKey(): string {
     return this.resolveEffectiveUserId() ?? '__anonymous__';
+  }
+
+  private resolveNextSyncStatus(userId: string): NonNullable<BlackBoxEntry['syncStatus']> {
+    return this.shouldSyncRemotely(userId) ? 'pending' : 'synced';
+  }
+
+  private shouldSyncRemotely(userId: string): boolean {
+    return this.auth.isConfigured && userId !== AUTH_CONFIG.LOCAL_MODE_USER_ID;
+  }
+
+  private persistAfterLocalChange(entry: BlackBoxEntry): void {
+    if (this.shouldSyncRemotely(entry.userId)) {
+      void this.syncService.scheduleSync(entry);
+      return;
+    }
+
+    void this.syncService.saveToLocal(entry).catch((error: unknown) => {
+      this.logger.warn('黑匣子本地模式持久化失败，已保留内存快照', {
+        entryId: entry.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
   }
 }

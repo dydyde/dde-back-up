@@ -12,6 +12,7 @@ import { SyncRpcClientService } from './sync-rpc-client.service';
 import { SessionManagerService } from '../app/core/services/sync/session-manager.service';
 import { blackBoxEntriesMap, setBlackBoxEntries } from '../state/focus-stores';
 import type { BlackBoxEntry } from '../models/focus';
+import { AUTH_CONFIG } from '../config/auth.config';
 
 function createEntry(overrides: Partial<BlackBoxEntry> & Pick<BlackBoxEntry, 'id'>): BlackBoxEntry {
   return {
@@ -167,6 +168,7 @@ describe('BlackBoxSyncService', () => {
     initDbSpy.mockRestore();
     setupNetworkSpy.mockRestore();
     setBlackBoxEntries([]);
+    localStorage.removeItem(AUTH_CONFIG.LOCAL_MODE_CACHE_KEY);
   });
 
   it('should apply resume pull cooldown by default', async () => {
@@ -1494,5 +1496,47 @@ describe('BlackBoxSyncService', () => {
 
     expect(getAll).toHaveBeenCalledTimes(1);
     expect(entries).toEqual([expect.objectContaining({ id: 'entry-own', userId: 'user-1' })]);
+  });
+
+  it('loadFromLocal 应把历史本地模式 pending 条目归一为本地已保存', async () => {
+    authSignals.currentUserId.set(null);
+    localStorage.setItem(AUTH_CONFIG.LOCAL_MODE_CACHE_KEY, 'true');
+    const localEntry = {
+      id: 'entry-local-only',
+      projectId: null,
+      userId: AUTH_CONFIG.LOCAL_MODE_USER_ID,
+      content: 'local',
+      date: '2026-03-04',
+      createdAt: '2026-03-04T00:00:00.000Z',
+      updatedAt: '2026-03-04T00:00:00.000Z',
+      isRead: false,
+      isCompleted: false,
+      isArchived: false,
+      deletedAt: null,
+      syncStatus: 'pending',
+    };
+    const transaction = vi.fn(() => ({
+      objectStore: vi.fn(() => ({
+        getAll: () => {
+          const request = {
+            result: [localEntry],
+            onsuccess: null as ((this: IDBRequest<unknown[]>, ev: Event) => unknown) | null,
+            onerror: null as ((this: IDBRequest<unknown[]>, ev: Event) => unknown) | null,
+          };
+          queueMicrotask(() => request.onsuccess?.call(request as unknown as IDBRequest<unknown[]>, new Event('success')));
+          return request;
+        },
+      })),
+    }));
+    (service as unknown as { db: unknown }).db = { transaction };
+
+    const entries = await service.loadFromLocal();
+
+    expect(entries).toEqual([expect.objectContaining({
+      id: 'entry-local-only',
+      userId: AUTH_CONFIG.LOCAL_MODE_USER_ID,
+      syncStatus: 'synced',
+    })]);
+    expect(blackBoxEntriesMap().get('entry-local-only')?.syncStatus).toBe('synced');
   });
 });
