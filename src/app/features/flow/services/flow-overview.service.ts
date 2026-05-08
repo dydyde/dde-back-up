@@ -36,6 +36,7 @@ export class FlowOverviewService {
   private isOverviewInteracting: boolean = false;
   private isOverviewBoxDragging: boolean = false;
   private overviewBoxViewportBounds: go.Rect | null = null;
+  private overviewReleaseViewportBounds: go.Rect | null = null;
   private isApplyingOverviewViewportUpdate: boolean = false;
   private overviewUpdateQueuedWhileApplying: boolean = false;
   private overviewScheduleUpdate: ((source: 'viewport' | 'document') => void) | null = null;
@@ -257,6 +258,7 @@ export class FlowOverviewService {
     this.isOverviewInteracting = false;
     this.isOverviewBoxDragging = false;
     this.overviewBoxViewportBounds = null;
+    this.overviewReleaseViewportBounds = null;
     this.isApplyingOverviewViewportUpdate = false;
     this.overviewUpdateQueuedWhileApplying = false;
     this.overviewInteractionLastApplyAt = 0;
@@ -484,11 +486,19 @@ export class FlowOverviewService {
         // 原有 smartLerp (18%/45%) + setOverviewFixedBounds 就能像回归前那样平滑工作，
         // task blocks 保持可见、随 box 拖动相对位移，不会跳到亚像素尺寸。
         const fakeViewportBounds = this.overviewBoxViewportBounds;
+        const releaseViewportBounds = this.overviewReleaseViewportBounds;
         const usingFakeViewportBounds = !!(this.isOverviewBoxDragging && fakeViewportBounds && fakeViewportBounds.isReal());
+        const usingReleaseViewportBounds = !!(!this.isOverviewBoxDragging && releaseViewportBounds && releaseViewportBounds.isReal());
+        const usingManualViewportBounds = usingFakeViewportBounds || usingReleaseViewportBounds;
         const viewportBounds: go.Rect = usingFakeViewportBounds
           ? fakeViewportBounds
-          : this.diagram.viewportBounds;
+          : usingReleaseViewportBounds
+            ? releaseViewportBounds
+            : this.diagram.viewportBounds;
         if (!viewportBounds.isReal()) {
+          if (usingReleaseViewportBounds) {
+            this.overviewReleaseViewportBounds = null;
+          }
           return;
         }
 
@@ -589,7 +599,7 @@ export class FlowOverviewService {
               }
             }
 
-            if (usingFakeViewportBounds) {
+            if (usingManualViewportBounds) {
               this.overview.centerRect(viewportBounds);
             }
           }
@@ -598,7 +608,7 @@ export class FlowOverviewService {
         if (this.overview) {
           if (source === 'document') {
             this.overview.requestUpdate();
-            if (usingFakeViewportBounds) {
+            if (usingManualViewportBounds) {
               this.overview.updateAllTargetBindings();
             } else {
               // 普通数据刷新阶段仅做轻量 requestUpdate，把全量绑定刷新合并到延后窗口，
@@ -607,10 +617,16 @@ export class FlowOverviewService {
             }
           } else {
             this.overview.requestUpdate();
-            if (!usingFakeViewportBounds) {
+            if (usingManualViewportBounds) {
+              this.overview.updateAllTargetBindings();
+            } else {
               scheduleViewportBindingsUpdate(this.isOverviewBoxDragging ? 'immediate' : 'deferred');
             }
           }
+        }
+
+        if (usingReleaseViewportBounds) {
+          this.overviewReleaseViewportBounds = null;
         }
       } finally {
         this.isApplyingOverviewViewportUpdate = false;
@@ -860,6 +876,9 @@ export class FlowOverviewService {
       hasPointerCapture = false;
       isDraggingBox = false;
       isMouseDraggingBox = false;
+      this.overviewReleaseViewportBounds = this.overviewBoxViewportBounds?.isReal()
+        ? this.overviewBoxViewportBounds.copy()
+        : null;
       this.isOverviewBoxDragging = false;
       this.isOverviewInteracting = false;
       this.overviewInteractionLastApplyAt = 0;
