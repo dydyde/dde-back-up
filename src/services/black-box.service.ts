@@ -75,7 +75,7 @@ export class BlackBoxService {
       localCreatedAt: now,
       snoozeCount: 0,
       ...safeData,
-      syncStatus: this.resolveNextSyncStatus(userId),
+      syncStatus: this.resolveSyncStatusForMode(userId),
     };
     
     // 1. 更新状态（立即 UI 响应）
@@ -165,7 +165,7 @@ export class BlackBoxService {
       ...entry,
       ...safeUpdates,
       updatedAt: new Date().toISOString(),
-      syncStatus: this.resolveNextSyncStatus(entry.userId),
+      syncStatus: this.resolveSyncStatusForMode(entry.userId),
     };
     
     // 本地优先更新
@@ -241,7 +241,7 @@ export class BlackBoxService {
       ...entry,
       deletedAt: now,
       updatedAt: now,
-      syncStatus: this.resolveNextSyncStatus(entry.userId),
+      syncStatus: this.resolveSyncStatusForMode(entry.userId),
     };
 
     updateBlackBoxEntry(deleted);
@@ -376,7 +376,7 @@ export class BlackBoxService {
     return this.resolveEffectiveUserId() ?? '__anonymous__';
   }
 
-  private resolveNextSyncStatus(userId: string): NonNullable<BlackBoxEntry['syncStatus']> {
+  private resolveSyncStatusForMode(userId: string): NonNullable<BlackBoxEntry['syncStatus']> {
     return this.shouldSyncRemotely(userId) ? 'pending' : 'synced';
   }
 
@@ -391,7 +391,7 @@ export class BlackBoxService {
     }
 
     void this.syncService.saveToLocal(entry).catch((error: unknown) => {
-      this.logger.warn('黑匣子本地模式持久化失败，已保留内存快照', {
+      this.logger.warn('黑匣子本地模式持久化失败，当前会话内存状态已更新，后续本地水合可能需要重试', {
         entryId: entry.id,
         error: error instanceof Error ? error.message : String(error),
       });

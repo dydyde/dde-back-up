@@ -1341,6 +1341,7 @@ export class BlackBoxSyncService {
       return entry;
     }
 
+    // 仅修正本地同步元数据，不 bump updatedAt，避免本地模式水合被误判为业务内容变更。
     return {
       ...entry,
       syncStatus: 'synced',
