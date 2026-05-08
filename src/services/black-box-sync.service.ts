@@ -1265,7 +1265,9 @@ export class BlackBoxSyncService {
           return;
         }
 
-        const visibleEntries = entries.filter(entry => entry.userId === visibleUserId);
+        const visibleEntries = entries
+          .filter(entry => entry.userId === visibleUserId)
+          .map(entry => this.normalizeLocalOnlySyncStatus(entry, visibleUserId));
 
         // 【2026-04-23 根因修复】“手机端内容业务不同步”的关键兼防：
         // IDB 内实际有条目，但过滤器 visibleUserId 与所有条目 user_id 都不匹配，
@@ -1332,6 +1334,18 @@ export class BlackBoxSyncService {
     }
 
     return null;
+  }
+
+  private normalizeLocalOnlySyncStatus(entry: BlackBoxEntry, visibleUserId: string): BlackBoxEntry {
+    if (visibleUserId !== AUTH_CONFIG.LOCAL_MODE_USER_ID || entry.syncStatus !== 'pending') {
+      return entry;
+    }
+
+    // 仅修正本地同步元数据，不 bump updatedAt，避免本地模式水合被误判为业务内容变更。
+    return {
+      ...entry,
+      syncStatus: 'synced',
+    };
   }
 
   /**
