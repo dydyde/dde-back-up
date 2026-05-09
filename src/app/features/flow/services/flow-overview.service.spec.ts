@@ -257,6 +257,46 @@ describe('FlowOverviewService', () => {
     expect(followUpCall.y).toBe(releaseY);
   });
 
+  it('viewport 在节点群内点击不动并回放后续刷新时，预览框始终以 viewport 为锚（消除根因型跳变）', () => {
+    // 【2026-05-09 根因回归】用户报告：viewport 落在节点群内时点击预览框，
+    // - 点击瞬间预览框居中（apply 走 manual/centerRect viewportBounds 分支）→ 正确
+    // - 松手 + 后续 ViewportBoundsChanged 重绘 → 旧逻辑 usingManualViewportBounds=false
+    //   且 isViewportOutside=false，跳过 centerRect，落到 contentAlignment: Spot.Center
+    //   把 worldBounds=nodeBounds∪vb 的几何中心对准容器中心，与 viewportBounds.center
+    //   错位 → 预览框相对容器跳到不同位置，缩略块和主视图脱节。
+    // 修复后：apply 路径无条件 centerRect(viewportBounds)，contentAlignment 也已移除，
+    // 后续刷新仍以 viewport 中心为锚，无跳变。
+    documentBounds = new go.Rect(-2000, -2000, 5000, 4000); // 节点群远大于 viewport，确保 viewport 处于节点群内
+    viewportListener?.(); // 让服务感知 documentBounds 变化
+    vi.runOnlyPendingTimers();
+
+    const overview = service.overviewInstance as unknown as {
+      centerRect: ReturnType<typeof vi.fn>;
+    };
+
+    dispatchPointer('pointerdown', 20, 20);
+    vi.runOnlyPendingTimers();
+    // 不移动，直接松手
+    dispatchPointer('pointerup', 20, 20);
+    vi.runOnlyPendingTimers();
+
+    const callsAfterRelease = overview.centerRect.mock.calls.length;
+
+    // 模拟松手后第二帧的 ViewportBoundsChanged（GoJS 渲染过程中可能再触发一次）
+    viewportListener?.();
+    vi.runOnlyPendingTimers();
+
+    expect(overview.centerRect.mock.calls.length).toBeGreaterThan(callsAfterRelease);
+    const followUpCall = overview.centerRect.mock.calls.at(-1)?.[0] as InstanceType<typeof go.Rect>;
+    // 关键断言：viewport 处于节点群内时，后续刷新仍 centerRect(viewportBounds)，
+    // 锚点 = 主图 viewport 起始位置（点击不动，diagram.position 未变）。
+    expect(followUpCall.x).toBe(0);
+    expect(followUpCall.y).toBe(0);
+    // 主视图位置也未受影响。
+    expect(diagramPosition.x).toBe(0);
+    expect(diagramPosition.y).toBe(0);
+  });
+
   it('should intercept default pointerup to prevent GoJS double-centering on release', () => {
     const overview = service.overviewInstance as unknown as {
       centerRect: ReturnType<typeof vi.fn>;
