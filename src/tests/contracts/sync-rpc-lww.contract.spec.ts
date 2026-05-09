@@ -50,4 +50,31 @@ describe('Sync RPC LWW migration contract', () => {
       expect(normalized).not.toContain('v_local_updated <> v_existing_updated');
     }
   });
+
+  it('SECURITY DEFINER upsert RPCs must serialize entity writes and revoke public execution', () => {
+    const sql = readMigration();
+
+    for (const functionName of [
+      'sync_upsert_task',
+      'sync_upsert_connection',
+      'sync_upsert_blackbox_entry',
+      'sync_upsert_project',
+    ]) {
+      const section = getFunctionSection(sql, functionName);
+
+      expect(section).toContain('PERFORM pg_advisory_xact_lock');
+      expect(sql).toContain(`REVOKE ALL ON FUNCTION public.${functionName}(JSONB) FROM PUBLIC, anon;`);
+      expect(sql).toContain(`GRANT EXECUTE ON FUNCTION public.${functionName}(JSONB) TO authenticated;`);
+    }
+  });
+
+  it('connection and blackbox RPCs must validate referenced rows under SECURITY DEFINER', () => {
+    const sql = readMigration();
+    const connectionSection = getFunctionSection(sql, 'sync_upsert_connection');
+    const blackboxSection = getFunctionSection(sql, 'sync_upsert_blackbox_entry');
+
+    expect(connectionSection).toContain('connection_endpoint_not_in_project');
+    expect(connectionSection).toContain('connection_owned_by_other_project');
+    expect(blackboxSection).toContain('SELECT 1 FROM public.projects p WHERE p.id = v_project_id AND p.owner_id = v_user');
+  });
 });
