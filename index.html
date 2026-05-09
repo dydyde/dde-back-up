@@ -14,7 +14,7 @@
   <script id="canonical-origin-gate">
     (function() {
       try {
-        var CANONICAL_ORIGIN = '';
+        var CANONICAL_ORIGIN = 'https://nanoflow.pages.dev';
         var ORIGIN_GATE_MODE = 'off';
         var EXPECTED_NGSW_HASH = '';
         var CLEANUP_PREFIX = 'nanoflow.originGate.cleanup';
@@ -444,8 +444,8 @@
         return;
       }
 
-      var SUPABASE_URL = 'YOUR_SUPABASE_URL';
-      var SUPABASE_ANON_KEY = 'YOUR_SUPABASE_ANON_KEY';
+      var SUPABASE_URL = 'https://gtxsikdbmiqqzytadqit.supabase.co';
+      var SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZraGloY2xwZ2htbXRiYnl3dm9qIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjgwNDIyMTgsImV4cCI6MjA4MzYxODIxOH0.4Z5eylbmBA-YFiDRvDtom4lTHavHP3JfVmrU0yH9oVo';
 
       if (!SUPABASE_URL || SUPABASE_URL === 'YOUR_SUPABASE_URL') return;
       if (!SUPABASE_ANON_KEY || SUPABASE_ANON_KEY === 'YOUR_SUPABASE_ANON_KEY') return;
@@ -610,8 +610,8 @@
           if (tokenExpiresAt <= Math.floor(Date.now() / 1000) + 300) return;
         } else { return; }
 
-        var supabaseUrl = 'YOUR_SUPABASE_URL';
-        var supabaseAnonKey = 'YOUR_SUPABASE_ANON_KEY';
+        var supabaseUrl = 'https://gtxsikdbmiqqzytadqit.supabase.co';
+        var supabaseAnonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZraGloY2xwZ2htbXRiYnl3dm9qIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjgwNDIyMTgsImV4cCI6MjA4MzYxODIxOH0.4Z5eylbmBA-YFiDRvDtom4lTHavHP3JfVmrU0yH9oVo';
         var headers = { 'apikey': supabaseAnonKey, 'Authorization': 'Bearer ' + authToken, 'Content-Type': 'application/json' };
         var baseUrl = supabaseUrl + '/rest/v1';
         fetch(baseUrl + '/rpc/get_server_time', { method: 'POST', headers: headers })
