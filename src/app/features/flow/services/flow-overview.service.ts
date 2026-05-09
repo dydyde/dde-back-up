@@ -873,6 +873,14 @@ export class FlowOverviewService {
       this.overviewScheduleUpdate?.('viewport');
     };
 
+    const applyFinalManualBoxDrag = (ev: PointerEvent | MouseEvent): void => {
+      if (!isManualBoxDrag) return;
+      const pt = getOverviewDocPointFromClient(ev.clientX, ev.clientY);
+      if (pt) {
+        applyManualBoxDrag(pt);
+      }
+    };
+
     const resetOverviewInteractionState = (): void => {
       if (isResettingOverviewInteraction) {
         return;
@@ -919,10 +927,7 @@ export class FlowOverviewService {
         if (capturedPointerId !== null && ev.pointerId !== capturedPointerId) return;
         if (isManualBoxDrag) {
           stopEventForManualDrag(ev);
-          const pt = getOverviewDocPointFromClient(ev.clientX, ev.clientY);
-          if (pt) {
-            applyManualBoxDrag(pt);
-          }
+          applyFinalManualBoxDrag(ev);
         }
       }
 
@@ -1000,10 +1005,7 @@ export class FlowOverviewService {
       if (!isMouseDraggingBox) return;
       if (isManualBoxDrag) {
         stopEventForManualDrag(ev);
-        const pt = getOverviewDocPointFromClient(ev.clientX, ev.clientY);
-        if (pt) {
-          applyManualBoxDrag(pt);
-        }
+        applyFinalManualBoxDrag(ev);
       }
       resetOverviewInteractionState();
       this.overviewBoundsCache = '';

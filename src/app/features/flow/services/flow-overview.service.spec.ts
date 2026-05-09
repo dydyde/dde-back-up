@@ -239,6 +239,9 @@ describe('FlowOverviewService', () => {
   });
 
   it('松开预览框时拦截默认 pointerup，避免 GoJS 再按鼠标点二次居中', () => {
+    const overview = service.overviewInstance as unknown as {
+      centerRect: ReturnType<typeof vi.fn>;
+    };
     const bubblePointerUp = vi.fn();
     container.addEventListener('pointerup', bubblePointerUp);
 
@@ -248,6 +251,9 @@ describe('FlowOverviewService', () => {
     vi.runOnlyPendingTimers();
 
     expect(bubblePointerUp).not.toHaveBeenCalled();
+    const finalCenteredBounds = overview.centerRect.mock.calls.at(-1)?.[0] as InstanceType<typeof go.Rect>;
+    expect(finalCenteredBounds.x).toBe(-240);
+    expect(finalCenteredBounds.y).toBe(-180);
   });
 
   it('没有最终 pointermove 时仍按 pointerup 坐标提交释放视口', () => {
