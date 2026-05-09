@@ -372,7 +372,9 @@ describe('Widget backend foundation contract', () => {
       notifyFn.indexOf('if (!hasConfiguredPushProvider()) {'),
     );
     expect(focusActionFn).toContain("action !== 'promote-secondary'");
-    expect(focusActionFn).toContain('if (!isUuidLike(body.taskId))');
+    expect(focusActionFn).toMatch(
+      /action === 'promote-secondary'[\s\S]*?!isUuidLike\([^)]+\)[\s\S]*?'INVALID_TASK_ID'[\s\S]*?'taskId must be a UUID'[\s\S]*?promoteSecondaryTaskToC2\(session\.session_state,/,
+    );
     expect(focusActionFn).toContain('const token = getBearerToken(req);');
     expect(focusActionFn).toContain('Missing widget bearer token');
     expect(focusActionFn).toContain(".from('widget_devices')");
@@ -382,7 +384,6 @@ describe('Widget backend foundation contract', () => {
     expect(focusActionFn).toContain(".is('ended_at', null)");
     expect(focusActionFn).toContain(".eq('updated_at', session.updated_at)");
     expect(focusActionFn).toContain("'ACTIVE_FOCUS_SESSION_NOT_FOUND'");
-    expect(focusActionFn).toContain('promoteSecondaryTaskToC2(session.session_state, body.taskId, nowIso)');
     expect(focusActionFn).toContain('withPrivateNoStoreHeaders(corsHeaders)');
     expect(focusReorderHelper).toContain('export function promoteSecondaryTaskToC2');
     expect(focusReorderHelper).toContain('const COMBO_VISIBLE_LIMIT = 3');

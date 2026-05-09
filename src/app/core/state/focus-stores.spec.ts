@@ -12,20 +12,21 @@ import {
   getYesterdayDate,
   getDaysAgoDate,
   refreshGateReviewClock,
+  resetFocusState,
 } from '../../../state/focus-stores';
 import type { BlackBoxEntry } from '../../../models/focus';
 import { FOCUS_CONFIG } from '../../../config/focus.config';
 
 describe('focus-stores', () => {
   beforeEach(() => {
+    resetFocusState({ cleanupTodayDateInterval: true });
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-05-01T12:00:00.000Z'));
-    // 清空状态
-    blackBoxEntriesMap.set(new Map());
-    refreshGateReviewClock();
+    resetFocusState();
   });
 
   afterEach(() => {
+    resetFocusState({ cleanupTodayDateInterval: true });
     vi.useRealTimers();
   });
 

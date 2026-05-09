@@ -13,14 +13,42 @@ import { DestroyRef, Injector, runInInjectionContext } from '@angular/core';
 import { RequestThrottleService } from './request-throttle.service';
 import { LoggerService } from './logger.service';
 import { REQUEST_THROTTLE_CONFIG } from '../config';
+import {
+  ensureBrowserNetworkSuspensionTracking,
+  resetBrowserNetworkSuspensionTrackingForTests,
+} from '../utils/browser-network-suspension';
+
+function restoreDocumentProperty(
+  key: 'visibilityState',
+  originalDescriptor: PropertyDescriptor | undefined,
+): void {
+  if (originalDescriptor) {
+    Object.defineProperty(document, key, originalDescriptor);
+    return;
+  }
+
+  Reflect.deleteProperty(document, key);
+}
+
+function setVisibilityState(state: DocumentVisibilityState): void {
+  Object.defineProperty(document, 'visibilityState', {
+    configurable: true,
+    value: state,
+  });
+}
 
 describe('RequestThrottleService', () => {
   let service: RequestThrottleService;
   let mockLogger: any;
   let destroyCallbacks: Array<() => void>;
+  let originalVisibilityState: PropertyDescriptor | undefined;
 
   beforeEach(() => {
     destroyCallbacks = [];
+    originalVisibilityState = Object.getOwnPropertyDescriptor(document, 'visibilityState');
+    resetBrowserNetworkSuspensionTrackingForTests();
+    ensureBrowserNetworkSuspensionTracking();
+    setVisibilityState('visible');
 
     mockLogger = {
       category: vi.fn().mockReturnValue({
@@ -52,6 +80,8 @@ describe('RequestThrottleService', () => {
     service.clearAll();
     // 清理 RequestThrottleService 构造函数里注册的定时器清理逻辑
     for (const cb of destroyCallbacks) cb();
+    resetBrowserNetworkSuspensionTrackingForTests();
+    restoreDocumentProperty('visibilityState', originalVisibilityState);
     vi.useRealTimers();
     vi.clearAllMocks();
   });

@@ -104,7 +104,9 @@ describe('android host contract', () => {
     expect(repository).toContain('private fun isGateReadCoolingDown(preview: WidgetGatePreview): Boolean');
     expect(repository).toContain('scheduleGateReadCooldownRefreshFromSummary(appWidgetId, reconciledSummary)');
     expect(repository).toContain('summary.blackBox.nextReviewAt');
-    expect(repository).toContain('if (isGateReadCoolingDown(preview)) {');
+    expect(repository).toMatch(
+      /isGateReadCoolingDown\(preview\)[\s\S]*?preferRicherGatePreview\(entries\[renderableIndex\], preview\)[\s\S]*?fallbackEntries\.add\(preview\)/,
+    );
     expect(repository).toContain('return summary.blackBox.pendingCount.coerceAtLeast(0)');
     expect(repository).toContain('BlackBoxEntryAction.READ -> (cached.blackBox.pendingCount - 1).coerceAtLeast(0)');
     expect(repository).toContain('gateEntries.isEmpty()');

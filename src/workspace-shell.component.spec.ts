@@ -79,6 +79,33 @@ describe('WorkspaceShellComponent Android widget bootstrap', () => {
     androidWidgetBootstrapInFlight: boolean;
   };
 
+  function restoreDocumentProperty(
+    key: 'referrer' | 'visibilityState',
+    originalDescriptor: PropertyDescriptor | undefined,
+  ): void {
+    if (originalDescriptor) {
+      Object.defineProperty(document, key, originalDescriptor);
+      return;
+    }
+
+    Reflect.deleteProperty(document, key);
+  }
+
+  function restoreWindowProperty<T extends keyof Window>(
+    key: T,
+    originalValue: Window[T] | undefined,
+  ): void {
+    if (originalValue === undefined) {
+      Reflect.deleteProperty(window, key);
+      return;
+    }
+
+    Object.defineProperty(window, key, {
+      configurable: true,
+      value: originalValue,
+    });
+  }
+
   it('应接受 Android 浏览器中的 widget bootstrap fallback', () => {
     const originalReferrer = Object.getOwnPropertyDescriptor(document, 'referrer');
     const originalMatchMedia = window.matchMedia;
@@ -150,13 +177,8 @@ describe('WorkspaceShellComponent Android widget bootstrap', () => {
 
       expect(result).toBe(true);
     } finally {
-      if (originalReferrer) {
-        Object.defineProperty(document, 'referrer', originalReferrer);
-      }
-      Object.defineProperty(window, 'matchMedia', {
-        configurable: true,
-        value: originalMatchMedia,
-      });
+      restoreDocumentProperty('referrer', originalReferrer);
+      restoreWindowProperty('matchMedia', originalMatchMedia);
       vi.unstubAllGlobals();
     }
   });
@@ -232,13 +254,8 @@ describe('WorkspaceShellComponent Android widget bootstrap', () => {
 
       expect(result).toBe(false);
     } finally {
-      if (originalReferrer) {
-        Object.defineProperty(document, 'referrer', originalReferrer);
-      }
-      Object.defineProperty(window, 'matchMedia', {
-        configurable: true,
-        value: originalMatchMedia,
-      });
+      restoreDocumentProperty('referrer', originalReferrer);
+      restoreWindowProperty('matchMedia', originalMatchMedia);
       vi.unstubAllGlobals();
     }
   });
@@ -700,13 +717,8 @@ describe('WorkspaceShellComponent Android widget bootstrap', () => {
       expect(replace).not.toHaveBeenCalled();
       expect(warn).not.toHaveBeenCalledWith('Android widget callback 改为等待用户显式回跳');
     } finally {
-      if (originalReferrer) {
-        Object.defineProperty(document, 'referrer', originalReferrer);
-      }
-      Object.defineProperty(window, 'matchMedia', {
-        configurable: true,
-        value: originalMatchMedia,
-      });
+      restoreDocumentProperty('referrer', originalReferrer);
+      restoreWindowProperty('matchMedia', originalMatchMedia);
       Object.defineProperty(window, 'location', {
         configurable: true,
         value: originalLocation,
@@ -717,6 +729,8 @@ describe('WorkspaceShellComponent Android widget bootstrap', () => {
 
   it('bootstrap 成功时 Android 浏览器应改为等待用户显式回跳', async () => {
     const originalLocation = window.location;
+    const originalMatchMedia = window.matchMedia;
+    const originalReferrer = Object.getOwnPropertyDescriptor(document, 'referrer');
     const originalVisibilityState = Object.getOwnPropertyDescriptor(document, 'visibilityState');
     const assign = vi.fn();
     const replace = vi.fn();
@@ -724,9 +738,22 @@ describe('WorkspaceShellComponent Android widget bootstrap', () => {
     vi.stubGlobal('navigator', {
       userAgent: 'Mozilla/5.0 (Linux; Android 14; 24018RPACC) AppleWebKit/537.36 Chrome/123.0.0.0 Mobile Safari/537.36',
     });
+    Object.defineProperty(document, 'referrer', {
+      configurable: true,
+      get: () => '',
+    });
     Object.defineProperty(document, 'visibilityState', {
       configurable: true,
       get: () => 'visible',
+    });
+    Object.defineProperty(window, 'matchMedia', {
+      configurable: true,
+      value: vi.fn((query: string) => ({
+        matches: false,
+        media: query,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      })),
     });
     Object.defineProperty(window, 'location', {
       configurable: true,
@@ -804,9 +831,9 @@ describe('WorkspaceShellComponent Android widget bootstrap', () => {
       expect(replace).not.toHaveBeenCalled();
       expect(warn).toHaveBeenCalledWith('Android widget callback 改为等待用户显式回跳');
     } finally {
-      if (originalVisibilityState) {
-        Object.defineProperty(document, 'visibilityState', originalVisibilityState);
-      }
+      restoreDocumentProperty('referrer', originalReferrer);
+      restoreDocumentProperty('visibilityState', originalVisibilityState);
+      restoreWindowProperty('matchMedia', originalMatchMedia);
       Object.defineProperty(window, 'location', {
         configurable: true,
         value: originalLocation,
