@@ -312,6 +312,11 @@ export class GateService {
     this.clearAnimationTimeout();
     this.stopReviewingRemoteSync();
 
+    // 【根因修复 2026-05-09】标记今日大门已处理，避免后台闲置恢复时
+    // FocusStartupProbe 的 local→remote 两阶段探针（或 pullChanges 带回的新 pending）
+    // 让 checkGate() 重新进入 'reviewing' 状态而出现二次弹门。
+    this.persistGateHandledToday();
+
     this.logger.info('Gate', `Gate completed (${reason})`);
 
     setTimeout(() => {
@@ -472,6 +477,22 @@ export class GateService {
     if (gateState() === 'reviewing') {
       this.syncReviewingQueueWithPending(pendingBlackBoxEntries(), 'checkGate');
       this.logger.debug('Gate', 'Gate already reviewing, queue refreshed');
+      return;
+    }
+
+    // 【根因修复 2026-05-09】今日大门已处理（completeGateSession / forceBypass）则短路。
+    // 避免后台闲置恢复时 FocusStartupProbe 的 local→remote 两阶段探针在用户刚审完
+    // 之后再次把 gateState 推回 'reviewing'，出现"两次大门"。手机端和电脑端共享
+    // 同一条 visibility/pageshow 恢复链路，因此修复一处即覆盖两端。
+    if (this.isGateHandledToday()) {
+      // 短路时无论原状态是 'completed' / 'bypassed' / 其他都清掉缓存的 pendingItems，
+      // 它们仅在 reviewing 期间用于显示，非激活态保留只会让外部观察到陈旧数据。
+      gatePendingItems.set([]);
+      gateCurrentIndex.set(0);
+      if (gateState() !== 'completed' && gateState() !== 'bypassed') {
+        gateState.set('bypassed');
+      }
+      this.logger.debug('Gate', 'Gate already handled today, skip re-check');
       return;
     }
 
@@ -670,6 +691,39 @@ export class GateService {
   }
 
   /**
+   * 今日大门是否已经被处理过（completeGateSession 或 forceBypass）
+   * 用于阻止后台恢复链路里 local→remote 两次 checkGate 造成的二次弹门
+   */
+  private isGateHandledToday(): boolean {
+    if (typeof localStorage === 'undefined') return false;
+    try {
+      return localStorage.getItem(GATE_LAST_CHECK_DATE_KEY) === getTodayDate();
+    } catch (error) {
+      this.logger.debug(
+        'Gate',
+        'Read GATE_LAST_CHECK_DATE_KEY failed, fall through to normal check',
+        error instanceof Error ? error.message : String(error)
+      );
+      return false;
+    }
+  }
+
+  /** 标记今日大门已处理 */
+  private persistGateHandledToday(): void {
+    if (typeof localStorage === 'undefined') return;
+    try {
+      localStorage.setItem(GATE_LAST_CHECK_DATE_KEY, getTodayDate());
+    } catch (error) {
+      // 隐私模式 / 配额耗尽时仅影响下一次 checkGate 的短路兜底，不会引起数据错误。
+      this.logger.debug(
+        'Gate',
+        'Persist GATE_LAST_CHECK_DATE_KEY failed, dedup will fall back to in-memory state',
+        error instanceof Error ? error.message : String(error)
+      );
+    }
+  }
+
+  /**
    * 强制跳过大门（用于紧急情况）
    * 注意：这不会标记条目为已处理
    */
@@ -678,7 +732,7 @@ export class GateService {
     this.deferredMutation = null;
     this.stopReviewingRemoteSync();
     gateState.set('bypassed');
-    localStorage.setItem(GATE_LAST_CHECK_DATE_KEY, getTodayDate());
+    this.persistGateHandledToday();
     this.logger.warn('Gate', 'Gate force bypassed');
   }
 
