@@ -20,6 +20,24 @@
 -- This restores the repository Hard Rule: local first, retry later, LWW.
 -- =============================================================================
 
+CREATE OR REPLACE FUNCTION public.sync_extract_local_updated(payload JSONB, entity_key TEXT)
+RETURNS TIMESTAMPTZ
+LANGUAGE sql
+IMMUTABLE
+SET search_path = public, pg_temp
+AS $$
+  SELECT NULLIF(
+    COALESCE(
+      payload->entity_key->>'updated_at',
+      payload->entity_key->>'updatedAt',
+      payload->>'base_updated_at'
+    ),
+    ''
+  )::TIMESTAMPTZ;
+$$;
+
+REVOKE ALL ON FUNCTION public.sync_extract_local_updated(JSONB, TEXT) FROM PUBLIC, anon;
+
 CREATE OR REPLACE FUNCTION public.sync_upsert_task(payload JSONB)
 RETURNS JSONB
 LANGUAGE plpgsql
@@ -30,7 +48,7 @@ DECLARE
   v_user UUID := auth.uid();
   v_op_id UUID := (payload->>'operation_id')::UUID;
   v_protocol INTEGER := COALESCE((payload->>'protocol_version')::INTEGER, 0);
-  v_local_updated TIMESTAMPTZ := NULLIF(COALESCE(payload->'task'->>'updated_at', payload->'task'->>'updatedAt', payload->>'base_updated_at'), '')::TIMESTAMPTZ;
+  v_local_updated TIMESTAMPTZ := public.sync_extract_local_updated(payload, 'task');
   v_client_epoch BIGINT := COALESCE((payload->>'deployment_epoch')::BIGINT, 0);
   v_deployment_target TEXT := payload->>'deployment_target';
   v_task JSONB := payload->'task';
@@ -56,7 +74,10 @@ BEGIN
 
   PERFORM pg_advisory_xact_lock(hashtext('sync_upsert_task'), hashtext(v_task_id::TEXT));
 
-  SELECT * INTO v_log_existing FROM public.sync_operation_log WHERE operation_id = v_op_id;
+  SELECT user_id, result_payload, status, reject_reason
+    INTO v_log_existing
+    FROM public.sync_operation_log
+    WHERE operation_id = v_op_id;
   IF FOUND THEN
     IF v_log_existing.user_id <> v_user THEN
       RETURN jsonb_build_object('status', 'unauthorized', 'reason', 'operation_id owned by other user');
@@ -128,8 +149,6 @@ BEGIN
 END;
 $$;
 
-GRANT EXECUTE ON FUNCTION public.sync_upsert_task(JSONB) TO authenticated;
-
 CREATE OR REPLACE FUNCTION public.sync_upsert_connection(payload JSONB)
 RETURNS JSONB
 LANGUAGE plpgsql
@@ -140,7 +159,7 @@ DECLARE
   v_user UUID := auth.uid();
   v_op_id UUID := (payload->>'operation_id')::UUID;
   v_protocol INTEGER := COALESCE((payload->>'protocol_version')::INTEGER, 0);
-  v_local_updated TIMESTAMPTZ := NULLIF(COALESCE(payload->'connection'->>'updated_at', payload->'connection'->>'updatedAt', payload->>'base_updated_at'), '')::TIMESTAMPTZ;
+  v_local_updated TIMESTAMPTZ := public.sync_extract_local_updated(payload, 'connection');
   v_client_epoch BIGINT := COALESCE((payload->>'deployment_epoch')::BIGINT, 0);
   v_deployment_target TEXT := payload->>'deployment_target';
   v_client_git TEXT := payload->>'client_git_sha';
@@ -163,7 +182,10 @@ BEGIN
 
   PERFORM pg_advisory_xact_lock(hashtext('sync_upsert_connection'), hashtext(v_conn_id::TEXT));
 
-  SELECT * INTO v_log_existing FROM public.sync_operation_log WHERE operation_id = v_op_id;
+  SELECT user_id, result_payload, status, reject_reason
+    INTO v_log_existing
+    FROM public.sync_operation_log
+    WHERE operation_id = v_op_id;
   IF FOUND THEN
     IF v_log_existing.user_id <> v_user THEN
       RETURN jsonb_build_object('status', 'unauthorized', 'reason', 'operation_id owned by other user');
@@ -208,6 +230,8 @@ BEGIN
     WHERE source_task.id = (v_conn->>'source_id')::UUID
       AND source_task.project_id = v_project_id
       AND target_task.project_id = v_project_id
+      AND source_task.deleted_at IS NULL
+      AND target_task.deleted_at IS NULL
   ) THEN
     INSERT INTO public.sync_operation_log (operation_id, user_id, entity_type, entity_id,
       status, reject_reason, protocol_version, deployment_epoch, deployment_target, client_git_sha, client_origin)
@@ -269,8 +293,6 @@ BEGIN
 END;
 $$;
 
-GRANT EXECUTE ON FUNCTION public.sync_upsert_connection(JSONB) TO authenticated;
-
 CREATE OR REPLACE FUNCTION public.sync_upsert_blackbox_entry(payload JSONB)
 RETURNS JSONB
 LANGUAGE plpgsql
@@ -281,7 +303,7 @@ DECLARE
   v_user UUID := auth.uid();
   v_op_id UUID := (payload->>'operation_id')::UUID;
   v_protocol INTEGER := COALESCE((payload->>'protocol_version')::INTEGER, 0);
-  v_local_updated TIMESTAMPTZ := NULLIF(COALESCE(payload->'entry'->>'updated_at', payload->'entry'->>'updatedAt', payload->>'base_updated_at'), '')::TIMESTAMPTZ;
+  v_local_updated TIMESTAMPTZ := public.sync_extract_local_updated(payload, 'entry');
   v_client_epoch BIGINT := COALESCE((payload->>'deployment_epoch')::BIGINT, 0);
   v_deployment_target TEXT := payload->>'deployment_target';
   v_client_git TEXT := payload->>'client_git_sha';
@@ -303,7 +325,10 @@ BEGIN
 
   PERFORM pg_advisory_xact_lock(hashtext('sync_upsert_blackbox_entry'), hashtext(v_entry_id::TEXT));
 
-  SELECT * INTO v_log_existing FROM public.sync_operation_log WHERE operation_id = v_op_id;
+  SELECT user_id, result_payload, status, reject_reason
+    INTO v_log_existing
+    FROM public.sync_operation_log
+    WHERE operation_id = v_op_id;
   IF FOUND THEN
     IF v_log_existing.user_id <> v_user THEN
       RETURN jsonb_build_object('status', 'unauthorized', 'reason', 'operation_id owned by other user');
@@ -416,8 +441,6 @@ BEGIN
 END;
 $$;
 
-GRANT EXECUTE ON FUNCTION public.sync_upsert_blackbox_entry(JSONB) TO authenticated;
-
 CREATE OR REPLACE FUNCTION public.sync_upsert_project(payload JSONB)
 RETURNS JSONB
 LANGUAGE plpgsql
@@ -428,7 +451,7 @@ DECLARE
   v_user UUID := auth.uid();
   v_op_id UUID := (payload->>'operation_id')::UUID;
   v_protocol INTEGER := COALESCE((payload->>'protocol_version')::INTEGER, 0);
-  v_local_updated TIMESTAMPTZ := NULLIF(COALESCE(payload->'project'->>'updated_at', payload->'project'->>'updatedAt', payload->>'base_updated_at'), '')::TIMESTAMPTZ;
+  v_local_updated TIMESTAMPTZ := public.sync_extract_local_updated(payload, 'project');
   v_client_epoch BIGINT := COALESCE((payload->>'deployment_epoch')::BIGINT, 0);
   v_deployment_target TEXT := payload->>'deployment_target';
   v_client_git TEXT := payload->>'client_git_sha';
@@ -450,7 +473,10 @@ BEGIN
 
   PERFORM pg_advisory_xact_lock(hashtext('sync_upsert_project'), hashtext(v_project_id::TEXT));
 
-  SELECT * INTO v_log_existing FROM public.sync_operation_log WHERE operation_id = v_op_id;
+  SELECT user_id, result_payload, status, reject_reason
+    INTO v_log_existing
+    FROM public.sync_operation_log
+    WHERE operation_id = v_op_id;
   IF FOUND THEN
     IF v_log_existing.user_id <> v_user THEN
       RETURN jsonb_build_object('status', 'unauthorized', 'reason', 'operation_id owned by other user');
@@ -551,6 +577,7 @@ REVOKE ALL ON FUNCTION public.sync_upsert_connection(JSONB) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.sync_upsert_blackbox_entry(JSONB) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.sync_upsert_project(JSONB) FROM PUBLIC, anon;
 
+GRANT EXECUTE ON FUNCTION public.sync_extract_local_updated(JSONB, TEXT) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.sync_upsert_task(JSONB) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.sync_upsert_connection(JSONB) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.sync_upsert_blackbox_entry(JSONB) TO authenticated;

@@ -67,6 +67,8 @@ describe('Sync RPC LWW migration contract', () => {
       expect(sql).toContain(`REVOKE ALL ON FUNCTION public.${functionName}(JSONB) FROM PUBLIC, anon;`);
       expect(sql).toContain(`GRANT EXECUTE ON FUNCTION public.${functionName}(JSONB) TO authenticated;`);
     }
+
+    expect(sql).toContain('REVOKE ALL ON FUNCTION public.sync_extract_local_updated(JSONB, TEXT) FROM PUBLIC, anon;');
   });
 
   it('task, connection, and blackbox RPCs must validate referenced rows under SECURITY DEFINER', () => {
@@ -78,6 +80,8 @@ describe('Sync RPC LWW migration contract', () => {
     expect(taskSection).toContain('task_owned_by_other_project');
     expect(connectionSection).toContain('connection_endpoint_not_in_project');
     expect(connectionSection).toContain('connection_owned_by_other_project');
+    expect(connectionSection).toContain('source_task.deleted_at IS NULL');
+    expect(connectionSection).toContain('target_task.deleted_at IS NULL');
     expect(blackboxSection).toContain('SELECT 1 FROM public.projects p WHERE p.id = v_project_id AND p.owner_id = v_user');
   });
 });
