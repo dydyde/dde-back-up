@@ -191,9 +191,10 @@ describe('GateService', () => {
 
       service.checkGate();
 
-      // 修复后：完成态会被持久化为"今日已处理"，第二次 checkGate 早返回，
-      // 状态保留 'completed'（与原 'bypassed' 等价：均为非激活态、isGateActive=false）。
-      expect(['completed', 'bypassed']).toContain(gateState());
+      // 修复后：completeGateSession 持久化"今日已处理"标记，第二次 checkGate
+      // 命中 isGateHandledToday() 早返回，状态保留 'completed'（与 'bypassed'
+      // 等价：均为非激活态、isGateActive=false），但语义更精确。
+      expect(gateState()).toBe('completed');
       expect(gatePendingItems()).toEqual([]);
       vi.useRealTimers();
     });

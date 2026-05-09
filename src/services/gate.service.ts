@@ -698,7 +698,12 @@ export class GateService {
     if (typeof localStorage === 'undefined') return false;
     try {
       return localStorage.getItem(GATE_LAST_CHECK_DATE_KEY) === getTodayDate();
-    } catch {
+    } catch (error) {
+      this.logger.debug(
+        'Gate',
+        'Read GATE_LAST_CHECK_DATE_KEY failed, fall through to normal check',
+        error instanceof Error ? error.message : String(error)
+      );
       return false;
     }
   }
@@ -708,9 +713,13 @@ export class GateService {
     if (typeof localStorage === 'undefined') return;
     try {
       localStorage.setItem(GATE_LAST_CHECK_DATE_KEY, getTodayDate());
-    } catch {
-      // 隐私模式 / 配额耗尽时忽略：仅影响下一次 checkGate 的短路兜底，
-      // 不会引起数据错误。
+    } catch (error) {
+      // 隐私模式 / 配额耗尽时仅影响下一次 checkGate 的短路兜底，不会引起数据错误。
+      this.logger.debug(
+        'Gate',
+        'Persist GATE_LAST_CHECK_DATE_KEY failed, dedup will fall back to in-memory state',
+        error instanceof Error ? error.message : String(error)
+      );
     }
   }
 
