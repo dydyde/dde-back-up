@@ -14,7 +14,7 @@
   <script id="canonical-origin-gate">
     (function() {
       try {
-        var CANONICAL_ORIGIN = 'https://nanoflow.pages.dev';
+        var CANONICAL_ORIGIN = '';
         var ORIGIN_GATE_MODE = 'off';
         var EXPECTED_NGSW_HASH = '';
         var CLEANUP_PREFIX = 'nanoflow.originGate.cleanup';
@@ -197,8 +197,8 @@
   
   <!-- Supabase API 预连接（如果启用云同步） -->
   <!-- 【TTFB 优化】使用 crossorigin 因为 Supabase 需要携带认证头 -->
-  <link rel="preconnect" href="https://gtxsikdbmiqqzytadqit.supabase.co" crossorigin>
-  <link rel="dns-prefetch" href="https://gtxsikdbmiqqzytadqit.supabase.co">
+  <link rel="preconnect" href="https://example.supabase.co" crossorigin>
+  <link rel="dns-prefetch" href="https://example.supabase.co">
   
   <!-- Sentry: 仅使用 dns-prefetch，因为首屏不会触发错误上报（P3 优化 2026-01-26）-->
   <link rel="dns-prefetch" href="https://o4508391513718784.ingest.us.sentry.io">
@@ -444,8 +444,8 @@
         return;
       }
 
-      var SUPABASE_URL = 'https://gtxsikdbmiqqzytadqit.supabase.co';
-      var SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZraGloY2xwZ2htbXRiYnl3dm9qIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjgwNDIyMTgsImV4cCI6MjA4MzYxODIxOH0.4Z5eylbmBA-YFiDRvDtom4lTHavHP3JfVmrU0yH9oVo';
+      var SUPABASE_URL = 'https://example.supabase.co';
+      var SUPABASE_ANON_KEY = 'sb_publishable_abcdefghijklmnopqrstuv';
 
       if (!SUPABASE_URL || SUPABASE_URL === 'YOUR_SUPABASE_URL') return;
       if (!SUPABASE_ANON_KEY || SUPABASE_ANON_KEY === 'YOUR_SUPABASE_ANON_KEY') return;
@@ -610,8 +610,8 @@
           if (tokenExpiresAt <= Math.floor(Date.now() / 1000) + 300) return;
         } else { return; }
 
-        var supabaseUrl = 'https://gtxsikdbmiqqzytadqit.supabase.co';
-        var supabaseAnonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZraGloY2xwZ2htbXRiYnl3dm9qIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjgwNDIyMTgsImV4cCI6MjA4MzYxODIxOH0.4Z5eylbmBA-YFiDRvDtom4lTHavHP3JfVmrU0yH9oVo';
+        var supabaseUrl = 'https://example.supabase.co';
+        var supabaseAnonKey = 'sb_publishable_abcdefghijklmnopqrstuv';
         var headers = { 'apikey': supabaseAnonKey, 'Authorization': 'Bearer ' + authToken, 'Content-Type': 'application/json' };
         var baseUrl = supabaseUrl + '/rest/v1';
         fetch(baseUrl + '/rpc/get_server_time', { method: 'POST', headers: headers })
