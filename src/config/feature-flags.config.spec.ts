@@ -19,8 +19,8 @@ describe('Feature Flags 安全校验', () => {
     expect(FEATURE_FLAGS.SYNC_STRICT_SUCCESS_ENABLED).toBe(true);
   });
 
-  it('REALTIME_ENABLED 应默认启用以保障跨设备同步及时性', () => {
-    expect(FEATURE_FLAGS.REALTIME_ENABLED).toBe(true);
+  it('REALTIME_ENABLED 应默认关闭以避免受限网络下 WebSocket 错误刷屏', () => {
+    expect(FEATURE_FLAGS.REALTIME_ENABLED).toBe(false);
   });
 
   it('LOGOUT_CLEANUP_ENABLED 应默认启用', () => {

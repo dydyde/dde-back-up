@@ -363,6 +363,7 @@ const IGNORE_PREVIEW_CLICK_AFTER_TASK_SWITCH_MS = 180;
           @if (localContent() || task.content) {
             <div class="text-[11px] text-stone-600 leading-relaxed markdown-preview overflow-hidden max-h-28" [innerHTML]="(localContent() || task.content) | safeMarkdown:'raw'"></div>
           }
+        </div>
       } @else {
         <div class="space-y-1.5">
           <input type="text" 
