@@ -41,10 +41,10 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Node ${{ env.NODE_VERSION }}
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
@@ -79,12 +79,12 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
       - name: Setup Node ${{ env.NODE_VERSION }}
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
@@ -97,7 +97,7 @@ jobs:
         env:
           NG_APP_SUPABASE_URL: ${{ secrets.NG_APP_SUPABASE_URL }}
           NG_APP_SUPABASE_ANON_KEY: ${{ secrets.NG_APP_SUPABASE_ANON_KEY }}
-          NG_APP_SENTRY_DSN: ${{ secrets.NG_APP_SENTRY_DSN }}
+          NG_APP_SENTRY_DSN: ${{ secrets.NG_APP_SENTRY_DSN || vars.NG_APP_SENTRY_DSN || '' }}
         run: |
           set -euo pipefail
           if [ "$DEPLOYMENT_TARGET" = "production" ] && [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ] && [ "${{ github.ref }}" != "refs/heads/main" ]; then
@@ -106,8 +106,10 @@ jobs:
           fi
 
           secret_source="Repository secrets"
+          public_config_source="Repository secrets or variables"
           if [ -n "${GITHUB_ENVIRONMENT_NAME:-}" ]; then
             secret_source="GitHub Environment '$GITHUB_ENVIRONMENT_NAME'"
+            public_config_source="GitHub Environment '$GITHUB_ENVIRONMENT_NAME' secrets or variables"
           fi
 
           if [ -z "${NG_APP_SUPABASE_URL:-}" ] || [ -z "${NG_APP_SUPABASE_ANON_KEY:-}" ]; then
@@ -115,13 +117,14 @@ jobs:
             exit 1
           fi
 
+          # Browser DSN is public configuration, but Cloudflare deploys must still fail closed if it is absent.
           if [ -z "${NG_APP_SENTRY_DSN:-}" ]; then
-            echo "::error::$secret_source must define NG_APP_SENTRY_DSN so Sentry error capture is active on Cloudflare"
+            echo "::error::$public_config_source must define NG_APP_SENTRY_DSN so Sentry error capture is active on Cloudflare"
             exit 1
           fi
 
           node -e "const dsn = process.env.NG_APP_SENTRY_DSN || ''; const allowedHost = 'o4508391513718784.ingest.us.sentry.io'; try { const url = new URL(dsn); const valid = url.protocol === 'https:' && /^[a-f0-9]{32}$/i.test(url.username) && url.password === '' && url.hostname === allowedHost && /^\\/\\d+\\/?$/.test(url.pathname); process.exit(valid ? 0 : 1); } catch { process.exit(1); }" || {
-            echo "::error::$secret_source NG_APP_SENTRY_DSN must be a valid public https Sentry browser DSN without a secret for o4508391513718784.ingest.us.sentry.io"
+            echo "::error::$public_config_source NG_APP_SENTRY_DSN must be a valid public https Sentry browser DSN without a secret for o4508391513718784.ingest.us.sentry.io"
             exit 1
           }
 
@@ -138,7 +141,7 @@ jobs:
         env:
           NG_APP_SUPABASE_URL: ${{ secrets.NG_APP_SUPABASE_URL }}
           NG_APP_SUPABASE_ANON_KEY: ${{ secrets.NG_APP_SUPABASE_ANON_KEY }}
-          NG_APP_SENTRY_DSN: ${{ secrets.NG_APP_SENTRY_DSN }}
+          NG_APP_SENTRY_DSN: ${{ secrets.NG_APP_SENTRY_DSN || vars.NG_APP_SENTRY_DSN || '' }}
           NG_APP_GOJS_LICENSE_KEY: ${{ secrets.NG_APP_GOJS_LICENSE_KEY }}
           NG_APP_SENTRY_ENVIRONMENT: ${{ env.DEPLOYMENT_TARGET }}
           NG_APP_CANONICAL_ORIGIN: ${{ env.DEPLOYMENT_TARGET == 'production' && env.CANONICAL_PRODUCTION_ORIGIN || '' }}
@@ -231,7 +234,7 @@ jobs:
 
       - name: Upload trace artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: cloudflare-pages-${{ env.DEPLOYMENT_TARGET }}-${{ github.sha }}
           path: |
@@ -325,7 +328,7 @@ jobs:
 
       - name: Comment preview URL on PR
         if: github.event_name == 'pull_request' && steps.deploy.outputs.deploy_url != ''
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const body = [
