@@ -273,6 +273,54 @@ describe('FlowOverviewService', () => {
     expect(diagramPosition.y).toBe(-180);
   });
 
+  it('松开后位置不受拖拽中途 overview.scale 变化影响（稳定 view→doc 映射）', () => {
+    // 【2026-05-09 根因回归】拖拽过程中如果 transformViewToDoc 依赖的
+    // overview.scale 变化（applyOverviewUpdate 通过 smartLerp 修改 scale），
+    // 会让同一 client 坐标在不同帧映射到不同 doc 点，松手时累计漂移。
+    // 本用例显式在 pointermove 之间修改 overview.scale，验证最终
+    // diagram.position 仍只与 (起始点 → 释放点) 的 client 位移成比例。
+    const overview = service.overviewInstance as unknown as {
+      centerRect: ReturnType<typeof vi.fn>;
+      scale: number;
+      transformViewToDoc: (point: InstanceType<typeof go.Point>) => InstanceType<typeof go.Point>;
+    };
+    // 让 transformViewToDoc 反映 scale（更接近真实 GoJS 行为）：
+    // doc = viewPt / overview.scale（假设 overview.position=0）。
+    overview.transformViewToDoc = (point) =>
+      new go.Point(point.x / overview.scale, point.y / overview.scale);
+    overview.scale = 1;
+
+    dispatchPointer('pointerdown', 20, 20);
+    vi.runOnlyPendingTimers();
+    const positionBeforeMove = diagramPosition.copy();
+
+    dispatchPointer('pointermove', 80, 60);
+    vi.runOnlyPendingTimers();
+
+    // 在中途模拟 applyOverviewUpdate 修改 overview.scale —— 在出现该修复前，
+    // 这会让后续帧 transformViewToDoc 给出不同的 doc 坐标，导致松手位置漂移。
+    overview.scale = 0.5;
+
+    dispatchPointer('pointermove', 120, 90);
+    vi.runOnlyPendingTimers();
+
+    dispatchPointer('pointerup', 120, 90);
+    vi.runOnlyPendingTimers();
+
+    // 起始 box 中心 (60, 50)，view 映射因子=1（拖拽起始时 scale=1）。
+    // client 位移 (100, 70) → boxCenter 推到 (160, 120)，
+    // viewport 大小 800x600 → diagram.position = (160-400, 120-300) = (-240, -180)。
+    expect(diagramPosition.x).toBe(-240);
+    expect(diagramPosition.y).toBe(-180);
+    expect(diagramPosition.x).not.toBe(positionBeforeMove.x);
+
+    // 松手帧 centerRect 也应锚定到与 diagram.position 一致的 viewportBounds，
+    // 不出现"小地图缩略块在某区域、主视图却看不到那些块"的脱节现象。
+    const finalCenteredBounds = overview.centerRect.mock.calls.at(-1)?.[0] as InstanceType<typeof go.Rect>;
+    expect(finalCenteredBounds.x).toBe(-240);
+    expect(finalCenteredBounds.y).toBe(-180);
+  });
+
   function createDiagramMock(): go.Diagram {
     const listeners = new Map<string, () => void>();
     const diagram = {
