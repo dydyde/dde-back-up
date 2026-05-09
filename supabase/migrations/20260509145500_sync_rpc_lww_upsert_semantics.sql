@@ -48,7 +48,6 @@ DECLARE
   v_user UUID := auth.uid();
   v_op_id UUID := (payload->>'operation_id')::UUID;
   v_protocol INTEGER := COALESCE((payload->>'protocol_version')::INTEGER, 0);
-  v_local_updated TIMESTAMPTZ := public.sync_extract_local_updated(payload, 'task');
   v_client_epoch BIGINT := COALESCE((payload->>'deployment_epoch')::BIGINT, 0);
   v_deployment_target TEXT := payload->>'deployment_target';
   v_task JSONB := payload->'task';
@@ -58,7 +57,6 @@ DECLARE
   v_client_origin TEXT := payload->>'client_origin';
   v_min_protocol INTEGER;
   v_min_epoch BIGINT;
-  v_existing_updated TIMESTAMPTZ;
   v_existing_owner UUID;
   v_existing_project_id UUID;
   v_log_existing RECORD;
@@ -113,8 +111,8 @@ BEGIN
     RETURN jsonb_build_object('status', 'unauthorized', 'reason', 'project_not_owned');
   END IF;
 
-  SELECT t.updated_at, t.project_id, p.owner_id
-    INTO v_existing_updated, v_existing_project_id, v_existing_owner
+  SELECT t.project_id, p.owner_id
+    INTO v_existing_project_id, v_existing_owner
     FROM public.tasks t
     JOIN public.projects p ON p.id = t.project_id
     WHERE t.id = v_task_id
@@ -169,7 +167,6 @@ DECLARE
   v_project_id UUID := (v_conn->>'project_id')::UUID;
   v_min_protocol INTEGER;
   v_min_epoch BIGINT;
-  v_existing_updated TIMESTAMPTZ;
   v_existing_owner UUID;
   v_existing_project_id UUID;
   v_log_existing RECORD;
@@ -240,8 +237,8 @@ BEGIN
     RETURN jsonb_build_object('status', 'unauthorized', 'reason', 'connection_endpoint_not_in_project');
   END IF;
 
-  SELECT c.updated_at, c.project_id, p.owner_id
-    INTO v_existing_updated, v_existing_project_id, v_existing_owner
+  SELECT c.project_id, p.owner_id
+    INTO v_existing_project_id, v_existing_owner
     FROM public.connections c
     JOIN public.projects p ON p.id = c.project_id
     WHERE c.id = v_conn_id
@@ -313,7 +310,6 @@ DECLARE
   v_project_id UUID := NULLIF(v_entry->>'project_id', '')::UUID;
   v_min_protocol INTEGER;
   v_min_epoch BIGINT;
-  v_existing_updated TIMESTAMPTZ;
   v_existing_owner UUID;
   v_log_existing RECORD;
   v_result JSONB;
@@ -357,7 +353,7 @@ BEGIN
     );
   END IF;
 
-  SELECT b.updated_at, b.user_id INTO v_existing_updated, v_existing_owner
+  SELECT b.user_id INTO v_existing_owner
     FROM public.black_box_entries b WHERE b.id = v_entry_id
     FOR UPDATE;
 
@@ -461,7 +457,7 @@ DECLARE
   v_min_protocol INTEGER;
   v_min_epoch BIGINT;
   v_existing_owner UUID;
-  v_existing_updated TIMESTAMPTZ;
+  v_tombstone_updated TIMESTAMPTZ;
   v_existing_deleted TIMESTAMPTZ;
   v_log_existing RECORD;
   v_result JSONB;
@@ -506,7 +502,7 @@ BEGIN
   END IF;
 
   SELECT owner_id, updated_at, deleted_at
-    INTO v_existing_owner, v_existing_updated, v_existing_deleted
+    INTO v_existing_owner, v_tombstone_updated, v_existing_deleted
     FROM public.projects
     WHERE id = v_project_id
     FOR UPDATE;
@@ -526,12 +522,12 @@ BEGIN
       'remote_project_tombstone', v_protocol, v_client_epoch, v_deployment_target, v_client_git, v_client_origin);
     RETURN jsonb_build_object(
       'status', 'deleted-remote-newer',
-      'remote_updated_at', COALESCE(v_existing_updated, v_existing_deleted),
+      'remote_updated_at', COALESCE(v_tombstone_updated, v_existing_deleted),
       'reason', 'remote_project_tombstone'
     );
   END IF;
 
-  IF v_existing_updated IS NULL THEN
+  IF v_tombstone_updated IS NULL THEN
     INSERT INTO public.projects AS p (id, owner_id, title, description, version, migrated_to_v2, deleted_at, updated_at)
     VALUES (
       v_project_id,
