@@ -101,6 +101,7 @@ describe('FlowOverviewService', () => {
   let service: FlowOverviewService;
   let container: HTMLDivElement;
   let diagramPosition: InstanceType<typeof go.Point>;
+  let documentBounds: InstanceType<typeof go.Rect>;
   let viewportListener: (() => void) | null;
   let originalRequestAnimationFrame: typeof globalThis.requestAnimationFrame | undefined;
   let originalCancelAnimationFrame: typeof globalThis.cancelAnimationFrame | undefined;
@@ -116,6 +117,7 @@ describe('FlowOverviewService', () => {
     vi.useFakeTimers();
     vi.clearAllMocks();
     diagramPosition = new go.Point(0, 0);
+    documentBounds = new go.Rect(0, 0, 400, 300);
     viewportListener = null;
 
     originalRequestAnimationFrame = globalThis.requestAnimationFrame;
@@ -209,6 +211,23 @@ describe('FlowOverviewService', () => {
     expect(finalCenteredBounds.y).toBe(diagramPosition.y);
   });
 
+  it('点击小地图预览框但不移动时不应改变主视图位置', () => {
+    const overview = service.overviewInstance as unknown as {
+      centerRect: ReturnType<typeof vi.fn>;
+    };
+
+    dispatchPointer('pointerdown', 20, 20);
+    vi.runOnlyPendingTimers();
+    dispatchPointer('pointerup', 20, 20);
+    vi.runOnlyPendingTimers();
+
+    expect(diagramPosition.x).toBe(0);
+    expect(diagramPosition.y).toBe(0);
+    const finalCenteredBounds = overview.centerRect.mock.calls.at(-1)?.[0] as InstanceType<typeof go.Rect>;
+    expect(finalCenteredBounds.x).toBe(0);
+    expect(finalCenteredBounds.y).toBe(0);
+  });
+
   it('松开后续视口刷新仍以 viewport 中心为锚（避免方向不定的跳变）', () => {
     const overview = service.overviewInstance as unknown as {
       centerRect: ReturnType<typeof vi.fn>;
@@ -252,8 +271,8 @@ describe('FlowOverviewService', () => {
 
     expect(bubblePointerUp).not.toHaveBeenCalled();
     const finalCenteredBounds = overview.centerRect.mock.calls.at(-1)?.[0] as InstanceType<typeof go.Rect>;
-    expect(finalCenteredBounds.x).toBe(-240);
-    expect(finalCenteredBounds.y).toBe(-180);
+    expect(finalCenteredBounds.x).toBe(100);
+    expect(finalCenteredBounds.y).toBe(70);
   });
 
   it('should apply pointerup coordinates when the final pointermove is missing', () => {
@@ -267,10 +286,10 @@ describe('FlowOverviewService', () => {
     vi.runOnlyPendingTimers();
 
     const finalCenteredBounds = overview.centerRect.mock.calls.at(-1)?.[0] as InstanceType<typeof go.Rect>;
-    expect(finalCenteredBounds.x).toBe(-240);
-    expect(finalCenteredBounds.y).toBe(-180);
-    expect(diagramPosition.x).toBe(-240);
-    expect(diagramPosition.y).toBe(-180);
+    expect(finalCenteredBounds.x).toBe(100);
+    expect(finalCenteredBounds.y).toBe(70);
+    expect(diagramPosition.x).toBe(100);
+    expect(diagramPosition.y).toBe(70);
   });
 
   it('松开后位置不受拖拽中途 overview.scale 变化影响（稳定 view→doc 映射）', () => {
@@ -307,24 +326,26 @@ describe('FlowOverviewService', () => {
     dispatchPointer('pointerup', 120, 90);
     vi.runOnlyPendingTimers();
 
-    // 起始 box 中心 (60, 50)，view 映射因子=1（拖拽起始时 scale=1）。
-    // client 位移 (100, 70) → boxCenter 推到 (160, 120)，
-    // viewport 大小 800x600 → diagram.position = (160-400, 120-300) = (-240, -180)。
-    expect(diagramPosition.x).toBe(-240);
-    expect(diagramPosition.y).toBe(-180);
+    // 起始中心来自主图 viewportBounds.center (400, 300)，view 映射因子=1。
+    // client 位移 (100, 70) → viewport center 推到 (500, 370)，
+    // viewport 大小 800x600 → diagram.position = (100, 70)。
+    expect(diagramPosition.x).toBe(100);
+    expect(diagramPosition.y).toBe(70);
     expect(diagramPosition.x).not.toBe(positionBeforeMove.x);
 
     // 松手帧 centerRect 也应锚定到与 diagram.position 一致的 viewportBounds，
     // 不出现"小地图缩略块在某区域、主视图却看不到那些块"的脱节现象。
     const finalCenteredBounds = overview.centerRect.mock.calls.at(-1)?.[0] as InstanceType<typeof go.Rect>;
-    expect(finalCenteredBounds.x).toBe(-240);
-    expect(finalCenteredBounds.y).toBe(-180);
+    expect(finalCenteredBounds.x).toBe(100);
+    expect(finalCenteredBounds.y).toBe(70);
   });
 
   function createDiagramMock(): go.Diagram {
     const listeners = new Map<string, () => void>();
     const diagram = {
-      documentBounds: new go.Rect(0, 0, 400, 300),
+      get documentBounds(): InstanceType<typeof go.Rect> {
+        return documentBounds;
+      },
       model: { nodeDataArray: [{ key: 'a' }] },
       skipsUndoManager: false,
       requestUpdate: vi.fn(),

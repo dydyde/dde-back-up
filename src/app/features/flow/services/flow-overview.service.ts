@@ -809,9 +809,8 @@ export class FlowOverviewService {
       const vb = this.diagram.viewportBounds;
       if (!vb.isReal()) return;
 
-      const boxBounds = this.overview.box?.actualBounds;
-      const boxCenter = boxBounds?.isReal() ? boxBounds.center : pt;
       manualDragViewportSize = { w: vb.width, h: vb.height };
+      const viewportCenter = vb.center;
 
       // 【2026-05-09 根因修复】捕获稳定 transform 参数。
       // 这些值在整个拖拽周期内保持不变，确保 client → doc 映射恒定，
@@ -838,7 +837,10 @@ export class FlowOverviewService {
       }
       manualDragStartViewToDocFactorX = factorX;
       manualDragStartViewToDocFactorY = factorY;
-      manualDragStartBoxCenterDoc = boxCenter.copy();
+      // 拖拽的文档坐标源头必须来自主图 viewport，而不是 overview.box.actualBounds。
+      // box 的实际边界会受 Overview 自身缩放/居中重算影响；点击不移动时若用它作为
+      // 起点，松手会把主图滚到小地图的临时视觉位置，造成预览框内容与主视图不一致。
+      manualDragStartBoxCenterDoc = viewportCenter.copy();
 
       try { this.diagram.skipsUndoManager = true; } catch { /* noop */ }
       this.setOverviewUpdateDelay(FlowOverviewService.OVERVIEW_DRAG_UPDATE_DELAY_MS);
@@ -846,7 +848,7 @@ export class FlowOverviewService {
       isManualBoxDrag = true;
       // 【2026-04-20 回归修复】起始帧先写入一次，确保 isOverviewBoxDragging 生效
       // 的那一拍 applyOverviewUpdate 已经能读到有效的 fakeViewportBounds。
-      updateOverviewBoxViewportBounds(boxCenter, pt);
+      updateOverviewBoxViewportBounds(viewportCenter, pt);
     };
 
     const applyManualBoxDrag = (clientX: number, clientY: number): void => {
