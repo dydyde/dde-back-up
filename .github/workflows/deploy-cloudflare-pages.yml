@@ -117,16 +117,16 @@ jobs:
             exit 1
           fi
 
-          # Browser DSN is public configuration, but Cloudflare deploys must still fail closed if it is absent.
+          # Browser DSN is public configuration. Keep deployments unblocked when it is
+          # absent, but fail fast on malformed values so Sentry is either valid or disabled.
           if [ -z "${NG_APP_SENTRY_DSN:-}" ]; then
-            echo "::error::$public_config_source must define NG_APP_SENTRY_DSN so Sentry error capture is active on Cloudflare"
-            exit 1
+            echo "::warning::$public_config_source does not define NG_APP_SENTRY_DSN; Sentry error capture will be disabled on Cloudflare"
+          else
+            node -e "const dsn = process.env.NG_APP_SENTRY_DSN || ''; const allowedHost = 'o4508391513718784.ingest.us.sentry.io'; try { const url = new URL(dsn); const valid = url.protocol === 'https:' && /^[a-f0-9]{32}$/i.test(url.username) && url.password === '' && url.hostname === allowedHost && /^\\/\\d+\\/?$/.test(url.pathname); process.exit(valid ? 0 : 1); } catch { process.exit(1); }" || {
+              echo "::error::$public_config_source NG_APP_SENTRY_DSN must be a valid public https Sentry browser DSN without a secret for o4508391513718784.ingest.us.sentry.io"
+              exit 1
+            }
           fi
-
-          node -e "const dsn = process.env.NG_APP_SENTRY_DSN || ''; const allowedHost = 'o4508391513718784.ingest.us.sentry.io'; try { const url = new URL(dsn); const valid = url.protocol === 'https:' && /^[a-f0-9]{32}$/i.test(url.username) && url.password === '' && url.hostname === allowedHost && /^\\/\\d+\\/?$/.test(url.pathname); process.exit(valid ? 0 : 1); } catch { process.exit(1); }" || {
-            echo "::error::$public_config_source NG_APP_SENTRY_DSN must be a valid public https Sentry browser DSN without a secret for o4508391513718784.ingest.us.sentry.io"
-            exit 1
-          }
 
           if [ "$DEPLOYMENT_TARGET" = "production" ]; then
             echo "alias=production" >> "$GITHUB_OUTPUT"
@@ -243,6 +243,7 @@ jobs:
             dist/browser/_headers
             dist/browser/index.html
             dist/browser/ngsw.json
+          if-no-files-found: ignore
           retention-days: 14
 
       - name: Deploy to Cloudflare Pages
