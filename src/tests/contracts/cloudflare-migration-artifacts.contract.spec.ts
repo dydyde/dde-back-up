@@ -42,7 +42,7 @@ describe('Cloudflare migration artifact contracts', () => {
     expect(beforeDeploy).not.toContain('CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}');
   });
 
-  it('uses NanoFlow-Preview environment for preview builds while allowing public Sentry DSN config via secrets or variables', () => {
+  it('uses NanoFlow-Preview environment for preview builds while keeping public Sentry DSN optional but validated', () => {
     const workflow = read('.github/workflows/deploy-cloudflare-pages.yml');
     const previewEnvironmentExpression = "${{ (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.target == 'preview')) && 'NanoFlow-Preview' || '' }}";
 
@@ -52,8 +52,10 @@ describe('Cloudflare migration artifact contracts', () => {
     expect(workflow).toContain('NG_APP_SUPABASE_URL: ${{ secrets.NG_APP_SUPABASE_URL }}');
     expect(workflow).toContain('NG_APP_SUPABASE_ANON_KEY: ${{ secrets.NG_APP_SUPABASE_ANON_KEY }}');
     expect(workflow).toContain("NG_APP_SENTRY_DSN: ${{ secrets.NG_APP_SENTRY_DSN || vars.NG_APP_SENTRY_DSN || '' }}");
-    expect(workflow).toContain('must define NG_APP_SENTRY_DSN so Sentry error capture is active on Cloudflare');
+    expect(workflow).toContain('does not define NG_APP_SENTRY_DSN; Sentry error capture will be disabled on Cloudflare');
+    expect(workflow).not.toContain('must define NG_APP_SENTRY_DSN so Sentry error capture is active on Cloudflare');
     expect(workflow).toContain('NG_APP_SENTRY_DSN must be a valid public https Sentry browser DSN without a secret for o4508391513718784.ingest.us.sentry.io');
+    expect(workflow).toContain('else');
     expect(workflow).toContain("url.hostname === allowedHost");
     expect(workflow).toContain("url.password === ''");
     expect(workflow).toContain('/^[a-f0-9]{32}$/i.test(url.username)');
@@ -61,6 +63,7 @@ describe('Cloudflare migration artifact contracts', () => {
     expect(workflow).toContain('actions/setup-node@v6');
     expect(workflow).toContain('actions/upload-artifact@v7');
     expect(workflow).toContain('actions/github-script@v9');
+    expect(workflow).toContain('if-no-files-found: ignore');
     expect(workflow).not.toContain('actions/checkout@v4');
     expect(workflow).not.toContain('actions/setup-node@v4');
     expect(workflow).not.toContain('actions/upload-artifact@v4');
