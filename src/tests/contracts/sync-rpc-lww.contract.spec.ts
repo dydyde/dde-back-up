@@ -34,7 +34,7 @@ describe('Sync RPC LWW migration contract', () => {
     }
   });
 
-  it('upsert RPCs must reject only when remote updated_at is newer than the local mutation timestamp', () => {
+  it('upsert RPCs must not strict-CAS reject trusted owner rows during queue drains', () => {
     const sql = readMigration();
 
     for (const functionName of [
@@ -45,9 +45,10 @@ describe('Sync RPC LWW migration contract', () => {
     ]) {
       const normalized = getFunctionSection(sql, functionName).replace(/\s+/g, ' ');
 
-      expect(normalized).toContain('v_local_updated IS NULL OR v_local_updated < v_existing_updated');
-      expect(normalized).toContain("'lww_remote_newer'");
+      expect(normalized).not.toContain('v_local_updated IS NULL OR v_local_updated < v_existing_updated');
+      expect(normalized).not.toContain('v_local_updated < v_existing_updated');
       expect(normalized).not.toContain('v_local_updated <> v_existing_updated');
+      expect(normalized).not.toContain("'lww_remote_newer'");
     }
   });
 
@@ -68,11 +69,13 @@ describe('Sync RPC LWW migration contract', () => {
     }
   });
 
-  it('connection and blackbox RPCs must validate referenced rows under SECURITY DEFINER', () => {
+  it('task, connection, and blackbox RPCs must validate referenced rows under SECURITY DEFINER', () => {
     const sql = readMigration();
+    const taskSection = getFunctionSection(sql, 'sync_upsert_task');
     const connectionSection = getFunctionSection(sql, 'sync_upsert_connection');
     const blackboxSection = getFunctionSection(sql, 'sync_upsert_blackbox_entry');
 
+    expect(taskSection).toContain('task_owned_by_other_project');
     expect(connectionSection).toContain('connection_endpoint_not_in_project');
     expect(connectionSection).toContain('connection_owned_by_other_project');
     expect(blackboxSection).toContain('SELECT 1 FROM public.projects p WHERE p.id = v_project_id AND p.owner_id = v_user');

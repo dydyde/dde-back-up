@@ -10,10 +10,13 @@
 -- conflict and left large RetryQueue/ActionQueue backlogs.
 --
 -- Fix:
--- Reinterpret the incoming timestamp as the local mutation timestamp for LWW:
+-- Restore server-arrival LWW for trusted owner-only upserts:
 --   - missing remote row: accept insert even when the local timestamp exists;
---   - existing remote row: reject only when remote `updated_at` is newer than the
---     local mutation timestamp.
+--   - existing owner row: accept the queued mutation instead of treating the
+--     local offline timestamp as a strict CAS base.
+-- Timestamp triggers still canonicalize `updated_at` to server time, so rejecting
+-- on `local_updated < remote_updated` would recreate the backlog during multi-item
+-- queue drains.
 -- This restores the repository Hard Rule: local first, retry later, LWW.
 -- =============================================================================
 
@@ -39,6 +42,7 @@ DECLARE
   v_min_epoch BIGINT;
   v_existing_updated TIMESTAMPTZ;
   v_existing_owner UUID;
+  v_existing_project_id UUID;
   v_log_existing RECORD;
   v_result JSONB;
   v_written_updated TIMESTAMPTZ;
@@ -88,20 +92,21 @@ BEGIN
     RETURN jsonb_build_object('status', 'unauthorized', 'reason', 'project_not_owned');
   END IF;
 
-  SELECT t.updated_at INTO v_existing_updated FROM public.tasks t WHERE t.id = v_task_id;
+  SELECT t.updated_at, t.project_id, p.owner_id
+    INTO v_existing_updated, v_existing_project_id, v_existing_owner
+    FROM public.tasks t
+    JOIN public.projects p ON p.id = t.project_id
+    WHERE t.id = v_task_id
+    FOR UPDATE;
 
-  IF v_existing_updated IS NOT NULL
-    AND (v_local_updated IS NULL OR v_local_updated < v_existing_updated)
+  IF v_existing_project_id IS NOT NULL
+    AND (v_existing_project_id <> v_project_id OR v_existing_owner IS DISTINCT FROM v_user)
   THEN
     INSERT INTO public.sync_operation_log (operation_id, user_id, entity_type, entity_id,
       status, reject_reason, protocol_version, deployment_epoch, deployment_target, client_git_sha, client_origin)
-    VALUES (v_op_id, v_user, 'task', v_task_id, 'remote-newer',
-      'lww_remote_newer', v_protocol, v_client_epoch, v_deployment_target, v_client_git, v_client_origin);
-    RETURN jsonb_build_object(
-      'status', 'remote-newer',
-      'remote_updated_at', v_existing_updated,
-      'reason', 'lww_remote_newer'
-    );
+    VALUES (v_op_id, v_user, 'task', v_task_id, 'unauthorized',
+      'task_owned_by_other_project', v_protocol, v_client_epoch, v_deployment_target, v_client_git, v_client_origin);
+    RETURN jsonb_build_object('status', 'unauthorized', 'reason', 'task_owned_by_other_project');
   END IF;
 
   PERFORM public.batch_upsert_tasks(ARRAY[v_task], v_project_id);
@@ -228,20 +233,6 @@ BEGIN
     RETURN jsonb_build_object('status', 'unauthorized', 'reason', 'connection_owned_by_other_project');
   END IF;
 
-  IF v_existing_updated IS NOT NULL
-    AND (v_local_updated IS NULL OR v_local_updated < v_existing_updated)
-  THEN
-    INSERT INTO public.sync_operation_log (operation_id, user_id, entity_type, entity_id,
-      status, reject_reason, protocol_version, deployment_epoch, deployment_target, client_git_sha, client_origin)
-    VALUES (v_op_id, v_user, 'connection', v_conn_id, 'remote-newer',
-      'lww_remote_newer', v_protocol, v_client_epoch, v_deployment_target, v_client_git, v_client_origin);
-    RETURN jsonb_build_object(
-      'status', 'remote-newer',
-      'remote_updated_at', v_existing_updated,
-      'reason', 'lww_remote_newer'
-    );
-  END IF;
-
   INSERT INTO public.connections AS c (id, project_id, source_id, target_id, title, description, deleted_at, updated_at)
   VALUES (
     v_conn_id,
@@ -361,20 +352,6 @@ BEGIN
     VALUES (v_op_id, v_user, 'blackbox', v_entry_id, 'unauthorized',
       'project_not_owned', v_protocol, v_client_epoch, v_deployment_target, v_client_git, v_client_origin);
     RETURN jsonb_build_object('status', 'unauthorized', 'reason', 'project_not_owned');
-  END IF;
-
-  IF v_existing_updated IS NOT NULL
-    AND (v_local_updated IS NULL OR v_local_updated < v_existing_updated)
-  THEN
-    INSERT INTO public.sync_operation_log (operation_id, user_id, entity_type, entity_id,
-      status, reject_reason, protocol_version, deployment_epoch, deployment_target, client_git_sha, client_origin)
-    VALUES (v_op_id, v_user, 'blackbox', v_entry_id, 'remote-newer',
-      'lww_remote_newer', v_protocol, v_client_epoch, v_deployment_target, v_client_git, v_client_origin);
-    RETURN jsonb_build_object(
-      'status', 'remote-newer',
-      'remote_updated_at', v_existing_updated,
-      'reason', 'lww_remote_newer'
-    );
   END IF;
 
   INSERT INTO public.black_box_entries AS b (
@@ -542,18 +519,6 @@ BEGIN
     )
     RETURNING p.updated_at INTO v_written_updated;
   ELSE
-    IF v_local_updated IS NULL OR v_local_updated < v_existing_updated THEN
-      INSERT INTO public.sync_operation_log (operation_id, user_id, entity_type, entity_id,
-        status, reject_reason, protocol_version, deployment_epoch, deployment_target, client_git_sha, client_origin)
-      VALUES (v_op_id, v_user, 'project', v_project_id, 'remote-newer',
-        'lww_remote_newer', v_protocol, v_client_epoch, v_deployment_target, v_client_git, v_client_origin);
-      RETURN jsonb_build_object(
-        'status', 'remote-newer',
-        'remote_updated_at', v_existing_updated,
-        'reason', 'lww_remote_newer'
-      );
-    END IF;
-
     UPDATE public.projects AS p
     SET title = v_project->>'title',
         description = NULLIF(v_project->>'description', ''),
@@ -592,13 +557,13 @@ GRANT EXECUTE ON FUNCTION public.sync_upsert_blackbox_entry(JSONB) TO authentica
 GRANT EXECUTE ON FUNCTION public.sync_upsert_project(JSONB) TO authenticated;
 
 COMMENT ON FUNCTION public.sync_upsert_task(JSONB) IS
-  'Sync-protected task upsert with idempotency, protocol fence, and LWW timestamp conflict handling.';
+  'Sync-protected task upsert with idempotency, protocol fence, ownership checks, and server-arrival LWW.';
 
 COMMENT ON FUNCTION public.sync_upsert_connection(JSONB) IS
-  'Sync-protected connection upsert with idempotency, protocol fence, and LWW timestamp conflict handling.';
+  'Sync-protected connection upsert with idempotency, protocol fence, ownership checks, and server-arrival LWW.';
 
 COMMENT ON FUNCTION public.sync_upsert_blackbox_entry(JSONB) IS
-  'Sync-protected blackbox upsert with idempotency, protocol fence, and LWW timestamp conflict handling.';
+  'Sync-protected blackbox upsert with idempotency, protocol fence, ownership checks, and server-arrival LWW.';
 
 COMMENT ON FUNCTION public.sync_upsert_project(JSONB) IS
-  'Sync-protected project upsert with idempotency, tombstone barrier, protocol fence, and LWW timestamp conflict handling.';
+  'Sync-protected project upsert with idempotency, tombstone barrier, protocol fence, ownership checks, and server-arrival LWW.';
