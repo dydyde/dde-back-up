@@ -191,7 +191,9 @@ describe('GateService', () => {
 
       service.checkGate();
 
-      expect(gateState()).toBe('bypassed');
+      // 修复后：完成态会被持久化为"今日已处理"，第二次 checkGate 早返回，
+      // 状态保留 'completed'（与原 'bypassed' 等价：均为非激活态、isGateActive=false）。
+      expect(['completed', 'bypassed']).toContain(gateState());
       expect(gatePendingItems()).toEqual([]);
       vi.useRealTimers();
     });
@@ -218,6 +220,81 @@ describe('GateService', () => {
       expect(gateState()).toBe('reviewing');
       expect(gatePendingItems().map(item => item.id)).toEqual(['read-reappears-after-cooldown']);
       vi.useRealTimers();
+    });
+
+    it('今日大门完成后，后台恢复触发的 remote 阶段 checkGate 不应再次激活大门', () => {
+      // 复现：FocusStartupProbe.runProbe 里 applyGateSnapshot('local') 已弹出大门，
+      // 用户审完进入 'completed'；接着 pullChanges 完成后再次 applyGateSnapshot('remote')
+      // 调用 checkGate()，若此时仍有 pending（例如远端带回新条目或本地变更未同步），
+      // 旧逻辑会重新设为 'reviewing' 并触发 entering 动画 → 出现"两次大门"。
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-05-01T12:00:00.000Z'));
+      const entry = createMockEntry({
+        id: 'first-pass',
+        date: getDateOffset(-1),
+      });
+      mockBlackBoxService.markAsCompleted.mockImplementationOnce((id: string) => {
+        const updated = {
+          ...entry,
+          id,
+          isCompleted: true,
+          updatedAt: new Date().toISOString(),
+          syncStatus: 'pending' as const,
+        };
+        updateBlackBoxEntry(updated);
+        return { ok: true, value: updated };
+      });
+      setBlackBoxEntries([entry]);
+
+      // 第一阶段：local 探针弹出大门并被用户审完
+      service.checkGate();
+      expect(gateState()).toBe('reviewing');
+      service.onEnteringComplete();
+      service.markAsCompleted();
+      service.onHeavyDropComplete();
+      expect(gateState()).toBe('completed');
+
+      // 第二阶段：模拟 pullChanges 带回一条尚未本地处理的旧 pending（黑匣子端）
+      const intruder = createMockEntry({
+        id: 'remote-intruder',
+        date: getDateOffset(-2),
+        isRead: false,
+        isCompleted: false,
+      });
+      setBlackBoxEntries([
+        { ...entry, isCompleted: true, updatedAt: new Date().toISOString() },
+        intruder,
+      ]);
+
+      // applyGateSnapshot('remote') 内部会再次调用 checkGate()
+      service.checkGate();
+
+      expect(gateState()).toBe('completed');
+      expect(['idle']).toContain(service.cardAnimation());
+      vi.useRealTimers();
+    });
+
+    it('今日大门完成的标记跨天后失效，次日新 pending 应重新激活大门', () => {
+      // 直接以 localStorage 标记"昨日"已处理，验证 checkGate 不再短路。
+      // 不使用跨天 fake timer，因为 pendingBlackBoxEntries 依赖每分钟刷新的 todayDate
+      // 信号，fake timer 下不会自动 tick，会污染 filter 行为。
+      const yesterday = (() => {
+        const d = new Date();
+        d.setDate(d.getDate() - 1);
+        return d.toISOString().split('T')[0];
+      })();
+      localStorage.setItem('focus_gate_last_check_date', yesterday);
+
+      const entry = createMockEntry({
+        id: 'next-day-entry',
+        date: getDateOffset(-1),
+      });
+      setBlackBoxEntries([entry]);
+
+      service.checkGate();
+
+      expect(gateState()).toBe('reviewing');
+      expect(gatePendingItems().map(item => item.id)).toEqual(['next-day-entry']);
     });
   });
 
