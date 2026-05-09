@@ -123,9 +123,22 @@ export class FlowOverviewService {
         vendorStyle['mozOsxFontSmoothing'] = 'grayscale';
 
         // 创建 Overview 实例
+        // 【2026-05-09 根因修复】不再设置 contentAlignment: go.Spot.Center。
+        // 起因：Spot.Center 会让 GoJS 在每次 render（包括松手后 rAF 调用
+        // updateAllTargetBindings + requestUpdate 触发的 render）把 fixedBounds
+        // 几何中心对准容器中心。当 viewport 在节点群内时，
+        // worldBounds = nodeBounds ∪ viewportBounds 的几何中心与 viewportBounds.center
+        // 偏差较大（取决于节点群在 viewport 哪一侧延展），导致：
+        //   - 用户拖拽/点击预览框时 applyOverviewUpdate 调 centerRect(viewportBounds)
+        //     -> 概览框相对容器居中（"点击时正确"）
+        //   - 松手后 rAF 触发 render -> Spot.Center 把 worldBounds 重新居中
+        //     -> 概览框跳到 worldBounds.center 与 viewportBounds.center 的差值方向
+        //     -> 表现为"松手后概览框跳回去，缩略块显示位置和主视图脱节"
+        // 修复：彻底交由我们自己在 applyOverviewUpdate / 初始化 / refreshOverview
+        // 路径调用 centerRect，单一锚点为 viewportBounds（与拖拽中的锚点一致），
+        // 消除 render 之间的居中模式切换。
         this.overview = new go.Overview(container, {
           observed: this.diagram,
-          contentAlignment: go.Spot.Center,
           'animationManager.isEnabled': false,
           // 强制使用高像素比渲染（至少为 2），大幅提升小地图的清晰度和视网膜屏幕支持
           'computePixelRatio': () => Math.max(window.devicePixelRatio || 1, 2)
@@ -191,6 +204,17 @@ export class FlowOverviewService {
           const newScale = Math.max(0.02, Math.min(0.5, Math.min(scaleX, scaleY)));
           this.overview.scale = newScale;
           this.lastOverviewScale = newScale;
+          // 【2026-05-09 根因修复配套】移除 contentAlignment: Spot.Center 后，
+          // 必须由我们自己保持容器内的居中。resize 改变 scale 会让上一次
+          // centerRect 设置的 position 失真，这里以当前主图视口锚点重新居中，
+          // 与 applyOverviewUpdate 路径保持同一锚点（viewportBounds），避免
+          // resize 时出现新的"模式切换"型跳变。
+          const vb = this.diagram.viewportBounds;
+          if (vb.isReal()) {
+            this.overview.centerRect(vb);
+          } else {
+            this.overview.centerRect(docBounds);
+          }
           this.logger.debug(`Overview 已刷新 - scale: ${newScale}`);
         }
       }
@@ -599,18 +623,23 @@ export class FlowOverviewService {
               }
             }
 
-            // 【2026-05-09 回归修复】松手后第二帧起 usingManualViewportBounds=false，
-            // 若仅依赖 contentAlignment: Spot.Center，会把 fixedBounds（worldBounds=
-            // nodeBounds∪vb 的扩展矩形）几何中心对准容器中心。当 viewport 飘到节点群
-            // 之外时，worldBounds 的几何中心 ≠ viewportBounds 的中心，会让小地图整体
-            // 朝节点群方向"跳"一段距离（方向取决于 viewport 在节点群的哪一侧，因此
-            // 表现为"无窗口尺寸变化、不是固定方向"）。
-            // 当 viewport 在节点群外时，始终以 viewport 中心为锚，避免该跳变；
-            // 当 viewport 在节点群内时仍交给 Spot.Center（worldBounds≈nodeBounds，
-            // 几何中心和视口中心几乎重合），保持原有居中行为。
-            if (usingManualViewportBounds || isViewportOutside) {
-              this.overview.centerRect(viewportBounds);
-            }
+            // 【2026-05-09 根因修复】统一用 viewportBounds 作为唯一居中锚点。
+            //
+            // 之前条件 `usingManualViewportBounds || isViewportOutside` 假设：
+            //   "viewport 在节点群内时，worldBounds≈nodeBounds，几何中心和
+            //    viewportBounds.center 几乎重合，可以交给 contentAlignment: Spot.Center"
+            // 但 worldBounds = nodeBounds ∪ viewportBounds 在节点群非对称延展时
+            // 与 viewportBounds.center 偏差很大，导致：
+            //   - 拖拽/点击：apply 这里调 centerRect(viewportBounds) → 概览相对
+            //     viewport 居中；
+            //   - 松手后 rAF 触发 render：Spot.Center 把 worldBounds 重新居中 →
+            //     概览整体偏移 → 概览框相对容器跳到 worldBounds.center 与
+            //     viewportBounds.center 的差值方向 → "松手跳回去 / 缩略块和主
+            //     视图脱节" 的视觉跳变。
+            // 修复：构造函数已移除 contentAlignment: Spot.Center；这里也无条件
+            // 以 viewportBounds 为锚点，让拖拽中、释放帧、稳态、resize 全程
+            // 共享同一居中规则，从根源消除模式切换。
+            this.overview.centerRect(viewportBounds);
           }
         }
         
