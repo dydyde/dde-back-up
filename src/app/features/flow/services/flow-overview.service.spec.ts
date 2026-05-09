@@ -238,7 +238,7 @@ describe('FlowOverviewService', () => {
     expect(followUpCall.y).toBe(releaseY);
   });
 
-  it('松开预览框时拦截默认 pointerup，避免 GoJS 再按鼠标点二次居中', () => {
+  it('should intercept default pointerup to prevent GoJS double-centering on release', () => {
     const overview = service.overviewInstance as unknown as {
       centerRect: ReturnType<typeof vi.fn>;
     };
@@ -256,7 +256,7 @@ describe('FlowOverviewService', () => {
     expect(finalCenteredBounds.y).toBe(-180);
   });
 
-  it('没有最终 pointermove 时仍按 pointerup 坐标提交释放视口', () => {
+  it('should apply pointerup coordinates when the final pointermove is missing', () => {
     const overview = service.overviewInstance as unknown as {
       centerRect: ReturnType<typeof vi.fn>;
     };

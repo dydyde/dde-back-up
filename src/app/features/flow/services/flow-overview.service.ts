@@ -857,7 +857,15 @@ export class FlowOverviewService {
         this.logger.debug('setPointerCapture 不可用:', e);
       }
     };
-    
+
+    const applyManualBoxDragFromEvent = (ev: PointerEvent | MouseEvent): void => {
+      if (!isManualBoxDrag) return;
+      const pt = getOverviewDocPointFromClient(ev.clientX, ev.clientY);
+      if (pt) {
+        applyManualBoxDrag(pt);
+      }
+    };
+
     const onPointerMove = (ev: PointerEvent): void => {
       if (!isDraggingBox || !this.overview) return;
 
@@ -866,19 +874,8 @@ export class FlowOverviewService {
       }
 
       if (capturedPointerId !== null && ev.pointerId !== capturedPointerId) return;
-      const pt = getOverviewDocPointFromClient(ev.clientX, ev.clientY);
-      if (pt && isManualBoxDrag) {
-        applyManualBoxDrag(pt);
-      }
+      applyManualBoxDragFromEvent(ev);
       this.overviewScheduleUpdate?.('viewport');
-    };
-
-    const applyFinalManualBoxDrag = (ev: PointerEvent | MouseEvent): void => {
-      if (!isManualBoxDrag) return;
-      const pt = getOverviewDocPointFromClient(ev.clientX, ev.clientY);
-      if (pt) {
-        applyManualBoxDrag(pt);
-      }
     };
 
     const resetOverviewInteractionState = (): void => {
@@ -923,12 +920,10 @@ export class FlowOverviewService {
       const wasDraggingBox = isDraggingBox;
       const wasInteracting = this.isOverviewInteracting;
 
-      if (wasDraggingBox && ev) {
-        if (capturedPointerId !== null && ev.pointerId !== capturedPointerId) return;
-        if (isManualBoxDrag) {
-          stopEventForManualDrag(ev);
-          applyFinalManualBoxDrag(ev);
-        }
+      if (wasDraggingBox && ev && capturedPointerId !== null && ev.pointerId !== capturedPointerId) return;
+      if (wasDraggingBox && ev && isManualBoxDrag) {
+        stopEventForManualDrag(ev);
+        applyManualBoxDragFromEvent(ev);
       }
 
       resetOverviewInteractionState();
@@ -972,10 +967,7 @@ export class FlowOverviewService {
       if (isManualBoxDrag) {
         stopEventForManualDrag(ev);
       }
-      const pt = getOverviewDocPointFromClient(ev.clientX, ev.clientY);
-      if (pt && isManualBoxDrag) {
-        applyManualBoxDrag(pt);
-      }
+      applyManualBoxDragFromEvent(ev);
       this.overviewScheduleUpdate?.('viewport');
     };
 
@@ -995,17 +987,14 @@ export class FlowOverviewService {
     };
     const onMouseMove = (ev: MouseEvent): void => {
       if (!isMouseDraggingBox) return;
-      const pt = getOverviewDocPointFromClient(ev.clientX, ev.clientY);
-      if (pt) {
-        applyManualBoxDrag(pt);
-      }
+      applyManualBoxDragFromEvent(ev);
       this.overviewScheduleUpdate?.('viewport');
     };
     const onMouseUp = (ev: MouseEvent): void => {
       if (!isMouseDraggingBox) return;
       if (isManualBoxDrag) {
         stopEventForManualDrag(ev);
-        applyFinalManualBoxDrag(ev);
+        applyManualBoxDragFromEvent(ev);
       }
       resetOverviewInteractionState();
       this.overviewBoundsCache = '';
