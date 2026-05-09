@@ -27,7 +27,7 @@ DECLARE
   v_user UUID := auth.uid();
   v_op_id UUID := (payload->>'operation_id')::UUID;
   v_protocol INTEGER := COALESCE((payload->>'protocol_version')::INTEGER, 0);
-  v_local_updated TIMESTAMPTZ := NULLIF(COALESCE(payload->>'base_updated_at', payload->'task'->>'updated_at', payload->'task'->>'updatedAt'), '')::TIMESTAMPTZ;
+  v_local_updated TIMESTAMPTZ := NULLIF(COALESCE(payload->'task'->>'updated_at', payload->'task'->>'updatedAt', payload->>'base_updated_at'), '')::TIMESTAMPTZ;
   v_client_epoch BIGINT := COALESCE((payload->>'deployment_epoch')::BIGINT, 0);
   v_deployment_target TEXT := payload->>'deployment_target';
   v_task JSONB := payload->'task';
@@ -49,6 +49,8 @@ BEGIN
   IF v_op_id IS NULL OR v_task_id IS NULL OR v_project_id IS NULL THEN
     RETURN jsonb_build_object('status', 'unauthorized', 'reason', 'missing required fields');
   END IF;
+
+  PERFORM pg_advisory_xact_lock(hashtext('sync_upsert_task'), hashtext(v_task_id::TEXT));
 
   SELECT * INTO v_log_existing FROM public.sync_operation_log WHERE operation_id = v_op_id;
   IF FOUND THEN
@@ -133,7 +135,7 @@ DECLARE
   v_user UUID := auth.uid();
   v_op_id UUID := (payload->>'operation_id')::UUID;
   v_protocol INTEGER := COALESCE((payload->>'protocol_version')::INTEGER, 0);
-  v_local_updated TIMESTAMPTZ := NULLIF(COALESCE(payload->>'base_updated_at', payload->'connection'->>'updated_at', payload->'connection'->>'updatedAt'), '')::TIMESTAMPTZ;
+  v_local_updated TIMESTAMPTZ := NULLIF(COALESCE(payload->'connection'->>'updated_at', payload->'connection'->>'updatedAt', payload->>'base_updated_at'), '')::TIMESTAMPTZ;
   v_client_epoch BIGINT := COALESCE((payload->>'deployment_epoch')::BIGINT, 0);
   v_deployment_target TEXT := payload->>'deployment_target';
   v_client_git TEXT := payload->>'client_git_sha';
@@ -145,6 +147,7 @@ DECLARE
   v_min_epoch BIGINT;
   v_existing_updated TIMESTAMPTZ;
   v_existing_owner UUID;
+  v_existing_project_id UUID;
   v_log_existing RECORD;
   v_result JSONB;
   v_written_updated TIMESTAMPTZ;
@@ -152,6 +155,8 @@ BEGIN
   IF v_user IS NULL OR v_op_id IS NULL OR v_conn_id IS NULL OR v_project_id IS NULL THEN
     RETURN jsonb_build_object('status', 'unauthorized', 'reason', 'missing required fields');
   END IF;
+
+  PERFORM pg_advisory_xact_lock(hashtext('sync_upsert_connection'), hashtext(v_conn_id::TEXT));
 
   SELECT * INTO v_log_existing FROM public.sync_operation_log WHERE operation_id = v_op_id;
   IF FOUND THEN
@@ -191,7 +196,38 @@ BEGIN
     RETURN jsonb_build_object('status', 'unauthorized', 'reason', 'project_not_owned');
   END IF;
 
-  SELECT c.updated_at INTO v_existing_updated FROM public.connections c WHERE c.id = v_conn_id;
+  IF NOT EXISTS (
+    SELECT 1
+    FROM public.tasks source_task
+    JOIN public.tasks target_task ON target_task.id = (v_conn->>'target_id')::UUID
+    WHERE source_task.id = (v_conn->>'source_id')::UUID
+      AND source_task.project_id = v_project_id
+      AND target_task.project_id = v_project_id
+  ) THEN
+    INSERT INTO public.sync_operation_log (operation_id, user_id, entity_type, entity_id,
+      status, reject_reason, protocol_version, deployment_epoch, deployment_target, client_git_sha, client_origin)
+    VALUES (v_op_id, v_user, 'connection', v_conn_id, 'unauthorized',
+      'connection_endpoint_not_in_project', v_protocol, v_client_epoch, v_deployment_target, v_client_git, v_client_origin);
+    RETURN jsonb_build_object('status', 'unauthorized', 'reason', 'connection_endpoint_not_in_project');
+  END IF;
+
+  SELECT c.updated_at, c.project_id, p.owner_id
+    INTO v_existing_updated, v_existing_project_id, v_existing_owner
+    FROM public.connections c
+    JOIN public.projects p ON p.id = c.project_id
+    WHERE c.id = v_conn_id
+    FOR UPDATE;
+
+  IF v_existing_project_id IS NOT NULL
+    AND (v_existing_project_id <> v_project_id OR v_existing_owner IS DISTINCT FROM v_user)
+  THEN
+    INSERT INTO public.sync_operation_log (operation_id, user_id, entity_type, entity_id,
+      status, reject_reason, protocol_version, deployment_epoch, deployment_target, client_git_sha, client_origin)
+    VALUES (v_op_id, v_user, 'connection', v_conn_id, 'unauthorized',
+      'connection_owned_by_other_project', v_protocol, v_client_epoch, v_deployment_target, v_client_git, v_client_origin);
+    RETURN jsonb_build_object('status', 'unauthorized', 'reason', 'connection_owned_by_other_project');
+  END IF;
+
   IF v_existing_updated IS NOT NULL
     AND (v_local_updated IS NULL OR v_local_updated < v_existing_updated)
   THEN
@@ -215,7 +251,7 @@ BEGIN
     NULLIF(v_conn->>'title', ''),
     NULLIF(v_conn->>'description', ''),
     NULLIF(v_conn->>'deleted_at', '')::TIMESTAMPTZ,
-    NOW()
+    COALESCE(v_local_updated, NOW())
   )
   ON CONFLICT (id) DO UPDATE
     SET source_id = EXCLUDED.source_id,
@@ -223,7 +259,7 @@ BEGIN
         title = EXCLUDED.title,
         description = EXCLUDED.description,
         deleted_at = EXCLUDED.deleted_at,
-        updated_at = NOW()
+        updated_at = COALESCE(v_local_updated, NOW())
   RETURNING c.updated_at INTO v_written_updated;
 
   v_result := jsonb_build_object(
@@ -254,13 +290,14 @@ DECLARE
   v_user UUID := auth.uid();
   v_op_id UUID := (payload->>'operation_id')::UUID;
   v_protocol INTEGER := COALESCE((payload->>'protocol_version')::INTEGER, 0);
-  v_local_updated TIMESTAMPTZ := NULLIF(COALESCE(payload->>'base_updated_at', payload->'entry'->>'updated_at', payload->'entry'->>'updatedAt'), '')::TIMESTAMPTZ;
+  v_local_updated TIMESTAMPTZ := NULLIF(COALESCE(payload->'entry'->>'updated_at', payload->'entry'->>'updatedAt', payload->>'base_updated_at'), '')::TIMESTAMPTZ;
   v_client_epoch BIGINT := COALESCE((payload->>'deployment_epoch')::BIGINT, 0);
   v_deployment_target TEXT := payload->>'deployment_target';
   v_client_git TEXT := payload->>'client_git_sha';
   v_client_origin TEXT := payload->>'client_origin';
   v_entry JSONB := payload->'entry';
   v_entry_id UUID := (v_entry->>'id')::UUID;
+  v_project_id UUID := NULLIF(v_entry->>'project_id', '')::UUID;
   v_min_protocol INTEGER;
   v_min_epoch BIGINT;
   v_existing_updated TIMESTAMPTZ;
@@ -272,6 +309,8 @@ BEGIN
   IF v_user IS NULL OR v_op_id IS NULL OR v_entry_id IS NULL THEN
     RETURN jsonb_build_object('status', 'unauthorized', 'reason', 'missing required fields');
   END IF;
+
+  PERFORM pg_advisory_xact_lock(hashtext('sync_upsert_blackbox_entry'), hashtext(v_entry_id::TEXT));
 
   SELECT * INTO v_log_existing FROM public.sync_operation_log WHERE operation_id = v_op_id;
   IF FOUND THEN
@@ -303,7 +342,8 @@ BEGIN
   END IF;
 
   SELECT b.updated_at, b.user_id INTO v_existing_updated, v_existing_owner
-    FROM public.black_box_entries b WHERE b.id = v_entry_id;
+    FROM public.black_box_entries b WHERE b.id = v_entry_id
+    FOR UPDATE;
 
   IF v_existing_owner IS NOT NULL AND v_existing_owner <> v_user THEN
     INSERT INTO public.sync_operation_log (operation_id, user_id, entity_type, entity_id,
@@ -311,6 +351,16 @@ BEGIN
     VALUES (v_op_id, v_user, 'blackbox', v_entry_id, 'unauthorized',
       'entry_owned_by_other', v_protocol, v_client_epoch, v_deployment_target, v_client_git, v_client_origin);
     RETURN jsonb_build_object('status', 'unauthorized', 'reason', 'entry_owned_by_other');
+  END IF;
+
+  IF v_project_id IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM public.projects p WHERE p.id = v_project_id AND p.owner_id = v_user
+  ) THEN
+    INSERT INTO public.sync_operation_log (operation_id, user_id, entity_type, entity_id,
+      status, reject_reason, protocol_version, deployment_epoch, deployment_target, client_git_sha, client_origin)
+    VALUES (v_op_id, v_user, 'blackbox', v_entry_id, 'unauthorized',
+      'project_not_owned', v_protocol, v_client_epoch, v_deployment_target, v_client_git, v_client_origin);
+    RETURN jsonb_build_object('status', 'unauthorized', 'reason', 'project_not_owned');
   END IF;
 
   IF v_existing_updated IS NOT NULL
@@ -346,11 +396,11 @@ BEGIN
   VALUES (
     v_entry_id,
     v_user,
-    NULLIF(v_entry->>'project_id', '')::UUID,
+    v_project_id,
     v_entry->>'content',
     COALESCE(NULLIF(v_entry->>'date','')::DATE, CURRENT_DATE),
     COALESCE(NULLIF(v_entry->>'created_at','')::TIMESTAMPTZ, NOW()),
-    NOW(),
+    COALESCE(v_local_updated, NOW()),
     COALESCE((v_entry->>'is_read')::BOOLEAN, FALSE),
     COALESCE((v_entry->>'is_completed')::BOOLEAN, FALSE),
     COALESCE((v_entry->>'is_archived')::BOOLEAN, FALSE),
@@ -363,7 +413,7 @@ BEGIN
     SET content = EXCLUDED.content,
         project_id = EXCLUDED.project_id,
         date = EXCLUDED.date,
-        updated_at = NOW(),
+        updated_at = COALESCE(v_local_updated, NOW()),
         is_read = EXCLUDED.is_read,
         is_completed = EXCLUDED.is_completed,
         is_archived = EXCLUDED.is_archived,
@@ -401,7 +451,7 @@ DECLARE
   v_user UUID := auth.uid();
   v_op_id UUID := (payload->>'operation_id')::UUID;
   v_protocol INTEGER := COALESCE((payload->>'protocol_version')::INTEGER, 0);
-  v_local_updated TIMESTAMPTZ := NULLIF(COALESCE(payload->>'base_updated_at', payload->'project'->>'updated_at', payload->'project'->>'updatedAt'), '')::TIMESTAMPTZ;
+  v_local_updated TIMESTAMPTZ := NULLIF(COALESCE(payload->'project'->>'updated_at', payload->'project'->>'updatedAt', payload->>'base_updated_at'), '')::TIMESTAMPTZ;
   v_client_epoch BIGINT := COALESCE((payload->>'deployment_epoch')::BIGINT, 0);
   v_deployment_target TEXT := payload->>'deployment_target';
   v_client_git TEXT := payload->>'client_git_sha';
@@ -420,6 +470,8 @@ BEGIN
   IF v_user IS NULL OR v_op_id IS NULL OR v_project_id IS NULL THEN
     RETURN jsonb_build_object('status', 'unauthorized', 'reason', 'missing required fields');
   END IF;
+
+  PERFORM pg_advisory_xact_lock(hashtext('sync_upsert_project'), hashtext(v_project_id::TEXT));
 
   SELECT * INTO v_log_existing FROM public.sync_operation_log WHERE operation_id = v_op_id;
   IF FOUND THEN
@@ -477,7 +529,7 @@ BEGIN
   END IF;
 
   IF v_existing_updated IS NULL THEN
-    INSERT INTO public.projects AS p (id, owner_id, title, description, version, migrated_to_v2, deleted_at)
+    INSERT INTO public.projects AS p (id, owner_id, title, description, version, migrated_to_v2, deleted_at, updated_at)
     VALUES (
       v_project_id,
       v_user,
@@ -485,7 +537,8 @@ BEGIN
       NULLIF(v_project->>'description', ''),
       COALESCE((v_project->>'version')::INTEGER, 1),
       COALESCE((v_project->>'migrated_to_v2')::BOOLEAN, TRUE),
-      NULLIF(v_project->>'deleted_at', '')::TIMESTAMPTZ
+      NULLIF(v_project->>'deleted_at', '')::TIMESTAMPTZ,
+      COALESCE(v_local_updated, NOW())
     )
     RETURNING p.updated_at INTO v_written_updated;
   ELSE
@@ -507,7 +560,7 @@ BEGIN
         version = COALESCE((v_project->>'version')::INTEGER, p.version, 1),
         migrated_to_v2 = COALESCE((v_project->>'migrated_to_v2')::BOOLEAN, TRUE),
         deleted_at = NULLIF(v_project->>'deleted_at', '')::TIMESTAMPTZ,
-        updated_at = NOW()
+        updated_at = COALESCE(v_local_updated, NOW())
     WHERE p.id = v_project_id
     RETURNING p.updated_at INTO v_written_updated;
   END IF;
@@ -528,6 +581,14 @@ BEGIN
 END;
 $$;
 
+REVOKE ALL ON FUNCTION public.sync_upsert_task(JSONB) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.sync_upsert_connection(JSONB) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.sync_upsert_blackbox_entry(JSONB) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.sync_upsert_project(JSONB) FROM PUBLIC, anon;
+
+GRANT EXECUTE ON FUNCTION public.sync_upsert_task(JSONB) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.sync_upsert_connection(JSONB) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.sync_upsert_blackbox_entry(JSONB) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.sync_upsert_project(JSONB) TO authenticated;
 
 COMMENT ON FUNCTION public.sync_upsert_task(JSONB) IS
