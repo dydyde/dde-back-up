@@ -707,7 +707,28 @@ export class FlowOverviewService {
     let isManualBoxDrag = false;
     let isMouseDraggingBox = false;
     let isResettingOverviewInteraction = false;
-    let manualBoxDragOffset: { dx: number; dy: number } | null = null;
+    /**
+     * 【2026-05-09 根因修复】拖拽开始时捕获的稳定映射参数。
+     *
+     * 起因：拖拽期间 applyOverviewUpdate 会同步修改 overview.scale / overview.position
+     * （smartLerp、setOverviewFixedBounds、centerRect(viewportBounds)），而
+     * `transformViewToDoc` 依赖 overview 的当前 scale + position 做反变换，
+     * 导致同一个 clientX/Y 在不同帧映射到不同的 document 点。这种漂移在拖拽
+     * 过程中被白框跟随光标的视觉反馈掩盖（每帧 updateAllTargetBindings 强制
+     * 同步），但松手时累计的漂移就显现为：白框落点 ≠ 用户期望的 document 位置，
+     * 主视图实际滚到的位置和小地图缩略块呈现的内容不一致。
+     *
+     * 修复：在 beginManualBoxDrag 一次性捕获 dragStartScale + dragStartBoxCenterDoc
+     * + dragStartClientPt + dragStartContainerRect。后续帧基于 client 空间的
+     * 鼠标位移（除以稳定 scale）累加到起始 box 中心，得到 document 空间的目标
+     * box 中心。如此 client → doc 的映射在整个拖拽周期内恒定，不受 overview
+     * 自身 scale/position 变化影响，松手时位置和鼠标位置精确对应。
+     */
+    let manualDragStartClientX = 0;
+    let manualDragStartClientY = 0;
+    let manualDragStartViewToDocFactorX = 1;
+    let manualDragStartViewToDocFactorY = 1;
+    let manualDragStartBoxCenterDoc: go.Point | null = null;
     let manualDragViewportSize: { w: number; h: number } | null = null;
 
     const getOverviewDocPointFromClient = (clientX: number, clientY: number): go.Point | null => {
@@ -716,6 +737,28 @@ export class FlowOverviewService {
       const viewX = clientX - rect.left;
       const viewY = clientY - rect.top;
       return this.overview.transformViewToDoc(new go.Point(viewX, viewY));
+    };
+
+    /**
+     * 【2026-05-09 根因修复】使用拖拽起始时捕获的稳定 transform 计算 document 点。
+     * 不依赖 overview 当前 scale/position，避免拖拽期间 overview 自适应缩放/居中
+     * 导致同一 client 坐标在不同帧映射到不同 document 点的漂移。
+     *
+     * 通过 (clientX/Y - 起始 client) 在 view 空间得到位移，再乘以起始时刻的
+     * view→doc 因子（由 transformViewToDoc 在 (0,0)/(1,0)/(0,1) 三点反推），
+     * 等价于"用拖拽起始一刻的 transformViewToDoc 处理当前坐标"，但不会被
+     * 后续 overview transform 变化污染。
+     */
+    const computeStableDocCenterFromClient = (clientX: number, clientY: number): go.Point | null => {
+      if (!manualDragStartBoxCenterDoc) return null;
+      const viewDeltaX = (clientX - manualDragStartClientX);
+      const viewDeltaY = (clientY - manualDragStartClientY);
+      const docDeltaX = viewDeltaX * manualDragStartViewToDocFactorX;
+      const docDeltaY = viewDeltaY * manualDragStartViewToDocFactorY;
+      return new go.Point(
+        manualDragStartBoxCenterDoc.x + docDeltaX,
+        manualDragStartBoxCenterDoc.y + docDeltaY
+      );
     };
 
     const stopEventForManualDrag = (ev: Event): void => {
@@ -761,15 +804,41 @@ export class FlowOverviewService {
       );
     };
 
-    const beginManualBoxDrag = (pt: go.Point): void => {
+    const beginManualBoxDrag = (pt: go.Point, clientX: number, clientY: number): void => {
       if (!this.diagram || !this.overview) return;
       const vb = this.diagram.viewportBounds;
       if (!vb.isReal()) return;
 
       const boxBounds = this.overview.box?.actualBounds;
       const boxCenter = boxBounds?.isReal() ? boxBounds.center : pt;
-      manualBoxDragOffset = { dx: pt.x - boxCenter.x, dy: pt.y - boxCenter.y };
       manualDragViewportSize = { w: vb.width, h: vb.height };
+
+      // 【2026-05-09 根因修复】捕获稳定 transform 参数。
+      // 这些值在整个拖拽周期内保持不变，确保 client → doc 映射恒定，
+      // 不受 applyOverviewUpdate 中途修改 overview.scale/position 影响。
+      manualDragStartClientX = clientX;
+      manualDragStartClientY = clientY;
+      // 通过 transformViewToDoc 在 (0,0)/(1,0)/(0,1) 三点反推 view→doc 线性因子，
+      // 拖拽全程使用这套起始映射，避免 overview.scale 变化造成 client 同坐标在
+      // 不同帧映射到不同 doc 点的累计漂移。
+      // 假设：GoJS Overview 的 view→doc 变换为「平移 + 等比缩放」，无旋转、
+      // 无非均匀缩放（factor.y 仅看 y 分量、factor.x 仅看 x 分量足够还原）。
+      // 这是 Overview 在所有现行模板下的实际行为，flow-overview 没有自定义
+      // angle/transform 的代码路径。
+      const startOrigin = this.overview.transformViewToDoc(new go.Point(0, 0));
+      const startUnitX = this.overview.transformViewToDoc(new go.Point(1, 0));
+      const startUnitY = this.overview.transformViewToDoc(new go.Point(0, 1));
+      const factorX = startUnitX.x - startOrigin.x;
+      const factorY = startUnitY.y - startOrigin.y;
+      // factor 退化为 0 / 非有限数（overview 未就绪 / scale 极端）时不进入手动拖拽，
+      // 避免回退到 1 掩盖 0 缩放导致的错误位移。
+      if (!Number.isFinite(factorX) || !Number.isFinite(factorY) || factorX === 0 || factorY === 0) {
+        this.logger.debug('beginManualBoxDrag: 退化的 view→doc 映射，跳过手动拖拽初始化');
+        return;
+      }
+      manualDragStartViewToDocFactorX = factorX;
+      manualDragStartViewToDocFactorY = factorY;
+      manualDragStartBoxCenterDoc = boxCenter.copy();
 
       try { this.diagram.skipsUndoManager = true; } catch { /* noop */ }
       this.setOverviewUpdateDelay(FlowOverviewService.OVERVIEW_DRAG_UPDATE_DELAY_MS);
@@ -780,11 +849,20 @@ export class FlowOverviewService {
       updateOverviewBoxViewportBounds(boxCenter, pt);
     };
 
-    const applyManualBoxDrag = (pt: go.Point): void => {
-      if (!this.diagram || !isManualBoxDrag || !manualBoxDragOffset || !manualDragViewportSize) return;
+    const applyManualBoxDrag = (clientX: number, clientY: number): void => {
+      if (!this.diagram || !isManualBoxDrag || !manualDragViewportSize || !manualDragStartBoxCenterDoc) return;
 
-      const centerX = pt.x - manualBoxDragOffset.dx;
-      const centerY = pt.y - manualBoxDragOffset.dy;
+      // 【2026-05-09 根因修复】使用稳定 transform 推导 box 中心。
+      // 之前 const centerX = pt.x - offset.dx 中 pt 由 transformViewToDoc 实时计算，
+      // 而 transformViewToDoc 用的是 overview 当前 scale/position（在拖拽中被
+      // applyOverviewUpdate 同步修改），导致同一 clientX 在不同帧映射到不同
+      // document 点 —— 拖拽过程被白框跟手反馈掩盖，但松手时累计漂移让
+      // diagram.position 和小地图实际显示的视口位置不一致，主视图与预览框脱节。
+      const stableCenter = computeStableDocCenterFromClient(clientX, clientY);
+      if (!stableCenter) return;
+
+      const centerX = stableCenter.x;
+      const centerY = stableCenter.y;
       const boxCenter = new go.Point(centerX, centerY);
       const desiredPos = new go.Point(
         centerX - manualDragViewportSize.w / 2,
@@ -799,7 +877,9 @@ export class FlowOverviewService {
       // 【2026-04-20 回归修复】同步推导 fakeViewportBounds，确保 applyOverviewUpdate
       // 在部分浏览器 ViewportBoundsChanged 被合并/延迟的情况下仍能跟手刷新 scale
       // 与 fixedBounds，让小地图里的任务块随预览框位置实时重新排布。
-      updateOverviewBoxViewportBounds(boxCenter, pt);
+      // 这里直接传 boxCenter 作为 centerOverride，第二参（fallbackDocPt）用不到 ——
+      // 拖拽中我们已知准确白框中心，无需 fallback。
+      updateOverviewBoxViewportBounds(boxCenter);
 
       if (this.overview) {
         this.overview.updateAllTargetBindings();
@@ -810,8 +890,8 @@ export class FlowOverviewService {
     const endManualBoxDrag = (): void => {
       if (!isManualBoxDrag) return;
       isManualBoxDrag = false;
-      manualBoxDragOffset = null;
       manualDragViewportSize = null;
+      manualDragStartBoxCenterDoc = null;
       this.setOverviewUpdateDelay(FlowOverviewService.OVERVIEW_IDLE_UPDATE_DELAY_MS);
       if (this.diagram) {
         try { this.diagram.skipsUndoManager = false; } catch { /* noop */ }
@@ -840,7 +920,7 @@ export class FlowOverviewService {
           this.logger.debug('Overview box setPointerCapture 不可用:', e);
         }
 
-        beginManualBoxDrag(pt);
+        beginManualBoxDrag(pt, ev.clientX, ev.clientY);
         this.overviewBoundsCache = '';
         this.overviewScheduleUpdate?.('viewport');
         return;
@@ -860,10 +940,10 @@ export class FlowOverviewService {
 
     const applyManualBoxDragFromEvent = (ev: PointerEvent | MouseEvent): void => {
       if (!isManualBoxDrag) return;
-      const pt = getOverviewDocPointFromClient(ev.clientX, ev.clientY);
-      if (pt) {
-        applyManualBoxDrag(pt);
-      }
+      // 【2026-05-09 根因修复】直接传 client 坐标，让 applyManualBoxDrag 内部使用
+      // 拖拽起始时捕获的稳定 transform 计算 document 位移，避免依赖
+      // overview.transformViewToDoc（其结果会随 overview.scale/position 漂移）。
+      applyManualBoxDrag(ev.clientX, ev.clientY);
     };
 
     const onPointerMove = (ev: PointerEvent): void => {
@@ -980,7 +1060,7 @@ export class FlowOverviewService {
         isMouseDraggingBox = true;
         this.isOverviewBoxDragging = true;
         stopEventForManualDrag(ev);
-        beginManualBoxDrag(pt);
+        beginManualBoxDrag(pt, ev.clientX, ev.clientY);
         this.overviewBoundsCache = '';
         this.overviewScheduleUpdate?.('viewport');
       }
