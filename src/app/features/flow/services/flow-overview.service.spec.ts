@@ -209,6 +209,35 @@ describe('FlowOverviewService', () => {
     expect(finalCenteredBounds.y).toBe(diagramPosition.y);
   });
 
+  it('松开后续视口刷新仍以 viewport 中心为锚（避免方向不定的跳变）', () => {
+    const overview = service.overviewInstance as unknown as {
+      centerRect: ReturnType<typeof vi.fn>;
+    };
+
+    // 拖拽预览框，让 diagram.position 远离节点群，使 viewportBounds 落在 nodeBounds 之外
+    dispatchPointer('pointerdown', 20, 20);
+    vi.runOnlyPendingTimers();
+    dispatchPointer('pointermove', 500, 400);
+    vi.runOnlyPendingTimers();
+    dispatchPointer('pointerup', 500, 400);
+    vi.runOnlyPendingTimers();
+
+    const callsAfterRelease = overview.centerRect.mock.calls.length;
+    const releaseX = diagramPosition.x;
+    const releaseY = diagramPosition.y;
+
+    // 模拟松手后第二帧的 ViewportBoundsChanged（位置不再变，但 GoJS 会再触发一次）
+    viewportListener?.();
+    vi.runOnlyPendingTimers();
+
+    expect(overview.centerRect.mock.calls.length).toBeGreaterThan(callsAfterRelease);
+    const followUpCall = overview.centerRect.mock.calls.at(-1)?.[0] as InstanceType<typeof go.Rect>;
+    // 关键断言：后续帧仍以 viewport 中心为锚（x/y 与释放时的 diagram.position 一致），
+    // 而不是回退到 contentAlignment 的 fixedBounds 几何中心导致的偏移。
+    expect(followUpCall.x).toBe(releaseX);
+    expect(followUpCall.y).toBe(releaseY);
+  });
+
   function createDiagramMock(): go.Diagram {
     const listeners = new Map<string, () => void>();
     const diagram = {

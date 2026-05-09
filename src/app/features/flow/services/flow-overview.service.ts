@@ -599,7 +599,16 @@ export class FlowOverviewService {
               }
             }
 
-            if (usingManualViewportBounds) {
+            // 【2026-05-09 回归修复】松手后第二帧起 usingManualViewportBounds=false，
+            // 若仅依赖 contentAlignment: Spot.Center，会把 fixedBounds（worldBounds=
+            // nodeBounds∪vb 的扩展矩形）几何中心对准容器中心。当 viewport 飘到节点群
+            // 之外时，worldBounds 的几何中心 ≠ viewportBounds 的中心，会让小地图整体
+            // 朝节点群方向"跳"一段距离（方向取决于 viewport 在节点群的哪一侧，因此
+            // 表现为"无窗口尺寸变化、不是固定方向"）。
+            // 当 viewport 在节点群外时，始终以 viewport 中心为锚，避免该跳变；
+            // 当 viewport 在节点群内时仍交给 Spot.Center（worldBounds≈nodeBounds，
+            // 几何中心和视口中心几乎重合），保持原有居中行为。
+            if (usingManualViewportBounds || isViewportOutside) {
               this.overview.centerRect(viewportBounds);
             }
           }
