@@ -85,7 +85,7 @@ export const FEATURE_FLAGS = {
    * 是否启用 Realtime 订阅（替代轮询）
    * SYNC_CONFIG.REALTIME_ENABLED 通过 getter 自动引用此值，无需手动保持一致
    */
-    REALTIME_ENABLED: true, // 默认实时订阅，轮询仅作兜底，避免跨设备长时间不可见
+    REALTIME_ENABLED: false, // 默认使用轮询，避免受限网络下 WebSocket/heartbeat 错误刷屏
   /**
    * 是否启用增量同步优化
    * SYNC_CONFIG.DELTA_SYNC_ENABLED 通过 getter 自动引用此值，无需手动保持一致
