@@ -238,6 +238,41 @@ describe('FlowOverviewService', () => {
     expect(followUpCall.y).toBe(releaseY);
   });
 
+  it('should intercept default pointerup to prevent GoJS double-centering on release', () => {
+    const overview = service.overviewInstance as unknown as {
+      centerRect: ReturnType<typeof vi.fn>;
+    };
+    const bubblePointerUp = vi.fn();
+    container.addEventListener('pointerup', bubblePointerUp);
+
+    dispatchPointer('pointerdown', 20, 20);
+    vi.runOnlyPendingTimers();
+    dispatchPointer('pointerup', 120, 90);
+    vi.runOnlyPendingTimers();
+
+    expect(bubblePointerUp).not.toHaveBeenCalled();
+    const finalCenteredBounds = overview.centerRect.mock.calls.at(-1)?.[0] as InstanceType<typeof go.Rect>;
+    expect(finalCenteredBounds.x).toBe(-240);
+    expect(finalCenteredBounds.y).toBe(-180);
+  });
+
+  it('should apply pointerup coordinates when the final pointermove is missing', () => {
+    const overview = service.overviewInstance as unknown as {
+      centerRect: ReturnType<typeof vi.fn>;
+    };
+
+    dispatchPointer('pointerdown', 20, 20);
+    vi.runOnlyPendingTimers();
+    dispatchPointer('pointerup', 120, 90);
+    vi.runOnlyPendingTimers();
+
+    const finalCenteredBounds = overview.centerRect.mock.calls.at(-1)?.[0] as InstanceType<typeof go.Rect>;
+    expect(finalCenteredBounds.x).toBe(-240);
+    expect(finalCenteredBounds.y).toBe(-180);
+    expect(diagramPosition.x).toBe(-240);
+    expect(diagramPosition.y).toBe(-180);
+  });
+
   function createDiagramMock(): go.Diagram {
     const listeners = new Map<string, () => void>();
     const diagram = {

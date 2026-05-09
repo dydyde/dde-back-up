@@ -857,7 +857,15 @@ export class FlowOverviewService {
         this.logger.debug('setPointerCapture 不可用:', e);
       }
     };
-    
+
+    const applyManualBoxDragFromEvent = (ev: PointerEvent | MouseEvent): void => {
+      if (!isManualBoxDrag) return;
+      const pt = getOverviewDocPointFromClient(ev.clientX, ev.clientY);
+      if (pt) {
+        applyManualBoxDrag(pt);
+      }
+    };
+
     const onPointerMove = (ev: PointerEvent): void => {
       if (!isDraggingBox || !this.overview) return;
 
@@ -866,10 +874,7 @@ export class FlowOverviewService {
       }
 
       if (capturedPointerId !== null && ev.pointerId !== capturedPointerId) return;
-      const pt = getOverviewDocPointFromClient(ev.clientX, ev.clientY);
-      if (pt && isManualBoxDrag) {
-        applyManualBoxDrag(pt);
-      }
+      applyManualBoxDragFromEvent(ev);
       this.overviewScheduleUpdate?.('viewport');
     };
 
@@ -911,9 +916,16 @@ export class FlowOverviewService {
       isResettingOverviewInteraction = false;
     };
     
-    const onPointerUpLike = (): void => {
+    const onPointerUpLike = (ev?: PointerEvent): void => {
       const wasDraggingBox = isDraggingBox;
       const wasInteracting = this.isOverviewInteracting;
+
+      if (wasDraggingBox && ev && capturedPointerId !== null && ev.pointerId !== capturedPointerId) return;
+      if (wasDraggingBox && ev && isManualBoxDrag) {
+        stopEventForManualDrag(ev);
+        applyManualBoxDragFromEvent(ev);
+      }
+
       resetOverviewInteractionState();
       
       if (wasDraggingBox) {
@@ -955,10 +967,7 @@ export class FlowOverviewService {
       if (isManualBoxDrag) {
         stopEventForManualDrag(ev);
       }
-      const pt = getOverviewDocPointFromClient(ev.clientX, ev.clientY);
-      if (pt && isManualBoxDrag) {
-        applyManualBoxDrag(pt);
-      }
+      applyManualBoxDragFromEvent(ev);
       this.overviewScheduleUpdate?.('viewport');
     };
 
@@ -978,14 +987,15 @@ export class FlowOverviewService {
     };
     const onMouseMove = (ev: MouseEvent): void => {
       if (!isMouseDraggingBox) return;
-      const pt = getOverviewDocPointFromClient(ev.clientX, ev.clientY);
-      if (pt) {
-        applyManualBoxDrag(pt);
-      }
+      applyManualBoxDragFromEvent(ev);
       this.overviewScheduleUpdate?.('viewport');
     };
-    const onMouseUp = (): void => {
+    const onMouseUp = (ev: MouseEvent): void => {
       if (!isMouseDraggingBox) return;
+      if (isManualBoxDrag) {
+        stopEventForManualDrag(ev);
+        applyManualBoxDragFromEvent(ev);
+      }
       resetOverviewInteractionState();
       this.overviewBoundsCache = '';
       this.overviewScheduleUpdate?.('viewport');
@@ -993,19 +1003,19 @@ export class FlowOverviewService {
 
     const onWindowPointerUp = (ev: PointerEvent): void => {
       if (capturedPointerId !== null && ev.pointerId === capturedPointerId) {
-        onPointerUpLike();
+        onPointerUpLike(ev);
       }
     };
 
     this.zone.runOutsideAngular(() => {
       container.addEventListener('pointerdown', onPointerDown, { passive: false, capture: true });
       container.addEventListener('pointermove', onPointerMove, { passive: false, capture: true });
-      container.addEventListener('pointerup', onPointerUpLike, { passive: true, capture: true });
-      container.addEventListener('pointercancel', onPointerUpLike, { passive: true, capture: true });
-      container.addEventListener('lostpointercapture', onPointerUpLike, { passive: true, capture: true });
+      container.addEventListener('pointerup', onPointerUpLike, { passive: false, capture: true });
+      container.addEventListener('pointercancel', onPointerUpLike, { passive: false, capture: true });
+      container.addEventListener('lostpointercapture', onPointerUpLike, { passive: false, capture: true });
       window.addEventListener('pointermove', onWindowPointerMove, { passive: false });
-      window.addEventListener('pointerup', onWindowPointerUp, { passive: true });
-      window.addEventListener('pointercancel', onWindowPointerUp, { passive: true });
+      window.addEventListener('pointerup', onWindowPointerUp, { passive: false });
+      window.addEventListener('pointercancel', onWindowPointerUp, { passive: false });
 
       container.addEventListener('mousedown', onMouseDown, { passive: false, capture: true });
       window.addEventListener('mousemove', onMouseMove, { passive: true });
