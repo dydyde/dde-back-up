@@ -238,6 +238,35 @@ describe('FlowOverviewService', () => {
     expect(followUpCall.y).toBe(releaseY);
   });
 
+  it('松开预览框时拦截默认 pointerup，避免 GoJS 再按鼠标点二次居中', () => {
+    const bubblePointerUp = vi.fn();
+    container.addEventListener('pointerup', bubblePointerUp);
+
+    dispatchPointer('pointerdown', 20, 20);
+    vi.runOnlyPendingTimers();
+    dispatchPointer('pointerup', 120, 90);
+    vi.runOnlyPendingTimers();
+
+    expect(bubblePointerUp).not.toHaveBeenCalled();
+  });
+
+  it('没有最终 pointermove 时仍按 pointerup 坐标提交释放视口', () => {
+    const overview = service.overviewInstance as unknown as {
+      centerRect: ReturnType<typeof vi.fn>;
+    };
+
+    dispatchPointer('pointerdown', 20, 20);
+    vi.runOnlyPendingTimers();
+    dispatchPointer('pointerup', 120, 90);
+    vi.runOnlyPendingTimers();
+
+    const finalCenteredBounds = overview.centerRect.mock.calls.at(-1)?.[0] as InstanceType<typeof go.Rect>;
+    expect(finalCenteredBounds.x).toBe(-240);
+    expect(finalCenteredBounds.y).toBe(-180);
+    expect(diagramPosition.x).toBe(-240);
+    expect(diagramPosition.y).toBe(-180);
+  });
+
   function createDiagramMock(): go.Diagram {
     const listeners = new Map<string, () => void>();
     const diagram = {
