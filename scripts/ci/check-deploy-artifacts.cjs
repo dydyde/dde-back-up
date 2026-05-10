@@ -291,10 +291,29 @@ if (!existsFile(versionJsonPath)) {
 } else {
   try {
     const vj = JSON.parse(fs.readFileSync(versionJsonPath, 'utf-8'));
-    const required = ['gitSha', 'buildTime', 'environment', 'appVersion', 'deploymentTarget'];
+    const required = ['gitSha', 'buildTime', 'environment', 'appVersion', 'deploymentTarget', 'supabaseProjectAlias', 'sentryRelease', 'ngswHash'];
     const missing = required.filter((k) => !(k in vj));
-    if (missing.length > 0) fail(`version.json missing fields: ${missing.join(', ')}`);
-    else ok(`version.json valid (gitSha=${String(vj.gitSha).slice(0, 8)}, target=${vj.deploymentTarget})`);
+    if (missing.length > 0) {
+      fail(`version.json missing fields: ${missing.join(', ')}`);
+    } else if (typeof vj.gitSha !== 'string' || vj.gitSha.trim().length === 0) {
+      fail('version.json gitSha must be a non-empty string');
+    } else if (typeof vj.buildTime !== 'string' || Number.isNaN(Date.parse(vj.buildTime))) {
+      fail('version.json buildTime must be a valid ISO timestamp');
+    } else if (typeof vj.environment !== 'string' || vj.environment.trim().length === 0) {
+      fail('version.json environment must be a non-empty string');
+    } else if (typeof vj.appVersion !== 'string' || vj.appVersion.trim().length === 0) {
+      fail('version.json appVersion must be a non-empty string');
+    } else if (typeof vj.deploymentTarget !== 'string' || vj.deploymentTarget.trim().length === 0) {
+      fail('version.json deploymentTarget must be a non-empty string');
+    } else if (typeof vj.supabaseProjectAlias !== 'string' || vj.supabaseProjectAlias.trim().length === 0) {
+      fail('version.json supabaseProjectAlias must be a non-empty string');
+    } else if (typeof vj.sentryRelease !== 'string') {
+      fail('version.json sentryRelease must be a string');
+    } else if (existsFile(path.join(DIST, 'ngsw.json')) && (typeof vj.ngswHash !== 'string' || vj.ngswHash.trim().length === 0)) {
+      fail('version.json ngswHash must be a non-empty string when ngsw.json exists');
+    } else {
+      ok(`version.json valid (gitSha=${String(vj.gitSha).slice(0, 8)}, target=${vj.deploymentTarget})`);
+    }
     // 不得包含敏感字段
     const forbidden = ['supabaseAnonKey', 'sentryDsn', 'cloudflareAccountId', 'cloudflareApiToken'];
     const leaks = forbidden.filter((k) => k in vj);

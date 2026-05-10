@@ -54,11 +54,11 @@ describe('Cloudflare migration artifact contracts', () => {
     expect(workflow).toContain("NG_APP_SENTRY_DSN: ${{ secrets.NG_APP_SENTRY_DSN || vars.NG_APP_SENTRY_DSN || '' }}");
     expect(workflow).toContain('does not define NG_APP_SENTRY_DSN; Sentry error capture will be disabled on Cloudflare');
     expect(workflow).not.toContain('must define NG_APP_SENTRY_DSN so Sentry error capture is active on Cloudflare');
-    expect(workflow).toContain('NG_APP_SENTRY_DSN must be a valid public https Sentry browser DSN without a secret for o4508391513718784.ingest.us.sentry.io');
+    expect(workflow).toContain('NG_APP_SENTRY_DSN must be a valid public https Sentry browser DSN without a secret for one of: o4508391513718784.ingest.us.sentry.io, o4510686195023872.ingest.de.sentry.io');
     expect(workflow).toMatch(
       /if \[ -z "\$\{NG_APP_SENTRY_DSN:-\}" \]; then[\s\S]*::warning::\$public_config_source does not define NG_APP_SENTRY_DSN;[\s\S]*else[\s\S]*node -e "const dsn = process\.env\.NG_APP_SENTRY_DSN \|\| '';/,
     );
-    expect(workflow).toContain("url.hostname === allowedHost");
+    expect(workflow).toContain("allowedHosts.includes(url.hostname)");
     expect(workflow).toContain("url.password === ''");
     expect(workflow).toContain('/^[a-f0-9]{32}$/i.test(url.username)');
     expect(workflow).toContain('actions/checkout@v6');
@@ -220,6 +220,7 @@ describe('Cloudflare migration artifact contracts', () => {
     const connectSrc = csp.match(/connect-src\s+([^;]+);/)?.[1] ?? '';
 
     expect(connectSrc).toContain('https://o4508391513718784.ingest.us.sentry.io');
+    expect(connectSrc).toContain('https://o4510686195023872.ingest.de.sentry.io');
     expect(connectSrc).not.toContain('https://*.sentry.io');
     expect(connectSrc).not.toContain('https://*.ingest.sentry.io');
     expect(connectSrc).not.toContain('https://*.ingest.us.sentry.io');

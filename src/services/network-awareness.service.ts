@@ -308,7 +308,8 @@ export class NetworkAwarenessService {
         charging: this.isCharging()
       });
     } catch (err) {
-      this.logger.warn('Battery Status API 初始化失败', err);
+      // 浏览器常会因权限策略、隐私设置或实现差异拒绝 Battery API；这不影响核心功能。
+      this.logger.debug('Battery Status API 初始化失败，按不可用处理', err);
     }
   }
   

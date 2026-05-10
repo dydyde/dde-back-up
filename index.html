@@ -162,7 +162,7 @@
     - style-src: 允许内联样式、CDN 字体样式和 Cloudflare 注入资源
     - font-src: 允许 CDN 字体和 data: URI
     - img-src: 允许 data: 和 blob: URI（用于图片处理）
-    - connect-src: 允许 Supabase API、Sentry ingest、Groq 和 Cloudflare analytics beacon
+    - connect-src: 允许 Supabase API、Sentry regional ingest、Groq 和 Cloudflare analytics beacon
     - worker-src: 允许 Service Worker
     - manifest-src: 允许 PWA manifest（开发环境支持 Codespaces/远程 URL）
     
@@ -175,7 +175,7 @@
     style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://static.cloudflareinsights.com;
     font-src 'self' https://cdn.jsdelivr.net data:;
     img-src 'self' data: blob: https://*.supabase.co;
-    connect-src 'self' https://*.supabase.co wss://*.supabase.co https://o4508391513718784.ingest.us.sentry.io https://api.groq.com https://cloudflareinsights.com https://*.cloudflareinsights.com;
+    connect-src 'self' https://*.supabase.co wss://*.supabase.co https://o4508391513718784.ingest.us.sentry.io https://o4510686195023872.ingest.de.sentry.io https://api.groq.com https://cloudflareinsights.com https://*.cloudflareinsights.com;
     worker-src 'self' blob:;
     manifest-src 'self' https://github.dev https://*.github.dev https://*.app.github.dev;
     base-uri 'self';
@@ -202,6 +202,7 @@
   
   <!-- Sentry: 仅使用 dns-prefetch，因为首屏不会触发错误上报（P3 优化 2026-01-26）-->
   <link rel="dns-prefetch" href="https://o4508391513718784.ingest.us.sentry.io">
+  <link rel="dns-prefetch" href="https://o4510686195023872.ingest.de.sentry.io">
   
   <!-- ========== 性能优化：关键字体加载策略 ========== -->
   <!-- 【性能优化 2026-02-14】仅 preload 首屏最高频子集 subset-119 -->
