@@ -123,23 +123,50 @@ export class FlowOverviewService {
         vendorStyle['mozOsxFontSmoothing'] = 'grayscale';
 
         // 创建 Overview 实例
-        // 【2026-05-09 根因修复】不再设置 contentAlignment: go.Spot.Center。
-        // 起因：Spot.Center 会让 GoJS 在每次 render（包括松手后 rAF 调用
-        // updateAllTargetBindings + requestUpdate 触发的 render）把 fixedBounds
-        // 几何中心对准容器中心。当 viewport 在节点群内时，
-        // worldBounds = nodeBounds ∪ viewportBounds 的几何中心与 viewportBounds.center
-        // 偏差较大（取决于节点群在 viewport 哪一侧延展），导致：
-        //   - 用户拖拽/点击预览框时 applyOverviewUpdate 调 centerRect(viewportBounds)
-        //     -> 概览框相对容器居中（"点击时正确"）
-        //   - 松手后 rAF 触发 render -> Spot.Center 把 worldBounds 重新居中
-        //     -> 概览框跳到 worldBounds.center 与 viewportBounds.center 的差值方向
-        //     -> 表现为"松手后概览框跳回去，缩略块显示位置和主视图脱节"
-        // 修复：彻底交由我们自己在 applyOverviewUpdate / 初始化 / refreshOverview
-        // 路径调用 centerRect，单一锚点为 viewportBounds（与拖拽中的锚点一致），
-        // 消除 render 之间的居中模式切换。
+        // 【2026-05-10 根因修复】显式关闭 autoScale（默认是 AutoScale.Uniform）。
+        //
+        // 真正的根因：GoJS Overview 构造函数会执行 `this.autoScale = 2`
+        // (= AutoScale.Uniform)。从 GoJS 文档：
+        //   "When autoScale is set to a non-AutoScale.None value, ...
+        //    setting `scale` will do nothing."
+        // 这条规则同样适用于 `centerRect()`（其本质是基于当前 scale 设置 position），
+        // 因为 autoScale=Uniform 会在每次 render 时把 documentBounds（=我们设置的
+        // `fixedBounds = worldBounds = nodeBounds ∪ viewportBounds extended`）
+        // 自动适配并居中到 canvas，覆盖我们显式调用的 scale 与 centerRect。
+        //
+        // 这意味着此前所有 `applyOverviewUpdate` 中的
+        //   - `this.overview.scale = clampScale(smoothedScale)`
+        //   - `this.overview.centerRect(viewportBounds)`
+        // 都是 **静默 no-op**，真正决定 box 与节点相对位置的是 `worldBounds.center`，
+        // 而不是我们期望的 `viewportBounds.center`。
+        //
+        // 当 viewport 落在节点群内或节点群在 viewport 一侧延展时，
+        // `worldBounds.center ≠ viewportBounds.center`，导致：
+        //   - 拖拽中：fakeViewportBounds 每帧更新 → fixedBounds 每帧更新 →
+        //     autoScale 顺势平滑跟手（视觉上"看起来对"，但其实是巧合）。
+        //   - 松手后：进入 deferred bindings 路径，连续多次 render 用同一份
+        //     fixedBounds，autoScale 仍以 worldBounds.center 居中 → box 跳到
+        //     worldBounds.center 方向；用户看到"缩略块跳动且与主视图脱节"。
+        //   - 点击不动：press/release 各触发一次 apply，fixedBounds 在两个路径
+        //     之间因 padding/buffer 计算波动产生极微差异，autoScale 重适配 →
+        //     按下与松开各跳一次。
+        //
+        // 历史归因（2026-05-09 注释）把元凶认作 `contentAlignment: Spot.Center`
+        // 并将其移除是治标不治本：contentAlignment 仅在 autoScale=None 时生效，
+        // 在 autoScale=Uniform 下早就被忽略。真正驱动"重居中"的是 autoScale。
+        //
+        // 修复：显式 `autoScale: AutoScale.None`，让本服务里完整的手动控制
+        // 体系（setOverviewFixedBounds + scale 平滑插值 + centerRect(viewportBounds)
+        // + 稳定 view→doc 映射）真正生效，把视觉锚点恒定锁在 viewportBounds.center，
+        // 消除 drag/release/idle 三态切换时的"重居中跳变"。
+        //
+        // 兼容性：spec mock 在 `Object.assign(this, options)` 时仅赋值不处理
+        // autoScale 行为，因此现有断言（centerRect 调用次数与参数）保持成立；
+        // 已新增 `AutoScale.None` 到 mock 与 ts 类型扩展。
         this.overview = new go.Overview(container, {
           observed: this.diagram,
           'animationManager.isEnabled': false,
+          autoScale: go.AutoScale.None,
           // 强制使用高像素比渲染（至少为 2），大幅提升小地图的清晰度和视网膜屏幕支持
           'computePixelRatio': () => Math.max(window.devicePixelRatio || 1, 2)
         });
