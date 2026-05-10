@@ -107,6 +107,59 @@ const envDefinitions = {
   ],
 };
 
+function decodeBase64UrlJson(segment) {
+  if (!segment) return null;
+
+  const normalized = segment.replace(/-/g, '+').replace(/_/g, '/');
+  const paddingLength = normalized.length % 4;
+  const padded = paddingLength === 0 ? normalized : `${normalized}${'='.repeat(4 - paddingLength)}`;
+
+  try {
+    const decoded = Buffer.from(padded, 'base64').toString('utf8');
+    return JSON.parse(decoded);
+  } catch {
+    return null;
+  }
+}
+
+function extractSupabaseProjectRefFromUrl(url) {
+  if (!url) return null;
+
+  try {
+    const hostname = new URL(url).hostname;
+    if (!hostname.endsWith('.supabase.co')) {
+      return null;
+    }
+
+    return hostname.split('.')[0] || null;
+  } catch {
+    return null;
+  }
+}
+
+function extractLegacyAnonProjectRef(key) {
+  if (!key) return null;
+
+  const parts = key.split('.');
+  if (parts.length !== 3) {
+    return null;
+  }
+
+  const payload = decodeBase64UrlJson(parts[1]);
+  return typeof payload?.ref === 'string' ? payload.ref : null;
+}
+
+function getSupabaseProjectRefMismatch(url, key) {
+  const urlProjectRef = extractSupabaseProjectRefFromUrl(url);
+  const keyProjectRef = extractLegacyAnonProjectRef(key);
+
+  if (!urlProjectRef || !keyProjectRef || urlProjectRef === keyProjectRef) {
+    return null;
+  }
+
+  return { urlProjectRef, keyProjectRef };
+}
+
 /**
  * 验证环境变量
  */
@@ -194,6 +247,38 @@ function validateEnv() {
       console.log(`    ${colors.yellow(warning)}\n`);
     } else {
       console.log(`  ${colors.green('✓')} ${def.name}`);
+    }
+  }
+
+  const supabaseProjectMismatch = getSupabaseProjectRefMismatch(
+    env.NG_APP_SUPABASE_URL,
+    env.NG_APP_SUPABASE_ANON_KEY,
+  );
+  if (supabaseProjectMismatch) {
+    const issue = {
+      name: 'NG_APP_SUPABASE_URL / NG_APP_SUPABASE_ANON_KEY',
+      description: 'Supabase URL 与 legacy anon JWT 必须来自同一项目',
+      detail: `URL 指向项目 ${supabaseProjectMismatch.urlProjectRef}，但 ANON_KEY 属于项目 ${supabaseProjectMismatch.keyProjectRef}`,
+    };
+
+    if (isProduction) {
+      errors.push({
+        name: issue.name,
+        description: issue.description,
+        error: issue.detail,
+      });
+      console.log(`\n  ${colors.red('✗')} ${issue.name}`);
+      console.log(`    ${colors.red(issue.detail)}`);
+      console.log(`    ${colors.yellow(issue.description)}\n`);
+    } else {
+      warnings.push({
+        name: issue.name,
+        description: issue.description,
+        warning: issue.detail,
+      });
+      console.log(`\n  ${colors.yellow('⚠')} ${issue.name}`);
+      console.log(`    ${colors.yellow(issue.detail)} (开发环境允许继续，但会导致同步打回本地队列)`);
+      console.log(`    ${colors.yellow(issue.description)}\n`);
     }
   }
 

@@ -31,6 +31,59 @@ const parseNumberEnv = (value, fallback) => {
   return Number.isFinite(parsed) ? parsed : fallback;
 };
 
+const decodeBase64UrlJson = (segment) => {
+  if (!segment) return null;
+
+  const normalized = segment.replace(/-/g, '+').replace(/_/g, '/');
+  const paddingLength = normalized.length % 4;
+  const padded = paddingLength === 0 ? normalized : `${normalized}${'='.repeat(4 - paddingLength)}`;
+
+  try {
+    const decoded = Buffer.from(padded, 'base64').toString('utf8');
+    return JSON.parse(decoded);
+  } catch {
+    return null;
+  }
+};
+
+const extractSupabaseProjectRefFromUrl = (url) => {
+  if (!url) return null;
+
+  try {
+    const hostname = new URL(url).hostname;
+    if (!hostname.endsWith('.supabase.co')) {
+      return null;
+    }
+
+    return hostname.split('.')[0] || null;
+  } catch {
+    return null;
+  }
+};
+
+const extractLegacyAnonProjectRef = (key) => {
+  if (!key) return null;
+
+  const parts = key.split('.');
+  if (parts.length !== 3) {
+    return null;
+  }
+
+  const payload = decodeBase64UrlJson(parts[1]);
+  return typeof payload?.ref === 'string' ? payload.ref : null;
+};
+
+const getSupabaseProjectRefMismatch = (url, key) => {
+  const urlProjectRef = extractSupabaseProjectRefFromUrl(url);
+  const keyProjectRef = extractLegacyAnonProjectRef(key);
+
+  if (!urlProjectRef || !keyProjectRef || urlProjectRef === keyProjectRef) {
+    return null;
+  }
+
+  return { urlProjectRef, keyProjectRef };
+};
+
 // 启动阶段 Boot Flags（用于 index.html 预加载脚本）
 const disableIndexDataPreloadV1 = parseBooleanEnv(
   process.env.NG_APP_DISABLE_INDEX_DATA_PRELOAD_V1 || localEnv.NG_APP_DISABLE_INDEX_DATA_PRELOAD_V1,
@@ -180,6 +233,15 @@ if (useOfflineMode) {
   console.log('   如需云端同步功能，请在 .env.local 中设置 NG_APP_SUPABASE_URL 和 NG_APP_SUPABASE_ANON_KEY');
 }
 
+const supabaseProjectMismatch = useOfflineMode ? null : getSupabaseProjectRefMismatch(supabaseUrl, supabaseAnonKey);
+if (supabaseProjectMismatch) {
+  console.error('❌ Supabase 配置错误：URL 和 ANON_KEY 来自不同项目。');
+  console.error(`   NG_APP_SUPABASE_URL -> ${supabaseProjectMismatch.urlProjectRef}`);
+  console.error(`   NG_APP_SUPABASE_ANON_KEY -> ${supabaseProjectMismatch.keyProjectRef}`);
+  console.error('   请保持 NG_APP_SUPABASE_URL 与 NG_APP_SUPABASE_ANON_KEY 来自同一 Supabase 项目。');
+  process.exit(1);
+}
+
 if (!gojsLicenseKey) {
   console.log('ℹ️ 未找到 GoJS License Key，流程图将显示水印。');
   console.log('   如需移除水印，请在 .env.local 中设置 NG_APP_GOJS_LICENSE_KEY');
@@ -278,10 +340,12 @@ try {
   let indexHtml = fs.readFileSync(indexHtmlPath, 'utf-8');
   const urlPattern = /var supabaseUrl = '[^']*';/;
   const keyPattern = /var supabaseAnonKey = '[^']*';/;
+  const preloadUrlPattern = /var preloadSupabaseUrl = '[^']*';/;
 
   if (urlPattern.test(indexHtml) && keyPattern.test(indexHtml)) {
     indexHtml = indexHtml.replace(urlPattern, `var supabaseUrl = '${finalUrl}';`);
     indexHtml = indexHtml.replace(keyPattern, `var supabaseAnonKey = '${finalKey}';`);
+    indexHtml = indexHtml.replace(preloadUrlPattern, `var preloadSupabaseUrl = '${finalUrl}';`);
   } else {
     console.warn('⚠️ index.html 中未找到预加载脚本的 Supabase 配置占位符，跳过注入');
   }

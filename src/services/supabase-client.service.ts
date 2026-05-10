@@ -47,6 +47,33 @@ function decodeBase64UrlJson(segment: string): Record<string, unknown> | null {
   }
 }
 
+function extractSupabaseProjectRefFromUrl(url: string): string | null {
+  if (!url) return null;
+
+  try {
+    const hostname = new URL(url).hostname;
+    if (!hostname.endsWith('.supabase.co')) {
+      return null;
+    }
+
+    return hostname.split('.')[0] || null;
+  } catch {
+    return null;
+  }
+}
+
+function extractLegacyAnonProjectRef(key: string): string | null {
+  if (!key) return null;
+
+  const parts = key.split('.');
+  if (parts.length !== 3) {
+    return null;
+  }
+
+  const payload = decodeBase64UrlJson(parts[1]);
+  return typeof payload?.['ref'] === 'string' ? payload['ref'] : null;
+}
+
 @Injectable({
   providedIn: 'root'
 })
@@ -142,6 +169,22 @@ export class SupabaseClientService {
       const securityError = '[SECURITY] 检测到敏感密钥！前端不应使用 SERVICE_ROLE_KEY，请使用 ANON_KEY。';
       this.logger.error(securityError);
       this.configurationError.set('安全配置错误：请使用公开的 ANON_KEY 而非 SERVICE_ROLE_KEY');
+      this.isOfflineMode.set(true);
+      this.canInitialize = false;
+      this.supabaseUrl = '';
+      this.supabaseAnonKey = '';
+      return;
+    }
+
+    const urlProjectRef = extractSupabaseProjectRefFromUrl(supabaseUrl);
+    const legacyKeyProjectRef = extractLegacyAnonProjectRef(supabaseAnonKey);
+    if (urlProjectRef && legacyKeyProjectRef && urlProjectRef !== legacyKeyProjectRef) {
+      const configError = `Supabase 配置错误：URL 指向项目 ${urlProjectRef}，但 ANON_KEY 属于项目 ${legacyKeyProjectRef}。请保持 NG_APP_SUPABASE_URL 与 NG_APP_SUPABASE_ANON_KEY 来自同一项目。`;
+      this.logger.error('[CRITICAL] Supabase URL / ANON_KEY 项目不一致', {
+        urlProjectRef,
+        legacyKeyProjectRef,
+      });
+      this.configurationError.set(configError);
       this.isOfflineMode.set(true);
       this.canInitialize = false;
       this.supabaseUrl = '';
