@@ -40,6 +40,14 @@ async function flushMicrotasks(turns = 6): Promise<void> {
   }
 }
 
+function createScopedQuery<TQuery extends Record<string, unknown>>(
+  query: TQuery,
+): TQuery & { eq: ReturnType<typeof vi.fn> } {
+  const scoped = { ...query } as TQuery & { eq: ReturnType<typeof vi.fn> };
+  scoped.eq = vi.fn(() => scoped);
+  return scoped;
+}
+
 describe('BlackBoxSyncService', () => {
   let service: BlackBoxSyncService;
   let initDbSpy: ReturnType<typeof vi.spyOn>;
@@ -841,10 +849,11 @@ describe('BlackBoxSyncService', () => {
       order: vi.fn(() => orderedResult),
     };
     const gtQuery = vi.fn(() => orderedResult);
-    const selectQuery = vi.fn(() => ({
+    const scopedQuery = createScopedQuery({
       gt: gtQuery,
       in: inQuery,
-    }));
+    });
+    const selectQuery = vi.fn(() => scopedQuery);
     const from = vi.fn(() => ({ select: selectQuery }));
     const rpc = vi.fn().mockResolvedValue({ data: '2026-03-05T00:00:00.000Z', error: null });
     const supabase = TestBed.inject(SupabaseClientService) as unknown as {
@@ -857,6 +866,7 @@ describe('BlackBoxSyncService', () => {
 
     await service.pullChanges({ reason: 'panel-open', force: true });
 
+    expect(scopedQuery.eq).toHaveBeenCalledWith('user_id', 'user-1');
     expect(inQuery).toHaveBeenCalledWith('id', [entryId]);
     expect(blackBoxEntriesMap().get(entryId)?.syncStatus).toBe('synced');
   });
@@ -891,7 +901,7 @@ describe('BlackBoxSyncService', () => {
       order: vi.fn(() => orderedResult),
     };
     const gtQuery = vi.fn(() => orderedResult);
-    const selectQuery = vi.fn(() => ({
+    const selectQuery = vi.fn(() => createScopedQuery({
       gt: gtQuery,
     }));
     const from = vi.fn(() => ({ select: selectQuery }));
@@ -925,9 +935,10 @@ describe('BlackBoxSyncService', () => {
       order: vi.fn(() => orderedResult),
     };
     const gtQuery = vi.fn(() => orderedResult);
-    const selectQuery = vi.fn(() => ({
+    const scopedQuery = createScopedQuery({
       gt: gtQuery,
-    }));
+    });
+    const selectQuery = vi.fn(() => scopedQuery);
     const from = vi.fn(() => ({ select: selectQuery }));
     const rpc = vi.fn().mockResolvedValue({ data: null, error: null });
     const supabase = TestBed.inject(SupabaseClientService) as unknown as {
@@ -940,6 +951,7 @@ describe('BlackBoxSyncService', () => {
 
     await service.pullChanges({ reason: 'panel-open', force: true });
 
+    expect(scopedQuery.eq).toHaveBeenCalledWith('user_id', 'user-1');
     expect(gtQuery).toHaveBeenCalledWith('updated_at', '2026-03-05T00:00:00.000Z');
     expect(orderedResult.order).toHaveBeenCalledWith('updated_at', { ascending: true });
     expect(orderedResult.order).toHaveBeenCalledWith('id', { ascending: true });
@@ -973,7 +985,7 @@ describe('BlackBoxSyncService', () => {
     };
     const gtQuery = vi.fn(() => orderedResult);
     const orQuery = vi.fn(() => orderedResult);
-    const selectQuery = vi.fn(() => ({
+    const selectQuery = vi.fn(() => createScopedQuery({
       gt: gtQuery,
       or: orQuery,
     }));
@@ -1020,7 +1032,7 @@ describe('BlackBoxSyncService', () => {
       order: vi.fn(() => orderedResult),
     };
     const gtQuery = vi.fn(() => orderedResult);
-    const selectQuery = vi.fn(() => ({
+    const selectQuery = vi.fn(() => createScopedQuery({
       gt: gtQuery,
     }));
     const from = vi.fn(() => ({ select: selectQuery }));
@@ -1091,7 +1103,7 @@ describe('BlackBoxSyncService', () => {
       order: vi.fn(() => orderedResult),
     };
     const gtQuery = vi.fn(() => orderedResult);
-    const selectQuery = vi.fn(() => ({
+    const selectQuery = vi.fn(() => createScopedQuery({
       gt: gtQuery,
       in: inQuery,
     }));
@@ -1168,7 +1180,7 @@ describe('BlackBoxSyncService', () => {
       order: vi.fn(() => orderedResult),
     };
     const gtQuery = vi.fn(() => orderedResult);
-    const selectQuery = vi.fn(() => ({
+    const selectQuery = vi.fn(() => createScopedQuery({
       gt: gtQuery,
       in: inQuery,
     }));
@@ -1230,7 +1242,7 @@ describe('BlackBoxSyncService', () => {
       order: vi.fn(() => orderedResult),
     };
     const gtQuery = vi.fn(() => orderedResult);
-    const selectQuery = vi.fn(() => ({
+    const selectQuery = vi.fn(() => createScopedQuery({
       gt: gtQuery,
       in: inQuery,
     }));
@@ -1288,7 +1300,7 @@ describe('BlackBoxSyncService', () => {
       order: vi.fn(() => orderedResult),
     };
     const gtQuery = vi.fn(() => orderedResult);
-    const selectQuery = vi.fn(() => ({
+    const selectQuery = vi.fn(() => createScopedQuery({
       gt: gtQuery,
       in: inQuery,
     }));
@@ -1339,7 +1351,8 @@ describe('BlackBoxSyncService', () => {
     };
     const enqueue = vi.fn();
     const inQuery = vi.fn().mockResolvedValue({ data: [remoteRow], error: null });
-    const selectQuery = vi.fn(() => ({ in: inQuery }));
+    const scopedQuery = createScopedQuery({ in: inQuery });
+    const selectQuery = vi.fn(() => scopedQuery);
     const from = vi.fn(() => ({ select: selectQuery }));
     const supabase = TestBed.inject(SupabaseClientService) as unknown as {
       clientAsync: ReturnType<typeof vi.fn>;
@@ -1352,6 +1365,7 @@ describe('BlackBoxSyncService', () => {
 
     await (service as unknown as { recoverPendingEntries: () => Promise<void> }).recoverPendingEntries();
 
+    expect(scopedQuery.eq).toHaveBeenCalledWith('user_id', 'user-1');
     expect(inQuery).toHaveBeenCalledWith('id', [entryId]);
     expect(enqueue).not.toHaveBeenCalled();
     expect(blackBoxEntriesMap().get(entryId)).toEqual(
@@ -1415,7 +1429,8 @@ describe('BlackBoxSyncService', () => {
     };
     const enqueue = vi.fn();
     const inQuery = vi.fn().mockResolvedValue({ data: [remoteRow], error: null });
-    const selectQuery = vi.fn(() => ({ in: inQuery }));
+    const scopedQuery = createScopedQuery({ in: inQuery });
+    const selectQuery = vi.fn(() => scopedQuery);
     const from = vi.fn(() => ({ select: selectQuery }));
     const supabase = TestBed.inject(SupabaseClientService) as unknown as {
       clientAsync: ReturnType<typeof vi.fn>;

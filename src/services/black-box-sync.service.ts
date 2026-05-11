@@ -1239,6 +1239,12 @@ export class BlackBoxSyncService {
         .from('black_box_entries')
         .select('*');
       const eqQuery = this.getOptionalQueryMethod<[string, string]>(query, 'eq');
+      if (expectedUserId && !eqQuery) {
+        this.logger.warn('黑匣子 pending 对账缺少 user_id 查询能力，跳过远端对账以避免跨用户误判', {
+          batchSize: batchIds.length,
+        });
+        return;
+      }
       if (expectedUserId && eqQuery) {
         query = eqQuery('user_id', expectedUserId) as typeof query;
       }
@@ -1300,7 +1306,7 @@ export class BlackBoxSyncService {
       const store = tx.objectStore(this.STORE_NAME);
       const request = store.getAll();
 
-      request.onsuccess = () => {
+        request.onsuccess = async () => {
         const visibleUserId = this.resolveVisibleUserId();
         const entries = (request.result as IDBBlackBoxEntry[]).map(e => {
 
@@ -1353,7 +1359,7 @@ export class BlackBoxSyncService {
         // 更新状态
         setBlackBoxEntries(visibleEntries);
         if (syncStatusRepairs.length > 0) {
-          void this.persistLocalOnlySyncStatusRepairs(syncStatusRepairs);
+          await this.persistLocalOnlySyncStatusRepairs(syncStatusRepairs);
         }
 
         resolve(visibleEntries);
@@ -2251,21 +2257,24 @@ export class BlackBoxSyncService {
       cursor = { updatedAt: '1970-01-01T00:00:00Z', id: '' };
     }
 
+    let baseQuery = client
+        .from('black_box_entries')
+        .select('*');
+    const eqQuery = this.getOptionalQueryMethod<[string, string]>(baseQuery, 'eq');
+    if (expectedUserId && !eqQuery) {
+      this.logger.warn('黑匣子增量拉取缺少 user_id 查询能力，跳过远端读取以避免跨用户误拉', {
+        hasCursorId: Boolean(cursor.id),
+      });
+      return { data: null, error: null };
+    }
+    if (expectedUserId && eqQuery) {
+      baseQuery = eqQuery('user_id', expectedUserId) as typeof baseQuery;
+    }
+
     const keysetFilter = this.createSafeBlackBoxKeysetFilter(cursor);
     let query = keysetFilter
-      ? client
-        .from('black_box_entries')
-        .select('*')
-        .or(keysetFilter)
-      : client
-        .from('black_box_entries')
-        .select('*')
-        .gt('updated_at', cursor.updatedAt);
-
-    const eqQuery = this.getOptionalQueryMethod<[string, string]>(query, 'eq');
-    if (expectedUserId && eqQuery) {
-      query = eqQuery('user_id', expectedUserId) as typeof query;
-    }
+      ? baseQuery.or(keysetFilter)
+      : baseQuery.gt('updated_at', cursor.updatedAt);
 
     const lteQuery = this.getOptionalQueryMethod<[string, string]>(query, 'lte');
     if (upperWatermark && typeof lteQuery === 'function') {
