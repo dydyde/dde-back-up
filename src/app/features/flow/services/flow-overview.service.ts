@@ -35,6 +35,17 @@ export class FlowOverviewService {
   private isNodeDragging: boolean = false;
   private isOverviewInteracting: boolean = false;
   private isOverviewBoxDragging: boolean = false;
+  /**
+   * 【2026-05-11】记录当前 box 拖拽周期内用户是否实际产生过位移。
+   * - press 时置 false；
+   * - 实际触发 applyManualBoxDrag 且产生 doc 位移时置 true；
+   * - release 走 resetOverviewInteractionState 时置 false。
+   *
+   * 用于 `updateScaleTowardTarget`：只有 dragging && hasMovement 时启用
+   * smartLerp 平滑动画；否则 snap 到 target，避免 press/release 不动场景
+   * 因 lerp 残差产生跳动。
+   */
+  private hasManualBoxMovement: boolean = false;
   private overviewBoxViewportBounds: go.Rect | null = null;
   private overviewReleaseViewportBounds: go.Rect | null = null;
   private isApplyingOverviewViewportUpdate: boolean = false;
@@ -421,6 +432,43 @@ export class FlowOverviewService {
       const t = target < current ? SCALE_LERP_FACTOR_SHRINK : SCALE_LERP_FACTOR_GROW;
       return lerp(current, target, t);
     };
+
+    /**
+     * 【2026-05-11 根因修复】scale 更新策略：仅在「真正发生持续 box 拖拽位移」时
+     * 才用 smartLerp 平滑动画；其它所有路径（idle、按下不动、松开、release 同步）
+     * 一律直接 snap 到 target。
+     *
+     * 真正的根因：`smartLerp` 是异步收敛函数（每帧 18%/45% 向 target 推进），
+     * 而 IF 守卫 `|target - current| > 0.002` 意味着 scale 永远停在 "距离 target
+     * ≤ 0.002 的某个值"。每次离散事件（pointerdown / pointerup / 来自外部的
+     * ViewportBoundsChanged）触发 apply 都会让 smartLerp 再推进一步，引发节点
+     * 与 overview.box 在 canvas 上的像素级位移（位置 = (docPos - position) × scale，
+     * scale 变化时全画面重新映射），叠加 `scrollMode: Document` 对 centerRect
+     * 的钳制，呈现为"按下/松开瞬间缩略块跃动且与主视图脱节"。
+     *
+     * 修复：用 `updateScaleTowardTarget` 替换所有 smartLerp 直接调用：
+     *   - 主动拖拽 box **且**实际产生过位移（hasManualBoxMovement === true）
+     *     → 保留 smartLerp 平滑感（与历史 18%/45% 行为一致）；
+     *   - 其它所有路径 → snap 到 target，使 apply 对稳定输入幂等：相同
+     *     viewportBounds + 相同 nodeBounds/container ⇒ 相同 target ⇒ 不再变化。
+     *
+     * 影响面：
+     *   1) 点击不动（press → release）：两次 apply 都 snap 到同一 target，
+     *      scale 不变 ⇒ centerRect 输入相同 ⇒ overview.position 不变 ⇒ 0 跳动。
+     *   2) 真实拖拽（press → 多次 move → release）：press apply 走 snap
+     *      （hasManualBoxMovement=false），后续 move apply 走 smartLerp，release
+     *      apply 已被 resetOverviewInteractionState 置回 false，走 snap。
+     *   3) 外部 idle ViewportBoundsChanged：snap，使 scale 在一次 apply 内即
+     *      收敛于 target，无残差。
+     *
+     * 因此 idle 期保持 scale === target，press apply 自然 no-op（target 未变）。
+     */
+    const updateScaleTowardTarget = (current: number, target: number): number => {
+      if (this.isOverviewBoxDragging && this.hasManualBoxMovement) {
+        return smartLerp(current, target);
+      }
+      return target;
+    };
     
     let baseScale = calculateBaseScale();
     let lastNodeDataCount = ((this.diagram.model as go.Model & { nodeDataArray?: go.ObjectData[] })?.nodeDataArray?.length ?? 0);
@@ -623,7 +671,7 @@ export class FlowOverviewService {
               targetScale = clampScale(targetScale);
             
               if (Math.abs(targetScale - this.overview.scale) > 0.002) {
-                const smoothedScale = smartLerp(this.overview.scale, targetScale);
+                const smoothedScale = updateScaleTowardTarget(this.overview.scale, targetScale);
                 this.overview.scale = clampScale(smoothedScale);
                 this.lastOverviewScale = this.overview.scale;
               }
@@ -644,7 +692,7 @@ export class FlowOverviewService {
               finalScale = clampScale(finalScale);
             
               if (Math.abs(finalScale - currentScale) > 0.002) {
-                const smoothedScale = smartLerp(currentScale, finalScale);
+                const smoothedScale = updateScaleTowardTarget(currentScale, finalScale);
                 this.overview.scale = clampScale(smoothedScale);
                 this.lastOverviewScale = this.overview.scale;
               }
@@ -865,6 +913,11 @@ export class FlowOverviewService {
       const vb = this.diagram.viewportBounds;
       if (!vb.isReal()) return;
 
+      // 【2026-05-11 根因修复】新拖拽周期开始：重置位移标记。
+      // 配合 updateScaleTowardTarget 仅在 dragging && hasMovement 时使用 smartLerp，
+      // 保证 press 不动场景的 apply snap 到 target，消除 scale 残差跳动。
+      this.hasManualBoxMovement = false;
+
       manualDragViewportSize = { w: vb.width, h: vb.height };
       const viewportCenter = vb.center;
 
@@ -930,6 +983,8 @@ export class FlowOverviewService {
       if (!this.diagram.position.equals(desiredPos)) {
         this.diagram.position = desiredPos;
         this.diagram.requestUpdate();
+        // 【2026-05-11】检测到实际位移，启用 smartLerp 平滑动画（仅在真实拖拽中）。
+        this.hasManualBoxMovement = true;
       }
 
       // 【2026-04-20 回归修复】同步推导 fakeViewportBounds，确保 applyOverviewUpdate
@@ -950,6 +1005,8 @@ export class FlowOverviewService {
       isManualBoxDrag = false;
       manualDragViewportSize = null;
       manualDragStartBoxCenterDoc = null;
+      // 【2026-05-11】清除位移标记，下次 press 由 beginManualBoxDrag 重置。
+      this.hasManualBoxMovement = false;
       this.setOverviewUpdateDelay(FlowOverviewService.OVERVIEW_IDLE_UPDATE_DELAY_MS);
       if (this.diagram) {
         try { this.diagram.skipsUndoManager = false; } catch { /* noop */ }
