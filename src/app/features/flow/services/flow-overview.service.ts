@@ -811,6 +811,7 @@ export class FlowOverviewService {
     let isManualBoxDrag = false;
     let isMouseDraggingBox = false;
     let isResettingOverviewInteraction = false;
+    let suppressNextOverviewClick = false;
     /**
      * 【2026-05-09 根因修复】拖拽开始时捕获的稳定映射参数。
      *
@@ -869,6 +870,11 @@ export class FlowOverviewService {
       try { (ev as Event & { stopImmediatePropagation?: () => void }).stopImmediatePropagation?.(); } catch { /* noop */ }
       try { ev.stopPropagation(); } catch { /* noop */ }
       try { (ev as Event & { preventDefault?: () => void }).preventDefault?.(); } catch { /* noop */ }
+    };
+
+    const onClick = (ev: MouseEvent): void => {
+      if (!suppressNextOverviewClick) return;
+      stopEventForManualDrag(ev);
     };
 
     /**
@@ -1023,6 +1029,7 @@ export class FlowOverviewService {
       if (boxBounds?.isReal() && boxBounds.containsPoint(pt)) {
         isDraggingBox = true;
         this.isOverviewBoxDragging = true;
+        suppressNextOverviewClick = true;
 
         stopEventForManualDrag(ev);
 
@@ -1042,6 +1049,7 @@ export class FlowOverviewService {
       }
       
       isDraggingBox = false;
+      suppressNextOverviewClick = false;
       this.isOverviewInteracting = true;
       
       try {
@@ -1208,6 +1216,7 @@ export class FlowOverviewService {
       container.addEventListener('pointerup', onPointerUpLike, { passive: false, capture: true });
       container.addEventListener('pointercancel', onPointerUpLike, { passive: false, capture: true });
       container.addEventListener('lostpointercapture', onPointerUpLike, { passive: false, capture: true });
+      container.addEventListener('click', onClick, { passive: false, capture: true });
       window.addEventListener('pointermove', onWindowPointerMove, { passive: false });
       window.addEventListener('pointerup', onWindowPointerUp, { passive: false });
       window.addEventListener('pointercancel', onWindowPointerUp, { passive: false });
@@ -1227,6 +1236,7 @@ export class FlowOverviewService {
       container.removeEventListener('pointerup', onPointerUpLike, { capture: true } as EventListenerOptions);
       container.removeEventListener('pointercancel', onPointerUpLike, { capture: true } as EventListenerOptions);
       container.removeEventListener('lostpointercapture', onPointerUpLike, { capture: true } as EventListenerOptions);
+      container.removeEventListener('click', onClick, { capture: true } as EventListenerOptions);
       window.removeEventListener('pointermove', onWindowPointerMove);
       window.removeEventListener('pointerup', onWindowPointerUp);
       window.removeEventListener('pointercancel', onWindowPointerUp);
@@ -1237,3 +1247,10 @@ export class FlowOverviewService {
     };
   }
 }
+
+
+
+
+
+
+
