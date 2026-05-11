@@ -49,6 +49,11 @@ import { AUTH_CONFIG } from '../../../../../config/auth.config';
                 data-testid="sync-pending-indicator">
             ⏳ 待同步
           </span>
+        } @else if (shouldShowSyncConflictIndicator()) {
+          <span class="text-[9px]" [class]="syncConflictClass()"
+                data-testid="sync-conflict-indicator">
+            需确认
+          </span>
         }
 
         <!-- 操作按钮 -->
@@ -194,10 +199,21 @@ export class BlackBoxEntryComponent {
     return 'text-amber-500 dark:text-amber-300';
   }
 
+  syncConflictClass(): string {
+    if (this.appearance() === 'obsidian') {
+      return 'text-rose-300';
+    }
+    return 'text-rose-500 dark:text-rose-300';
+  }
+
   shouldShowSyncPendingIndicator(): boolean {
     const currentEntry = this.entry();
     return currentEntry.syncStatus === 'pending'
       && currentEntry.userId !== AUTH_CONFIG.LOCAL_MODE_USER_ID;
+  }
+
+  shouldShowSyncConflictIndicator(): boolean {
+    return this.entry().syncStatus === 'conflict';
   }
 
   readBadgeClass(): string {

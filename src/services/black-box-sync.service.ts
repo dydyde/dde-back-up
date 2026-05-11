@@ -946,6 +946,49 @@ export class BlackBoxSyncService {
   }
 
   /**
+   * 将已被终止云端重放的本地条目标记为 conflict。
+   * 仅修正同步元数据，不改变业务字段，避免 UI 长期误报“待同步”。
+   */
+  async markEntrySyncConflict(entry: BlackBoxEntry): Promise<void> {
+    const latestLocal = await this.resolveLatestLocalEntry(entry.id);
+    const latestSameOwner = latestLocal?.userId === entry.userId ? latestLocal : null;
+
+    if (latestSameOwner?.syncStatus === 'synced' || latestSameOwner?.syncStatus === 'conflict') {
+      return;
+    }
+
+    if (latestSameOwner && this.isEntryNewer(latestSameOwner, entry)) {
+      this.logger.debug('跳过过期的黑匣子 conflict 修复：本地已有更新快照', {
+        entryId: entry.id,
+        repairUpdatedAt: entry.updatedAt,
+        latestLocalUpdatedAt: latestSameOwner.updatedAt,
+      });
+      return;
+    }
+
+    const baseEntry = latestSameOwner ?? entry;
+    const conflictEntry = this.hydrateBlankContentFromSource(
+      {
+        ...baseEntry,
+        syncStatus: 'conflict',
+      },
+      baseEntry === entry ? latestSameOwner : entry,
+      'latest-local',
+    );
+
+    await this.saveToLocal(conflictEntry);
+
+    const visibleEntry = blackBoxEntriesMap().get(entry.id);
+    if (visibleEntry?.userId === conflictEntry.userId) {
+      updateBlackBoxEntry({
+        ...visibleEntry,
+        ...conflictEntry,
+        syncStatus: 'conflict',
+      });
+    }
+  }
+
+  /**
    * 从本地 IndexedDB 删除指定条目
    * 用于清理脏数据（如非法 ID 的条目）
    */

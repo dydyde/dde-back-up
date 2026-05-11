@@ -1539,4 +1539,41 @@ describe('BlackBoxSyncService', () => {
     })]);
     expect(blackBoxEntriesMap().get('entry-local-only')?.syncStatus).toBe('synced');
   });
+
+  it('markEntrySyncConflict 应把可见条目回写为 conflict 并持久化到本地', async () => {
+    const entry = createEntry({
+      id: 'entry-conflict',
+      syncStatus: 'pending',
+    });
+    const saveSpy = vi.spyOn(service, 'saveToLocal').mockResolvedValue(undefined);
+    setBlackBoxEntries([entry]);
+
+    await service.markEntrySyncConflict(entry);
+
+    expect(saveSpy).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'entry-conflict',
+      syncStatus: 'conflict',
+    }));
+    expect(blackBoxEntriesMap().get('entry-conflict')?.syncStatus).toBe('conflict');
+  });
+
+  it('markEntrySyncConflict 遇到更新且已同步的本地快照时不应回退为 conflict', async () => {
+    const stalePending = createEntry({
+      id: 'entry-conflict-stale',
+      syncStatus: 'pending',
+      updatedAt: '2026-03-04T00:00:00.000Z',
+    });
+    const latestSynced = createEntry({
+      id: 'entry-conflict-stale',
+      syncStatus: 'synced',
+      updatedAt: '2026-03-04T00:00:10.000Z',
+    });
+    const saveSpy = vi.spyOn(service, 'saveToLocal').mockResolvedValue(undefined);
+    setBlackBoxEntries([latestSynced]);
+
+    await service.markEntrySyncConflict(stalePending);
+
+    expect(saveSpy).not.toHaveBeenCalled();
+    expect(blackBoxEntriesMap().get('entry-conflict-stale')?.syncStatus).toBe('synced');
+  });
 });

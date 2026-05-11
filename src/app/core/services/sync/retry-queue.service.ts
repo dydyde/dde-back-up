@@ -19,6 +19,7 @@ import { LoggerService } from '../../../../services/logger.service';
 import { ToastService } from '../../../../services/toast.service';
 import { AuthService } from '../../../../services/auth.service';
 import { ProjectStateService } from '../../../../services/project-state.service';
+import { BlackBoxSyncService } from '../../../../services/black-box-sync.service';
 import { WriteGuardService } from '../../../../services/write-guard.service';
 import { SyncWriterLeaseService } from '../../../../services/sync-writer-lease.service';
 import type { LeaseHandle } from '../../../../services/sync-writer-lease.service';
@@ -129,6 +130,7 @@ export class RetryQueueService {
   private readonly toast = inject(ToastService);
   private readonly authService = inject(AuthService);
   private readonly projectState = inject(ProjectStateService);
+  private readonly blackBoxSync = inject(BlackBoxSyncService);
   private readonly destroyRef = inject(DestroyRef);
   /**
    * 写入闸门：迁移期 export-only / read-only 部署 gate 云端 flush。
@@ -402,6 +404,7 @@ export class RetryQueueService {
     // 【P2-19 修复】恢复熔断器状态
     this.loadCircuitState();
     this.refreshLegacyReviewCount();
+    this.repairQuarantinedBlackBoxEntriesFromStorage();
     
     this.destroyRef.onDestroy(() => {
       this.stopLoop();
@@ -1298,6 +1301,108 @@ export class RetryQueueService {
     }
   }
 
+  /**
+   * 启动时修复历史上已被隔离的黑匣子 pending 条目，避免 UI 永远停留在“待同步”。
+   */
+  private repairQuarantinedBlackBoxEntriesFromStorage(): void {
+    if (typeof localStorage === 'undefined') {
+      return;
+    }
+
+    const currentOwnerUserId = this.getCurrentOwnerUserId();
+    if (!this.isCloudBackedUserId(currentOwnerUserId)) {
+      return;
+    }
+
+    const candidateRecords = this.loadLegacyReviewRecordsForRepair([
+      currentOwnerUserId,
+      LEGACY_UNKNOWN_OWNER_USER_ID,
+    ]);
+
+    candidateRecords
+      .sort((left, right) => this.getLegacyBlackBoxRepairRank(right) - this.getLegacyBlackBoxRepairRank(left))
+      .forEach(record => {
+        this.repairBlackBoxConflictForLegacyItem(record.item, currentOwnerUserId);
+      });
+  }
+
+  private loadLegacyReviewRecordsForRepair(ownerUserIds: string[]): LegacyRetryReviewItem[] {
+    const dedupedByEntryId = new Map<string, LegacyRetryReviewItem>();
+
+    for (const ownerUserId of ownerUserIds) {
+      const key = this.getLegacyReviewStorageKey(ownerUserId);
+      try {
+        const raw = localStorage.getItem(key);
+        if (!raw) {
+          continue;
+        }
+
+        const records = JSON.parse(raw) as LegacyRetryReviewItem[];
+        if (!Array.isArray(records)) {
+          continue;
+        }
+
+        for (const record of records) {
+          if (record.item.type !== 'blackbox') {
+            continue;
+          }
+
+          const entry = record.item.data as BlackBoxEntry;
+          if (!entry?.id) {
+            continue;
+          }
+
+          const existing = dedupedByEntryId.get(entry.id);
+          if (!existing || this.getLegacyBlackBoxRepairRank(record) > this.getLegacyBlackBoxRepairRank(existing)) {
+            dedupedByEntryId.set(entry.id, record);
+          }
+        }
+      } catch (error) {
+        this.logger.debug('扫描 legacy review 黑匣子修复记录失败', {
+          key,
+          error,
+        });
+      }
+    }
+
+    return Array.from(dedupedByEntryId.values());
+  }
+
+  private getLegacyBlackBoxRepairRank(record: LegacyRetryReviewItem): number {
+    const entry = record.item.data as Partial<BlackBoxEntry> | undefined;
+    const updatedAtMs = typeof entry?.updatedAt === 'string'
+      ? Date.parse(entry.updatedAt)
+      : Number.NaN;
+    if (Number.isFinite(updatedAtMs)) {
+      return updatedAtMs;
+    }
+
+    const quarantinedAtMs = Date.parse(record.quarantinedAt);
+    return Number.isFinite(quarantinedAtMs) ? quarantinedAtMs : 0;
+  }
+
+  private repairBlackBoxConflictForLegacyItem(
+    item: RetryQueueItem,
+    expectedUserId: string,
+  ): void {
+    if (item.type !== 'blackbox') {
+      return;
+    }
+
+    const entry = item.data as BlackBoxEntry;
+    if (!entry?.id || entry.userId !== expectedUserId) {
+      return;
+    }
+
+    void this.blackBoxSync.markEntrySyncConflict(entry).catch((error: unknown) => {
+      this.logger.warn('黑匣子隔离项本地 conflict 修复失败', {
+        queueItemId: item.id,
+        entryId: entry.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  }
+
   private quarantineLegacyRetryItem(item: RetryQueueItem, reason: string): void {
     const ownerUserId = this.resolveLegacyReviewOwnerUserId(item);
     const record: LegacyRetryReviewItem = {
@@ -1319,6 +1424,11 @@ export class RetryQueueService {
       } catch (error) {
         this.logger.warn('保存 legacy retry 隔离记录失败', { error, itemId: item.id, reason });
       }
+    }
+
+    const currentOwnerUserId = this.getCurrentOwnerUserId();
+    if (this.isCloudBackedUserId(currentOwnerUserId)) {
+      this.repairBlackBoxConflictForLegacyItem(item, currentOwnerUserId);
     }
 
     this.logger.warn('检测到需人工确认的 legacy retry 项，已隔离保留', {

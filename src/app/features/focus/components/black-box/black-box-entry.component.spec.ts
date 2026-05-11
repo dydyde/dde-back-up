@@ -46,4 +46,14 @@ describe('BlackBoxEntryComponent', () => {
 
     expect(component.shouldShowSyncPendingIndicator()).toBe(false);
   });
+
+  it('conflict 条目应显示待确认标识而不是待同步', () => {
+    const component = runInInjectionContext(injector, () => new BlackBoxEntryComponent());
+    component.entry = (() => createEntry({
+      syncStatus: 'conflict',
+    })) as typeof component.entry;
+
+    expect(component.shouldShowSyncPendingIndicator()).toBe(false);
+    expect(component.shouldShowSyncConflictIndicator()).toBe(true);
+  });
 });

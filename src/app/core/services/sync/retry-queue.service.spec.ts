@@ -6,6 +6,7 @@ import { ToastService } from '../../../../services/toast.service';
 import { SentryLazyLoaderService } from '../../../../services/sentry-lazy-loader.service';
 import { AuthService } from '../../../../services/auth.service';
 import { ProjectStateService } from '../../../../services/project-state.service';
+import { BlackBoxSyncService } from '../../../../services/black-box-sync.service';
 import { SyncWriterLeaseService } from '../../../../services/sync-writer-lease.service';
 import { AUTH_CONFIG } from '../../../../config/auth.config';
 import { Connection, Project, Task } from '../../../../models';
@@ -125,6 +126,9 @@ describe('RetryQueueService', () => {
     info: ReturnType<typeof vi.fn>;
     success: ReturnType<typeof vi.fn>;
   };
+  let blackBoxSyncMock: {
+    markEntrySyncConflict: ReturnType<typeof vi.fn>;
+  };
   let initDbSpy: ReturnType<typeof vi.spyOn>;
   let loadFromStorageSpy: ReturnType<typeof vi.spyOn>;
   let saveToStorageSpy: ReturnType<typeof vi.spyOn>;
@@ -161,6 +165,10 @@ describe('RetryQueueService', () => {
       success: vi.fn()
     };
 
+    blackBoxSyncMock = {
+      markEntrySyncConflict: vi.fn().mockResolvedValue(undefined),
+    };
+
     initDbSpy = vi.spyOn(RetryQueueService.prototype as unknown as {
       initDb: () => Promise<IDBDatabase | null>;
     }, 'initDb').mockResolvedValue(null);
@@ -188,6 +196,10 @@ describe('RetryQueueService', () => {
         {
           provide: ProjectStateService,
           useValue: projectStateMock,
+        },
+        {
+          provide: BlackBoxSyncService,
+          useValue: blackBoxSyncMock,
         },
         {
           provide: SyncWriterLeaseService,
@@ -890,6 +902,153 @@ describe('RetryQueueService', () => {
     expect(handler.pushTask).not.toHaveBeenCalled();
     expect(service.length).toBe(0);
     expect(localStorage.getItem('nanoflow.retry-queue.legacy-review.__legacy_unknown__')).toContain('legacy local-user');
+  });
+
+  it('legacy local-user blackbox 重试项隔离时应把本地条目标记为 conflict', async () => {
+    const entry = createBlackBoxEntry('legacy-local-user-blackbox', {
+      syncStatus: 'pending',
+    });
+    (service as unknown as {
+      queue: Array<Record<string, unknown>>;
+    }).queue = [
+      {
+        id: crypto.randomUUID(),
+        type: 'blackbox',
+        operation: 'upsert',
+        data: entry,
+        retryCount: 0,
+        createdAt: Date.now(),
+        sourceUserId: AUTH_CONFIG.LOCAL_MODE_USER_ID,
+      },
+    ];
+    online = true;
+
+    await service.processQueue();
+
+    expect(handler.pushBlackBoxEntry).not.toHaveBeenCalled();
+    expect(blackBoxSyncMock.markEntrySyncConflict).toHaveBeenCalledWith(entry);
+    expect(service.length).toBe(0);
+  });
+
+  it('应修复历史 legacy review 中遗留的 blackbox pending 状态', () => {
+    const entry = createBlackBoxEntry('legacy-review-blackbox', {
+      syncStatus: 'pending',
+      updatedAt: '2026-05-11T00:00:10.000Z',
+    });
+    localStorage.setItem(
+      'nanoflow.retry-queue.legacy-review.__legacy_unknown__',
+      JSON.stringify([
+        {
+          item: {
+            id: crypto.randomUUID(),
+            type: 'blackbox',
+            operation: 'upsert',
+            data: entry,
+            retryCount: 0,
+            createdAt: Date.now(),
+            sourceUserId: AUTH_CONFIG.LOCAL_MODE_USER_ID,
+          },
+          reason: 'legacy local-user 重试项禁止自动上云',
+          quarantinedAt: '2026-05-11T00:00:00.000Z',
+          ownerUserId: '__legacy_unknown__',
+        },
+      ]),
+    );
+
+    (service as unknown as {
+      repairQuarantinedBlackBoxEntriesFromStorage: () => void;
+    }).repairQuarantinedBlackBoxEntriesFromStorage();
+
+    expect(blackBoxSyncMock.markEntrySyncConflict).toHaveBeenCalledWith(entry);
+  });
+
+  it('历史 legacy review 修复应忽略其它账号的 blackbox 条目', () => {
+    const foreignEntry = createBlackBoxEntry('legacy-review-foreign-blackbox', {
+      userId: 'other-user',
+      syncStatus: 'pending',
+      updatedAt: '2026-05-11T00:00:20.000Z',
+    });
+    localStorage.setItem(
+      'nanoflow.retry-queue.legacy-review.other-user',
+      JSON.stringify([
+        {
+          item: {
+            id: crypto.randomUUID(),
+            type: 'blackbox',
+            operation: 'upsert',
+            data: foreignEntry,
+            retryCount: 0,
+            createdAt: Date.now(),
+            sourceUserId: 'other-user',
+          },
+          reason: '跨账号重试项来源 other-user 与当前账号 test-user 不匹配',
+          quarantinedAt: '2026-05-11T00:00:20.000Z',
+          ownerUserId: 'other-user',
+        },
+      ]),
+    );
+
+    (service as unknown as {
+      repairQuarantinedBlackBoxEntriesFromStorage: () => void;
+    }).repairQuarantinedBlackBoxEntriesFromStorage();
+
+    expect(blackBoxSyncMock.markEntrySyncConflict).not.toHaveBeenCalledWith(foreignEntry);
+  });
+
+  it('历史 legacy review 修复应优先采用同一条目的最新 blackbox 快照', () => {
+    const entryId = stableUUID('legacy-review-blackbox-latest');
+    const olderEntry = createBlackBoxEntry('legacy-review-blackbox-latest-old', {
+      id: entryId,
+      syncStatus: 'pending',
+      updatedAt: '2026-05-11T00:00:05.000Z',
+      content: 'old snapshot',
+    });
+    const newerEntry = createBlackBoxEntry('legacy-review-blackbox-latest-new', {
+      id: entryId,
+      syncStatus: 'pending',
+      updatedAt: '2026-05-11T00:00:30.000Z',
+      content: 'new snapshot',
+    });
+    localStorage.setItem(
+      'nanoflow.retry-queue.legacy-review.test-user',
+      JSON.stringify([
+        {
+          item: {
+            id: crypto.randomUUID(),
+            type: 'blackbox',
+            operation: 'upsert',
+            data: olderEntry,
+            retryCount: 0,
+            createdAt: Date.now(),
+            sourceUserId: 'test-user',
+          },
+          reason: 'older snapshot',
+          quarantinedAt: '2026-05-11T00:00:05.000Z',
+          ownerUserId: 'test-user',
+        },
+        {
+          item: {
+            id: crypto.randomUUID(),
+            type: 'blackbox',
+            operation: 'upsert',
+            data: newerEntry,
+            retryCount: 0,
+            createdAt: Date.now(),
+            sourceUserId: 'test-user',
+          },
+          reason: 'newer snapshot',
+          quarantinedAt: '2026-05-11T00:00:30.000Z',
+          ownerUserId: 'test-user',
+        },
+      ]),
+    );
+
+    (service as unknown as {
+      repairQuarantinedBlackBoxEntriesFromStorage: () => void;
+    }).repairQuarantinedBlackBoxEntriesFromStorage();
+
+    expect(blackBoxSyncMock.markEntrySyncConflict).toHaveBeenCalledTimes(1);
+    expect(blackBoxSyncMock.markEntrySyncConflict).toHaveBeenCalledWith(newerEntry);
   });
 
   it('本地模式下 local-user 重试残留应静默清理且不弹待确认提示', async () => {
