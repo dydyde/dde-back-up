@@ -2185,7 +2185,7 @@ export class BlackBoxSyncService {
           }
         }
 
-        if (error) break;
+      if (error) break;
 
         const pageRows = (page.data ?? []) as Record<string, unknown>[];
         pulledPageCount += 1;
@@ -2230,6 +2230,12 @@ export class BlackBoxSyncService {
       }
 
       if (error) {
+        if (this.isBlackBoxScopedQueryUnavailable(error)) {
+          this.logger.warn('BlackBox 远端拉取缺少用户作用域查询能力，保留本地快照并等待下次重试');
+          await this.loadFromLocal();
+          return false;
+        }
+
         const finalErr = supabaseErrorToError(error);
         // 【鲁棒性 2026-04-16】浏览器网络挂起属瞬时错误，降级为 debug，回退到本地快照但不报 ERROR
         if (isBrowserNetworkSuspendedError(finalErr) || isBrowserNetworkSuspendedWindow()) {
@@ -2284,7 +2290,7 @@ export class BlackBoxSyncService {
     if (!client) return { data: null, error: null };
     if (!expectedUserId) {
       this.logger.warn('黑匣子增量拉取缺少用户作用域，跳过远端读取');
-      return { data: null, error: null };
+      return { data: null, error: this.createBlackBoxScopedQueryUnavailableError() };
     }
 
     if (!this.isValidBlackBoxCursor(cursor)) {
@@ -2303,7 +2309,7 @@ export class BlackBoxSyncService {
       this.logger.warn('黑匣子增量拉取缺少 user_id 查询能力，跳过远端读取以避免跨用户误拉', {
         hasCursorId: Boolean(cursor.id),
       });
-      return { data: null, error: null };
+      return { data: null, error: this.createBlackBoxScopedQueryUnavailableError() };
     }
     baseQuery = eqQuery('user_id', expectedUserId) as typeof baseQuery;
 
@@ -2328,6 +2334,14 @@ export class BlackBoxSyncService {
     }
 
     return limitQuery(this.BLACKBOX_PULL_PAGE_SIZE) as Promise<{ data: unknown[] | null; error: unknown }>;
+  }
+
+  private createBlackBoxScopedQueryUnavailableError(): Error {
+    return new Error('blackbox_delta_missing_user_scope_query');
+  }
+
+  private isBlackBoxScopedQueryUnavailable(error: unknown): boolean {
+    return error instanceof Error && error.message === 'blackbox_delta_missing_user_scope_query';
   }
 
   private getOptionalQueryMethod<TArgs extends unknown[]>(

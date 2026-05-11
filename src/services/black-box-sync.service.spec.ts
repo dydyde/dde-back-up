@@ -1019,6 +1019,29 @@ describe('BlackBoxSyncService', () => {
     expect(gtQuery).toHaveBeenCalledWith('updated_at', '1970-01-01T00:00:00Z');
   });
 
+  it('should not mark pull fresh when delta query cannot be user scoped', async () => {
+    const gtQuery = vi.fn(() => ({
+      data: [],
+      error: null,
+      order: vi.fn(),
+    }));
+    const selectQuery = vi.fn(() => ({
+      gt: gtQuery,
+    }));
+    const from = vi.fn(() => ({ select: selectQuery }));
+    const rpc = vi.fn().mockResolvedValue({ data: null, error: null });
+    const supabase = TestBed.inject(SupabaseClientService) as unknown as {
+      clientAsync: ReturnType<typeof vi.fn>;
+    };
+    vi.spyOn(service, 'loadFromLocal').mockResolvedValue([]);
+    supabase.clientAsync.mockResolvedValue({ from, rpc });
+
+    await service.pullChanges({ reason: 'panel-open', force: true });
+
+    expect(gtQuery).not.toHaveBeenCalled();
+    expect((service as unknown as { lastPullTime: number }).lastPullTime).toBe(0);
+  });
+
   it('should page black box delta pulls to avoid unbounded Supabase reads', async () => {
     const rows = [0, 1, 2].map(index => ({
       id: crypto.randomUUID(),
