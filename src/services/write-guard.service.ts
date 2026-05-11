@@ -53,6 +53,10 @@ export class WriteGuardService {
     return this.mostRestrictive(baseline, override);
   });
 
+  constructor() {
+    this.reconcileStaleRuntimeOverride();
+  }
+
   /** 是否禁止云端写入。 */
   readonly isReadOnly = computed<boolean>(() => this.mode() !== 'writable');
 
@@ -100,6 +104,36 @@ export class WriteGuardService {
     if (env.deploymentTarget === 'vercel-legacy') return 'export-only';
     if (env.originGateMode === 'read-only' || env.readOnlyPreview === true) return 'read-only';
     return 'writable';
+  }
+
+  private reconcileStaleRuntimeOverride(): void {
+    const override = this.runtimeOverride();
+    if (!override || this.baselineMode() !== 'writable' || this.hasActiveBootGate()) {
+      return;
+    }
+
+    this.runtimeOverride.set(null);
+    if (typeof sessionStorage !== 'undefined') {
+      try {
+        sessionStorage.removeItem('__NANOFLOW_WRITE_GUARD__');
+      } catch {
+        // sessionStorage 不可用时忽略，signal 已完成兜底。
+      }
+    }
+
+    this.logger.info('writeguard_clear_stale_override: baseline writable and no active origin gate marker');
+  }
+
+  private hasActiveBootGate(): boolean {
+    if (typeof window === 'undefined') {
+      return false;
+    }
+
+    const gateState = (window as Window & {
+      __NANOFLOW_ORIGIN_GATE__?: { mode?: unknown };
+    }).__NANOFLOW_ORIGIN_GATE__;
+    const mode = typeof gateState?.mode === 'string' ? gateState.mode : null;
+    return mode === 'read-only' || mode === 'export-only' || mode === 'redirect';
   }
 
   private readRuntimeOverride(): WriteGuardMode | null {
