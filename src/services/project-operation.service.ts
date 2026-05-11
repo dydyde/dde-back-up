@@ -292,6 +292,10 @@ export class ProjectOperationService {
           this.toastService.warning('数据冲突', '检测到数据冲突，请检查');
           this.optimisticState.commitSnapshot(snapshot.id);
         } else {
+          this.settleCurrentProjectSyncState(localProject.id, {
+            pendingSync: false,
+            version: result.newVersion,
+          });
           this.optimisticState.commitSnapshot(snapshot.id);
         }
       } catch (_e) {

@@ -248,6 +248,24 @@ describe('ProjectOperationService', () => {
     }));
   });
 
+  it('认证用户直连创建项目成功后应清除 pendingSync 并回写新版本', async () => {
+    mockUserSession.currentUserId.mockReturnValue('user-1');
+    mockSyncCoordinator.core.saveProjectSmart.mockResolvedValueOnce({ success: true, newVersion: 5 });
+
+    const result = await service.addProject(createProject({ id: 'proj-cloud-success' }));
+
+    expect(result).toEqual({ success: true });
+    const updater = mockProjectState.updateProjects.mock.calls.at(-1)?.[0] as ((projects: Project[]) => Project[]);
+    expect(updater([createProject({ id: 'proj-cloud-success', pendingSync: true, syncSource: 'synced', version: 1 })])).toEqual([
+      expect.objectContaining({
+        id: 'proj-cloud-success',
+        pendingSync: false,
+        syncSource: 'synced',
+        version: 5,
+      }),
+    ]);
+  });
+
   it('认证用户创建项目命中 terminal 同步失败时不应进入 create 队列', async () => {
     mockUserSession.currentUserId.mockReturnValue('user-1');
     mockSyncCoordinator.core.saveProjectSmart.mockResolvedValueOnce({
