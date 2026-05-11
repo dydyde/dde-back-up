@@ -1515,7 +1515,16 @@ describe('BlackBoxSyncService', () => {
       deletedAt: null,
       syncStatus: 'pending',
     };
-    const transaction = vi.fn(() => ({
+    const put = vi.fn(() => {
+      const request = {
+        onsuccess: null as ((this: IDBRequest<unknown>, ev: Event) => unknown) | null,
+        onerror: null as ((this: IDBRequest<unknown>, ev: Event) => unknown) | null,
+        error: null,
+      };
+      queueMicrotask(() => request.onsuccess?.call(request as unknown as IDBRequest<unknown>, new Event('success')));
+      return request;
+    });
+    const transaction = vi.fn((_storeName: string, mode?: IDBTransactionMode) => ({
       objectStore: vi.fn(() => ({
         getAll: () => {
           const request = {
@@ -1526,11 +1535,23 @@ describe('BlackBoxSyncService', () => {
           queueMicrotask(() => request.onsuccess?.call(request as unknown as IDBRequest<unknown[]>, new Event('success')));
           return request;
         },
+        get: () => {
+          const request = {
+            result: mode === 'readwrite' ? localEntry : null,
+            onsuccess: null as ((this: IDBRequest<unknown>, ev: Event) => unknown) | null,
+            onerror: null as ((this: IDBRequest<unknown>, ev: Event) => unknown) | null,
+            error: null,
+          };
+          queueMicrotask(() => request.onsuccess?.call(request as unknown as IDBRequest<unknown>, new Event('success')));
+          return request;
+        },
+        put,
       })),
     }));
     (service as unknown as { db: unknown }).db = { transaction };
 
     const entries = await service.loadFromLocal();
+    await flushMicrotasks();
 
     expect(entries).toEqual([expect.objectContaining({
       id: 'entry-local-only',
@@ -1538,6 +1559,11 @@ describe('BlackBoxSyncService', () => {
       syncStatus: 'synced',
     })]);
     expect(blackBoxEntriesMap().get('entry-local-only')?.syncStatus).toBe('synced');
+    expect(put).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'entry-local-only',
+      userId: AUTH_CONFIG.LOCAL_MODE_USER_ID,
+      syncStatus: 'synced',
+    }));
   });
 
   it('markEntrySyncConflict 应把可见条目回写为 conflict 并持久化到本地', async () => {
