@@ -1634,12 +1634,36 @@ export class BlackBoxSyncService {
       //     isArchived 等非单调编辑），以合并后的 entry 继续后续 upsert，绝不让已经被
       //     完成/已读/软删除的条目悄悄回潮。
       try {
-        const { data: serverRow, error: preflightError } = await client
+        let preflightQuery = client
           .from('black_box_entries')
-          .select('id, project_id, user_id, content, focus_meta, date, created_at, updated_at, is_read, is_completed, is_archived, snooze_until, snooze_count, deleted_at')
-          .eq('user_id', sessionUserId)
-          .eq('id', entry.id)
-          .maybeSingle();
+          .select('id, project_id, user_id, content, focus_meta, date, created_at, updated_at, is_read, is_completed, is_archived, snooze_until, snooze_count, deleted_at');
+        const eqUserQuery = this.getOptionalQueryMethod<[string, string]>(preflightQuery, 'eq');
+        if (!eqUserQuery) {
+          this.logger.warn('黑匣子推送预检缺少 user_id 查询能力，延后推送以避免覆盖未对账的服务端状态', {
+            entryId: entry.id,
+          });
+          return false;
+        }
+        preflightQuery = eqUserQuery('user_id', sessionUserId) as typeof preflightQuery;
+
+        const eqIdQuery = this.getOptionalQueryMethod<[string, string]>(preflightQuery, 'eq');
+        if (!eqIdQuery) {
+          this.logger.warn('黑匣子推送预检缺少 id 查询能力，延后推送以避免覆盖未对账的服务端状态', {
+            entryId: entry.id,
+          });
+          return false;
+        }
+        preflightQuery = eqIdQuery('id', entry.id) as typeof preflightQuery;
+
+        const maybeSingleQuery = this.getOptionalQueryMethod<[]>(preflightQuery, 'maybeSingle');
+        if (!maybeSingleQuery) {
+          this.logger.warn('黑匣子推送预检缺少 maybeSingle 查询能力，延后推送以避免覆盖未对账的服务端状态', {
+            entryId: entry.id,
+          });
+          return false;
+        }
+
+        const { data: serverRow, error: preflightError } = await maybeSingleQuery() as { data: unknown; error: unknown };
 
         if (!preflightError && serverRow) {
           const serverEntry = this.mapRowToEntry(serverRow as Record<string, unknown>);
@@ -1712,18 +1736,18 @@ export class BlackBoxSyncService {
         } else if (!preflightError && !serverRow) {
           syncRpcBaseUpdatedAt = null;
         } else if (preflightError) {
-          // 预检失败不阻塞推送（保持向后兼容），仅记录，便于后续排查
-          this.logger.debug('黑匣子推送预检 SELECT 失败，按原路径继续 upsert', {
+          this.logger.debug('黑匣子推送预检 SELECT 失败，延后推送等待下次对账', {
             entryId: entry.id,
             message: supabaseErrorToError(preflightError).message,
           });
+          return false;
         }
       } catch (preflightException) {
-        // 预检异常不应阻塞推送，降级到原 upsert 路径
-        this.logger.debug('黑匣子推送预检异常，按原路径继续', {
+        this.logger.debug('黑匣子推送预检异常，延后推送等待下次对账', {
           entryId: entry.id,
           error: preflightException instanceof Error ? preflightException.message : String(preflightException),
         });
+        return false;
       }
 
       if (this.shouldUseSyncRpc()) {

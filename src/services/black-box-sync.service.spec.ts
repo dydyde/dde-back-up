@@ -680,6 +680,34 @@ describe('BlackBoxSyncService', () => {
     );
   });
 
+  it('should defer push when preflight cannot be scoped by user id', async () => {
+    const entry = createEntry({
+      id: crypto.randomUUID(),
+      updatedAt: '2026-03-04T00:00:00.000Z',
+      syncStatus: 'pending',
+    });
+    mockSyncRpcClient.isFeatureEnabled.mockReturnValue(true);
+    const select = vi.fn(() => ({
+      maybeSingle: vi.fn(async () => ({ data: null, error: null })),
+    }));
+    const upsert = vi.fn();
+    const from = vi.fn(() => ({ select, upsert }));
+    const supabase = TestBed.inject(SupabaseClientService) as unknown as {
+      clientAsync: ReturnType<typeof vi.fn>;
+    };
+    setBlackBoxEntries([entry]);
+    supabase.clientAsync.mockResolvedValue({ from });
+
+    await expect(service.pushToServer(entry)).resolves.toBe(false);
+
+    expect(mockSyncRpcClient.upsertBlackboxEntry).not.toHaveBeenCalled();
+    expect(upsert).not.toHaveBeenCalled();
+    expect(blackBoxEntriesMap().get(entry.id)).toEqual(expect.objectContaining({
+      id: entry.id,
+      syncStatus: 'pending',
+    }));
+  });
+
   it('should not overwrite a newer local snapshot that arrives while an older push is in flight', async () => {
     const entryId = crypto.randomUUID();
     const olderEntry = createEntry({
@@ -692,7 +720,9 @@ describe('BlackBoxSyncService', () => {
       updatedAt: '2026-03-04T00:00:05.000Z',
       isCompleted: true,
     });
+    const preflightQuery = createPreflightQuery(vi.fn(async () => ({ data: null, error: null })));
     const from = vi.fn(() => ({
+      select: vi.fn(() => preflightQuery),
       upsert: vi.fn(() => ({
         select: vi.fn(() => ({
           single: vi.fn(async () => {
