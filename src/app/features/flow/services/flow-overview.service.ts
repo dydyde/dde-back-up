@@ -178,6 +178,8 @@ export class FlowOverviewService {
           observed: this.diagram,
           'animationManager.isEnabled': false,
           autoScale: go.AutoScale.None,
+          // 禁用 Overview 内建 click/drag 交互，避免和手动 box 拖拽竞争。
+          isEnabled: false,
           // 强制使用高像素比渲染（至少为 2），大幅提升小地图的清晰度和视网膜屏幕支持
           'computePixelRatio': () => Math.max(window.devicePixelRatio || 1, 2)
         });

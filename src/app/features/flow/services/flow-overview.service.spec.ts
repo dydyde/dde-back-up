@@ -182,6 +182,11 @@ describe('FlowOverviewService', () => {
     expect(overview.autoScale).toBe(go.AutoScale.None);
   });
 
+  it('Overview 必须禁用内建交互，避免与手动 box 拖拽竞争', () => {
+    const overview = service.overviewInstance as unknown as { isEnabled: boolean };
+    expect(overview.isEnabled).toBe(false);
+  });
+
   it('松开小地图预览框后仍按最后拖拽视口重绘，避免内容弹跳', () => {
     const overview = service.overviewInstance as unknown as {
       centerRect: ReturnType<typeof vi.fn>;
