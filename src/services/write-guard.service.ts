@@ -29,10 +29,15 @@ interface WriteGuardEnvironmentSlice {
   readOnlyPreview?: boolean;
   originGateMode?: 'off' | 'redirect' | 'read-only' | 'export-only';
   deploymentTarget?: string;
+  canonicalOrigin?: string;
 }
 
 @Injectable({ providedIn: 'root' })
 export class WriteGuardService {
+  private static readonly RUNTIME_OVERRIDE_KEY = '__NANOFLOW_WRITE_GUARD__';
+  private static readonly ORIGIN_GATE_FIRED_KEY = 'nanoflow.originGate.fired';
+  private static readonly STALE_RUNTIME_OVERRIDE_TTL_MS = 10 * 60 * 1000;
+
   private readonly logger = inject(LoggerService).category('WriteGuard');
 
   /** 启动时静态判定的基线模式（来自 environment）。 */
@@ -100,8 +105,15 @@ export class WriteGuardService {
   private readRuntimeOverride(): WriteGuardMode | null {
     if (typeof sessionStorage === 'undefined') return null;
     try {
-      const raw = sessionStorage.getItem('__NANOFLOW_WRITE_GUARD__');
-      if (raw === 'read-only' || raw === 'export-only') return raw;
+      const raw = sessionStorage.getItem(WriteGuardService.RUNTIME_OVERRIDE_KEY);
+      if (raw === 'read-only' || raw === 'export-only') {
+        if (this.shouldClearStaleRuntimeOverride(raw)) {
+          this.clearRuntimeOverrideMarkers();
+          this.logger.info(`writeguard_stale_override_cleared: ${raw}`);
+          return null;
+        }
+        return raw;
+      }
       return null;
     } catch {
       // sessionStorage 不可用（例如 third-party cookie 被禁、隐私模式），
@@ -114,9 +126,69 @@ export class WriteGuardService {
   private persistRuntimeOverride(mode: WriteGuardMode): void {
     if (typeof sessionStorage === 'undefined') return;
     try {
-      sessionStorage.setItem('__NANOFLOW_WRITE_GUARD__', mode);
+      sessionStorage.setItem(WriteGuardService.RUNTIME_OVERRIDE_KEY, mode);
     } catch {
       // sessionStorage 不可用时忽略 —— mode signal 仍然生效。
+    }
+  }
+
+  private shouldClearStaleRuntimeOverride(mode: WriteGuardMode): boolean {
+    if (this.computeBaselineMode() !== 'writable') {
+      return false;
+    }
+
+    const env = environment as unknown as WriteGuardEnvironmentSlice;
+    if (
+      typeof window !== 'undefined'
+      && typeof env.canonicalOrigin === 'string'
+      && env.canonicalOrigin.length > 0
+      && window.location.origin !== env.canonicalOrigin
+    ) {
+      return false;
+    }
+
+    const firedAt = this.readOriginGateFiredAt();
+    if (firedAt == null) {
+      return false;
+    }
+
+    return Date.now() - firedAt > WriteGuardService.STALE_RUNTIME_OVERRIDE_TTL_MS;
+  }
+
+  private readOriginGateFiredAt(): number | null {
+    if (typeof sessionStorage === 'undefined') {
+      return null;
+    }
+
+    try {
+      const raw = sessionStorage.getItem(WriteGuardService.ORIGIN_GATE_FIRED_KEY);
+      if (!raw) {
+        return null;
+      }
+
+      const parsed = JSON.parse(raw) as { ts?: unknown; mode?: unknown };
+      if (parsed.mode !== 'read-only' && parsed.mode !== 'export-only' && parsed.mode !== 'redirect') {
+        return null;
+      }
+
+      if (typeof parsed.ts !== 'string') {
+        return null;
+      }
+
+      const parsedMs = Date.parse(parsed.ts);
+      return Number.isFinite(parsedMs) ? parsedMs : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private clearRuntimeOverrideMarkers(): void {
+    if (typeof sessionStorage === 'undefined') return;
+    try {
+      sessionStorage.removeItem(WriteGuardService.RUNTIME_OVERRIDE_KEY);
+      sessionStorage.removeItem(WriteGuardService.ORIGIN_GATE_FIRED_KEY);
+    } catch {
+      // sessionStorage 不可用时忽略。
     }
   }
 

@@ -20,6 +20,7 @@ interface MutableEnv {
   readOnlyPreview: boolean;
   originGateMode: string;
   deploymentTarget: string;
+  canonicalOrigin?: string;
 }
 
 function buildService(): WriteGuardService {
@@ -36,14 +37,19 @@ describe('WriteGuardService', () => {
 
   beforeEach(() => {
     mockLoggerCategory.info.mockReset();
+    vi.useRealTimers();
     if (typeof sessionStorage !== 'undefined') {
-      try { sessionStorage.removeItem('__NANOFLOW_WRITE_GUARD__'); } catch { /* noop */ }
+      try {
+        sessionStorage.removeItem('__NANOFLOW_WRITE_GUARD__');
+        sessionStorage.removeItem('nanoflow.originGate.fired');
+      } catch { /* noop */ }
     }
     const env = environment as unknown as MutableEnv;
     originalEnv = {
       readOnlyPreview: env.readOnlyPreview,
       originGateMode: env.originGateMode,
       deploymentTarget: env.deploymentTarget,
+      canonicalOrigin: env.canonicalOrigin,
     };
   });
 
@@ -52,6 +58,8 @@ describe('WriteGuardService', () => {
     env.readOnlyPreview = originalEnv.readOnlyPreview;
     env.originGateMode = originalEnv.originGateMode;
     env.deploymentTarget = originalEnv.deploymentTarget;
+    env.canonicalOrigin = originalEnv.canonicalOrigin;
+    vi.useRealTimers();
   });
 
   it('默认 environment 下 writable，assertWritable 返回 true', () => {
@@ -158,5 +166,55 @@ describe('WriteGuardService', () => {
     guard.assertWritable('b');
     guard.assertWritable('c');
     expect(mockLoggerCategory.info).toHaveBeenCalledTimes(1);
+  });
+
+  it('writable 且 canonical origin 下应自动清理过期 runtime write guard 标记', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-05-11T12:00:00.000Z'));
+
+    const env = environment as unknown as MutableEnv;
+    env.readOnlyPreview = false;
+    env.originGateMode = 'off';
+    env.deploymentTarget = 'local';
+    env.canonicalOrigin = window.location.origin;
+
+    sessionStorage.setItem('__NANOFLOW_WRITE_GUARD__', 'export-only');
+    sessionStorage.setItem('nanoflow.originGate.fired', JSON.stringify({
+      from: window.location.origin,
+      to: window.location.origin,
+      mode: 'export-only',
+      ts: '2026-05-11T11:40:00.000Z',
+    }));
+
+    const guard = buildService();
+
+    expect(guard.mode()).toBe('writable');
+    expect(sessionStorage.getItem('__NANOFLOW_WRITE_GUARD__')).toBeNull();
+    expect(sessionStorage.getItem('nanoflow.originGate.fired')).toBeNull();
+    expect(mockLoggerCategory.info).toHaveBeenCalledWith('writeguard_stale_override_cleared: export-only');
+  });
+
+  it('新近的 runtime write guard 标记不应被提前清理', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-05-11T12:00:00.000Z'));
+
+    const env = environment as unknown as MutableEnv;
+    env.readOnlyPreview = false;
+    env.originGateMode = 'off';
+    env.deploymentTarget = 'local';
+    env.canonicalOrigin = window.location.origin;
+
+    sessionStorage.setItem('__NANOFLOW_WRITE_GUARD__', 'export-only');
+    sessionStorage.setItem('nanoflow.originGate.fired', JSON.stringify({
+      from: window.location.origin,
+      to: window.location.origin,
+      mode: 'export-only',
+      ts: '2026-05-11T11:56:00.000Z',
+    }));
+
+    const guard = buildService();
+
+    expect(guard.mode()).toBe('export-only');
+    expect(sessionStorage.getItem('__NANOFLOW_WRITE_GUARD__')).toBe('export-only');
   });
 });
