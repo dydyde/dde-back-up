@@ -8,6 +8,11 @@ import { AUTH_CONFIG } from "../../../config/auth.config";
 import { SIYUAN_CONFIG } from "../../../config/siyuan.config";
 import { ExternalSourceCacheService } from "./external-source-cache.service";
 import { ExternalSourceLinkStore } from "./external-source-link.store";
+import {
+  getRemainingBrowserNetworkResumeDelayMs,
+  isBrowserNetworkSuspendedError,
+  isBrowserNetworkSuspendedWindow,
+} from "../../../utils/browser-network-suspension";
 import type {
   ExternalSourceLink,
   ExternalSourceRole,
@@ -20,6 +25,12 @@ import {
 
 /** Postgres 唯一约束冲突 errorCode；命名常量便于检索 23505 的所有处理位置。 */
 const POSTGRES_UNIQUE_VIOLATION = "23505";
+const NETWORK_RESUME_RETRY_BUFFER_MS = 50;
+
+type RemotePullResult = {
+  links: ExternalSourceLink[];
+  deferredBySuspension: boolean;
+};
 
 interface ExternalSourceLinkRow {
   id: string;
@@ -78,10 +89,15 @@ export class ExternalSourceLinkService {
   private refreshPromise: Promise<void> | null = null;
   /** 浏览器事件监听器解绑句柄，确保 service 销毁时不泄漏。 */
   private opportunisticListenersBound = false;
+  private resumeSyncTimer: ReturnType<typeof setTimeout> | null = null;
+  private resumeSyncForceRefresh = false;
 
   constructor() {
     // 单例 service 在 root 注入器销毁时（HMR/SSR teardown）解绑事件监听器，避免内存泄漏。
-    inject(DestroyRef).onDestroy(() => this.unbindOpportunisticListeners());
+    inject(DestroyRef).onDestroy(() => {
+      this.clearResumeSyncTimer();
+      this.unbindOpportunisticListeners();
+    });
   }
 
   async ensureLoaded(): Promise<void> {
@@ -100,13 +116,15 @@ export class ExternalSourceLinkService {
 
     const localLinks = await this.cache.loadLinks();
     this.store.replaceAll(this.mergeLinks(localLinks, []));
-    const remoteLinks = await this.pullRemoteLinks();
-    this.lastPullAt = Date.now();
-    const merged = this.mergeLinks(localLinks, remoteLinks);
+    const remotePull = await this.pullRemoteLinks();
+    const merged = this.mergeLinks(localLinks, remotePull.links);
     this.store.replaceAll(merged);
     await this.cache.saveLinks(merged);
-    await this.pushLocalNewerLinks(merged, remoteLinks);
-    void this.flushPendingLinks();
+    if (!remotePull.deferredBySuspension) {
+      this.lastPullAt = Date.now();
+      await this.pushLocalNewerLinks(merged, remotePull.links);
+      void this.flushPendingLinks();
+    }
     this.bindOpportunisticListeners();
   }
 
@@ -129,12 +147,16 @@ export class ExternalSourceLinkService {
 
   private async runRefresh(): Promise<void> {
     const localLinks = await this.cache.loadLinks();
-    const remoteLinks = await this.pullRemoteLinks();
+    const remotePull = await this.pullRemoteLinks();
+    if (remotePull.deferredBySuspension) {
+      return;
+    }
+
     this.lastPullAt = Date.now();
-    const merged = this.mergeLinks(localLinks, remoteLinks);
+    const merged = this.mergeLinks(localLinks, remotePull.links);
     this.store.replaceAll(merged);
     await this.cache.saveLinks(merged);
-    await this.pushLocalNewerLinks(merged, remoteLinks);
+    await this.pushLocalNewerLinks(merged, remotePull.links);
   }
 
   private bindOpportunisticListeners(): void {
@@ -153,13 +175,14 @@ export class ExternalSourceLinkService {
   }
 
   private readonly onVisibilityChange = (): void => {
-    if (document.visibilityState === "visible") void this.refreshIfStale();
+    if (document.visibilityState === "visible") {
+      this.scheduleResumeSync(false);
+    }
   };
 
   private readonly onOnline = (): void => {
-    // 网络恢复时既要 flush pending，也要拉一次远端真相，强制忽略 staleness。
-    void this.refreshIfStale(true);
-    void this.flushPendingLinks();
+    // 网络恢复时要等待浏览器恢复保护期结束，再 flush pending / 拉远端真相。
+    this.scheduleResumeSync(true);
   };
 
   activeLinksForTask(taskId: string): ExternalSourceLink[] {
@@ -286,11 +309,17 @@ export class ExternalSourceLinkService {
   }
 
   private async flushPendingLinksInternal(): Promise<void> {
+    if (this.deferRemoteWorkForSuspension("浏览器网络挂起，延后刷新思源锚点 pending 队列")) {
+      return;
+    }
+
     const pending = await this.cache.loadPendingLinks();
     for (const entry of pending) {
       const result = await this.pushLink(entry.link);
       if (result.outcome === "success" || result.outcome === "drop") {
         await this.cache.removePendingLink(entry.link.id);
+      } else if (result.deferredBySuspension) {
+        return;
       } else {
         await this.cache.recordPendingFailure(entry.link.id, result.errorCode);
       }
@@ -302,10 +331,21 @@ export class ExternalSourceLinkService {
     await this.cache.saveLinks(this.mergeLinks(this.links(), []));
   }
 
-  private async pullRemoteLinks(): Promise<ExternalSourceLink[]> {
-    const client = await this.getClient();
+  private async pullRemoteLinks(): Promise<RemotePullResult> {
     const userId = this.currentUserId();
-    if (!client || userId === AUTH_CONFIG.LOCAL_MODE_USER_ID) return [];
+    if (userId === AUTH_CONFIG.LOCAL_MODE_USER_ID) {
+      return { links: [], deferredBySuspension: false };
+    }
+
+    if (this.deferRemoteWorkForSuspension("浏览器网络挂起，延后拉取思源锚点", { userId })) {
+      return { links: [], deferredBySuspension: true };
+    }
+
+    const client = await this.getClient();
+    if (!client) {
+      return { links: [], deferredBySuspension: false };
+    }
+
     try {
       const { data, error } = await client
         .from("external_source_links")
@@ -314,12 +354,20 @@ export class ExternalSourceLinkService {
         )
         .eq("user_id", userId);
       if (error) throw error;
-      return (data ?? []).map((row) => this.rowToLink(row));
+      return {
+        links: (data ?? []).map((row) => this.rowToLink(row)),
+        deferredBySuspension: false,
+      };
     } catch (error) {
+      if (isBrowserNetworkSuspendedError(error) || isBrowserNetworkSuspendedWindow()) {
+        this.logSuspensionDeferral("浏览器网络挂起，延后拉取思源锚点", { userId });
+        return { links: [], deferredBySuspension: true };
+      }
+
       this.logger.warn("拉取思源锚点失败，保留本地状态", {
         message: error instanceof Error ? error.message : "unknown",
       });
-      return [];
+      return { links: [], deferredBySuspension: false };
     }
   }
 
@@ -328,14 +376,37 @@ export class ExternalSourceLinkService {
     remoteLinks: ExternalSourceLink[],
   ): Promise<void> {
     const remoteById = new Map(remoteLinks.map((link) => [link.id, link]));
-    for (const local of localLinks) {
+    const localsToPush = localLinks.filter((local) => {
       const remote = remoteById.get(local.id);
-      if (remote && local.updatedAt <= remote.updatedAt) continue;
+      return !remote || local.updatedAt > remote.updatedAt;
+    });
+
+    if (localsToPush.length === 0) {
+      return;
+    }
+
+    if (this.deferRemoteWorkForSuspension("浏览器网络挂起，延后推送本地较新的思源锚点", {
+      linkCount: localsToPush.length,
+    })) {
+      for (const local of localsToPush) {
+        await this.cache.upsertPendingLink(local, { resetRetryCount: false });
+      }
+      return;
+    }
+
+    for (let index = 0; index < localsToPush.length; index += 1) {
+      const local = localsToPush[index];
       // 已确认在线（pullRemoteLinks 成功），优先直接推送，避免 IndexedDB 写放大；
       // 推送失败时再走 pending + retry 路径。
       const result = await this.pushLink(local);
       if (result.outcome !== "success" && result.outcome !== "drop") {
-        await this.cache.upsertPendingLink(local, { resetRetryCount: true });
+        await this.cache.upsertPendingLink(local, { resetRetryCount: !result.deferredBySuspension });
+        if (result.deferredBySuspension) {
+          for (const deferred of localsToPush.slice(index + 1)) {
+            await this.cache.upsertPendingLink(deferred, { resetRetryCount: false });
+          }
+          return;
+        }
       }
     }
   }
@@ -345,10 +416,16 @@ export class ExternalSourceLinkService {
   ): Promise<
     | { outcome: "success" }
     | { outcome: "drop"; reason: "local-mode" | "no-client" | "duplicate" }
-    | { outcome: "retry"; errorCode: string }
+    | { outcome: "retry"; errorCode: string; deferredBySuspension?: boolean }
   > {
-    const client = await this.getClient();
     const userId = this.currentUserId();
+    if (this.deferRemoteWorkForSuspension("浏览器网络挂起，延后推送思源锚点", {
+      linkId: this.safeId(link.id),
+    })) {
+      return { outcome: "retry", errorCode: "browser-network-suspended", deferredBySuspension: true };
+    }
+
+    const client = await this.getClient();
     if (!client) return { outcome: "drop", reason: "no-client" };
     if (userId === AUTH_CONFIG.LOCAL_MODE_USER_ID)
       return { outcome: "drop", reason: "local-mode" };
@@ -374,6 +451,13 @@ export class ExternalSourceLinkService {
       }
       return { outcome: "success" };
     } catch (error) {
+      if (isBrowserNetworkSuspendedError(error) || isBrowserNetworkSuspendedWindow()) {
+        this.logSuspensionDeferral("浏览器网络挂起，延后推送思源锚点", {
+          linkId: this.safeId(link.id),
+        });
+        return { outcome: "retry", errorCode: "browser-network-suspended", deferredBySuspension: true };
+      }
+
       const errorCode = this.classifyPushError(error);
       this.logger.warn("推送思源锚点失败，已保留本机重试", {
         linkId: this.safeId(link.id),
@@ -385,6 +469,10 @@ export class ExternalSourceLinkService {
   }
 
   private classifyPushError(error: unknown): string {
+    if (isBrowserNetworkSuspendedError(error)) {
+      return "browser-network-suspended";
+    }
+
     if (error && typeof error === "object") {
       const code = (error as { code?: unknown }).code;
       if (typeof code === "string" && code.length > 0) return code;
@@ -543,5 +631,60 @@ export class ExternalSourceLinkService {
 
   private safeId(value: string): string {
     return value.length > 12 ? `${value.slice(0, 8)}…` : value;
+  }
+
+  private deferRemoteWorkForSuspension(
+    message: string,
+    details?: Record<string, unknown>,
+  ): boolean {
+    if (!isBrowserNetworkSuspendedWindow()) {
+      return false;
+    }
+
+    this.logSuspensionDeferral(message, details);
+    return true;
+  }
+
+  private logSuspensionDeferral(
+    message: string,
+    details?: Record<string, unknown>,
+  ): void {
+    this.logger.info(message, {
+      ...details,
+      resumeDelayMs: getRemainingBrowserNetworkResumeDelayMs(),
+    });
+    this.scheduleResumeSync(true);
+  }
+
+  private scheduleResumeSync(forceRefresh = false): void {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    if (typeof document !== "undefined" && document.visibilityState !== "visible") {
+      return;
+    }
+
+    this.resumeSyncForceRefresh ||= forceRefresh;
+    if (this.resumeSyncTimer != null) {
+      return;
+    }
+
+    const delayMs = Math.max(100, getRemainingBrowserNetworkResumeDelayMs() + NETWORK_RESUME_RETRY_BUFFER_MS);
+    this.resumeSyncTimer = window.setTimeout(() => {
+      const shouldForceRefresh = this.resumeSyncForceRefresh;
+      this.resumeSyncForceRefresh = false;
+      this.resumeSyncTimer = null;
+      void this.refreshIfStale(shouldForceRefresh);
+      void this.flushPendingLinks();
+    }, delayMs);
+  }
+
+  private clearResumeSyncTimer(): void {
+    if (this.resumeSyncTimer != null) {
+      clearTimeout(this.resumeSyncTimer);
+      this.resumeSyncTimer = null;
+    }
+    this.resumeSyncForceRefresh = false;
   }
 }

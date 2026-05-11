@@ -1,36 +1,64 @@
 import { TestBed } from '@angular/core/testing';
 import { signal } from '@angular/core';
 import { clear } from 'idb-keyval';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AuthService } from '../../../services/auth.service';
 import { LoggerService } from '../../../services/logger.service';
 import { SupabaseClientService } from '../../../services/supabase-client.service';
 import { ToastService } from '../../../services/toast.service';
+import {
+  createBrowserNetworkSuspendedError,
+  resetBrowserNetworkSuspensionTrackingForTests,
+} from '../../../utils/browser-network-suspension';
 import { ExternalSourceCacheService } from './external-source-cache.service';
 import { ExternalSourceLinkService } from './external-source-link.service';
 
-function createLoggerMock() {
-  return { category: () => ({ warn: vi.fn(), info: vi.fn(), debug: vi.fn(), error: vi.fn() }) };
+function setVisibilityState(state: 'visible' | 'hidden') {
+  Object.defineProperty(document, 'visibilityState', {
+    value: state,
+    writable: true,
+    configurable: true,
+  });
 }
 
 describe('ExternalSourceLinkService', () => {
   let upsertPayloads: unknown[];
+  let upsertCallCount = 0;
+  let selectCallCount = 0;
   let authUser = signal('00000000-0000-0000-0000-000000000001');
   let shouldFailUpsert = false;
-  let upsertError: { code?: string; status?: number; message: string } | null = null;
+  let upsertError: { code?: string; status?: number; message: string } | Error | null = null;
   let remoteRows: unknown[] = [];
   let clientAsyncMock: ReturnType<typeof vi.fn>;
+  let loggerCategoryMock: {
+    warn: ReturnType<typeof vi.fn>;
+    info: ReturnType<typeof vi.fn>;
+    debug: ReturnType<typeof vi.fn>;
+    error: ReturnType<typeof vi.fn>;
+  };
 
   beforeEach(async () => {
     await clear();
+    vi.useRealTimers();
+    resetBrowserNetworkSuspensionTrackingForTests();
+    setVisibilityState('visible');
     upsertPayloads = [];
+    upsertCallCount = 0;
+    selectCallCount = 0;
     authUser = signal('00000000-0000-0000-0000-000000000001');
     shouldFailUpsert = false;
     upsertError = null;
     remoteRows = [];
+    loggerCategoryMock = { warn: vi.fn(), info: vi.fn(), debug: vi.fn(), error: vi.fn() };
     const from = vi.fn((table: string) => ({
-      select: vi.fn(() => ({ eq: vi.fn(async () => ({ data: remoteRows, error: null })) })),
+      select: vi.fn(() => ({
+        eq: vi.fn(async () => {
+          selectCallCount += 1;
+          return { data: remoteRows, error: null };
+        }),
+      })),
       upsert: vi.fn(async (payload: unknown) => {
+        upsertCallCount += 1;
         if (upsertError) return { error: upsertError };
         if (shouldFailUpsert) return { error: new Error('offline') };
         upsertPayloads.push({ table, payload });
@@ -45,9 +73,15 @@ describe('ExternalSourceLinkService', () => {
         { provide: AuthService, useValue: { currentUserId: authUser } },
         { provide: SupabaseClientService, useValue: { clientAsync: clientAsyncMock } },
         { provide: ToastService, useValue: { success: vi.fn(), info: vi.fn(), error: vi.fn() } },
-        { provide: LoggerService, useValue: createLoggerMock() },
+        { provide: LoggerService, useValue: { category: () => loggerCategoryMock } },
       ],
     });
+  });
+
+  afterEach(() => {
+    resetBrowserNetworkSuspensionTrackingForTests();
+    setVisibilityState('visible');
+    vi.useRealTimers();
   });
 
   it('creates a local-first SiYuan pointer with client uuid and standard deep link', async () => {
@@ -236,5 +270,75 @@ describe('ExternalSourceLinkService', () => {
     expect(service.firstActiveLinkForTask('task-remote')?.id).toBe(
       'cccccccc-cccc-cccc-cccc-cccccccccccc',
     );
+  });
+
+  it('浏览器恢复保护期内应延后 remote pull，并在保护期结束后自动补拉', async () => {
+    setVisibilityState('hidden');
+    const service = TestBed.inject(ExternalSourceLinkService);
+    const refreshSpy = vi.spyOn(service, 'refreshIfStale');
+
+    await service.ensureLoaded();
+    expect(selectCallCount).toBe(0);
+
+    vi.useFakeTimers();
+    try {
+      setVisibilityState('visible');
+      document.dispatchEvent(new Event('visibilitychange'));
+
+      await vi.advanceTimersByTimeAsync(1549);
+      expect(selectCallCount).toBe(0);
+
+      await vi.advanceTimersByTimeAsync(1);
+      expect(refreshSpy).toHaveBeenCalledWith(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('BrowserNetworkSuspendedError 不应消耗思源锚点 pending 的 retry budget', async () => {
+    const service = TestBed.inject(ExternalSourceLinkService);
+    const cache = TestBed.inject(ExternalSourceCacheService);
+
+    upsertError = createBrowserNetworkSuspendedError();
+    await service.bindSiyuanBlock('task-1', '20260426123456-abc1234');
+    await service.flushPendingLinks();
+
+    const pending = await cache.loadPendingLinks();
+    expect(upsertCallCount).toBeGreaterThan(0);
+    expect(pending).toHaveLength(1);
+    expect(pending[0].retryCount).toBe(0);
+    expect(loggerCategoryMock.warn).not.toHaveBeenCalledWith(
+      '推送思源锚点失败，已保留本机重试',
+      expect.objectContaining({ errorCode: 'browser-network-suspended' }),
+    );
+  });
+
+  it('suspension 延后 pushLocalNewerLinks 时应保留已有 pending retryCount', async () => {
+    const service = TestBed.inject(ExternalSourceLinkService) as unknown as {
+      pushLocalNewerLinks(localLinks: Array<Record<string, unknown>>, remoteLinks: Array<Record<string, unknown>>): Promise<void>;
+    };
+    const cache = TestBed.inject(ExternalSourceCacheService);
+    const now = new Date().toISOString();
+    const link = {
+      id: 'dddddddd-dddd-dddd-dddd-dddddddddddd',
+      taskId: 'task-1',
+      sourceType: 'siyuan-block' as const,
+      targetId: '20260426123456-abc1234',
+      uri: 'siyuan://blocks/20260426123456-abc1234?focus=1',
+      sortOrder: 0,
+      deletedAt: null,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    await cache.upsertPendingLink(link, { resetRetryCount: true });
+    await cache.recordPendingFailure(link.id, 'offline');
+    setVisibilityState('hidden');
+
+    await service.pushLocalNewerLinks([link], []);
+
+    const pending = await cache.loadPendingLinks();
+    expect(pending).toHaveLength(1);
+    expect(pending[0].retryCount).toBe(1);
   });
 });
