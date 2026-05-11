@@ -1637,6 +1637,7 @@ export class BlackBoxSyncService {
         const { data: serverRow, error: preflightError } = await client
           .from('black_box_entries')
           .select('id, project_id, user_id, content, focus_meta, date, created_at, updated_at, is_read, is_completed, is_archived, snooze_until, snooze_count, deleted_at')
+          .eq('user_id', sessionUserId)
           .eq('id', entry.id)
           .maybeSingle();
 

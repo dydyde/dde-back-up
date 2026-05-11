@@ -48,6 +48,17 @@ function createScopedQuery<TQuery extends Record<string, unknown>>(
   return scoped;
 }
 
+function createPreflightQuery(
+  maybeSingle: ReturnType<typeof vi.fn>,
+): { eq: ReturnType<typeof vi.fn>; maybeSingle: ReturnType<typeof vi.fn> } {
+  const query = {
+    eq: vi.fn(),
+    maybeSingle,
+  };
+  query.eq.mockReturnValue(query);
+  return query;
+}
+
 describe('BlackBoxSyncService', () => {
   let service: BlackBoxSyncService;
   let initDbSpy: ReturnType<typeof vi.spyOn>;
@@ -491,13 +502,11 @@ describe('BlackBoxSyncService', () => {
       serverUpdatedAt: '2026-03-04T00:00:01.000Z',
       raw: {},
     });
+    const maybeSingle = vi.fn(async () => ({ data: null, error: null }));
+    const preflightQuery = createPreflightQuery(maybeSingle);
     const upsert = vi.fn();
     const from = vi.fn(() => ({
-      select: vi.fn(() => ({
-        eq: vi.fn(() => ({
-          maybeSingle: vi.fn(async () => ({ data: null, error: null })),
-        })),
-      })),
+      select: vi.fn(() => preflightQuery),
       upsert,
     }));
     const supabase = TestBed.inject(SupabaseClientService) as unknown as {
@@ -509,6 +518,8 @@ describe('BlackBoxSyncService', () => {
 
     await expect(service.pushToServer(entry)).resolves.toBe(true);
 
+    expect(preflightQuery.eq).toHaveBeenCalledWith('user_id', 'user-1');
+    expect(preflightQuery.eq).toHaveBeenCalledWith('id', entry.id);
     expect(mockSyncRpcClient.upsertBlackboxEntry).toHaveBeenCalledWith(expect.objectContaining({
       operationId: expect.any(String),
       entry,
@@ -542,13 +553,11 @@ describe('BlackBoxSyncService', () => {
       serverUpdatedAt: '2026-03-04T00:00:01.000Z',
       raw: {},
     });
+    const maybeSingle = vi.fn(async () => ({ data: null, error: null }));
+    const preflightQuery = createPreflightQuery(maybeSingle);
     const upsert = vi.fn();
     const from = vi.fn(() => ({
-      select: vi.fn(() => ({
-        eq: vi.fn(() => ({
-          maybeSingle: vi.fn(async () => ({ data: null, error: null })),
-        })),
-      })),
+      select: vi.fn(() => preflightQuery),
       upsert,
     }));
     const supabase = TestBed.inject(SupabaseClientService) as unknown as {
@@ -606,11 +615,10 @@ describe('BlackBoxSyncService', () => {
       raw: {},
     });
     const maybeSingle = vi.fn(async () => ({ data: serverRow, error: null }));
+    const preflightQuery = createPreflightQuery(maybeSingle);
     const upsert = vi.fn();
     const from = vi.fn(() => ({
-      select: vi.fn(() => ({
-        eq: vi.fn(() => ({ maybeSingle })),
-      })),
+      select: vi.fn(() => preflightQuery),
       upsert,
     }));
     const supabase = TestBed.inject(SupabaseClientService) as unknown as {
@@ -650,13 +658,11 @@ describe('BlackBoxSyncService', () => {
       remoteUpdatedAt: '2026-03-04T00:00:05.000Z',
       raw: {},
     });
+    const maybeSingle = vi.fn(async () => ({ data: null, error: null }));
+    const preflightQuery = createPreflightQuery(maybeSingle);
     const upsert = vi.fn();
     const from = vi.fn(() => ({
-      select: vi.fn(() => ({
-        eq: vi.fn(() => ({
-          maybeSingle: vi.fn(async () => ({ data: null, error: null })),
-        })),
-      })),
+      select: vi.fn(() => preflightQuery),
       upsert,
     }));
     const supabase = TestBed.inject(SupabaseClientService) as unknown as {
@@ -748,9 +754,8 @@ describe('BlackBoxSyncService', () => {
       setBlackBoxEntries([newerLocalEntry]);
       return { data: serverRow, error: null };
     });
-    const select = vi.fn(() => ({
-      eq: vi.fn(() => ({ maybeSingle })),
-    }));
+    const preflightQuery = createPreflightQuery(maybeSingle);
+    const select = vi.fn(() => preflightQuery);
     const upsert = vi.fn();
     const from = vi.fn(() => ({ select, upsert }));
     const supabase = TestBed.inject(SupabaseClientService) as unknown as {
