@@ -112,6 +112,10 @@ export class WriteGuardService {
       return;
     }
 
+    if (this.readOriginGateFiredAt() != null) {
+      return;
+    }
+
     this.runtimeOverride.set(null);
     if (typeof sessionStorage !== 'undefined') {
       try {
