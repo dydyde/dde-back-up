@@ -89,7 +89,7 @@ export class ExternalSourceLinkService {
   private refreshPromise: Promise<void> | null = null;
   /** 浏览器事件监听器解绑句柄，确保 service 销毁时不泄漏。 */
   private opportunisticListenersBound = false;
-  private resumeSyncTimer: ReturnType<typeof setTimeout> | null = null;
+  private resumeSyncTimer: number | null = null;
   private resumeSyncForceRefresh = false;
 
   constructor() {
