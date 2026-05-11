@@ -1208,6 +1208,11 @@ export class BlackBoxSyncService {
       return;
     }
 
+    if (!expectedUserId) {
+      this.logger.warn('黑匣子 pending 对账缺少用户作用域，跳过远端对账以避免跨用户误判');
+      return;
+    }
+
     if (!this.isExpectedRealtimeContextCurrent(expectedUserId, expectedRealtimeGeneration)) {
       this.logger.info('黑匣子 pending 对账在会话切换后取消，避免旧用户数据写回当前会话');
       return;
@@ -1239,15 +1244,13 @@ export class BlackBoxSyncService {
         .from('black_box_entries')
         .select('*');
       const eqQuery = this.getOptionalQueryMethod<[string, string]>(query, 'eq');
-      if (expectedUserId && !eqQuery) {
+      if (!eqQuery) {
         this.logger.warn('黑匣子 pending 对账缺少 user_id 查询能力，跳过远端对账以避免跨用户误判', {
           batchSize: batchIds.length,
         });
         return;
       }
-      if (expectedUserId && eqQuery) {
-        query = eqQuery('user_id', expectedUserId) as typeof query;
-      }
+      query = eqQuery('user_id', expectedUserId) as typeof query;
 
       const inQuery = this.getOptionalQueryMethod<[string, string[]]>(query, 'in');
       if (!inQuery) {
@@ -2040,9 +2043,15 @@ export class BlackBoxSyncService {
         return false;
       }
 
-      if (!this.resolveRemoteSessionUserId()) {
+      const sessionUserId = this.resolveRemoteSessionUserId();
+      if (!sessionUserId) {
         this.logger.info('BlackBox 会话不可用，跳过远端增量拉取并保留本地快照');
         await this.loadFromLocal();
+        return false;
+      }
+      const scopedUserId = expectedUserId ?? sessionUserId;
+      if (scopedUserId !== sessionUserId) {
+        this.logger.info('黑匣子拉取用户上下文不一致，跳过远端读取');
         return false;
       }
 
@@ -2135,7 +2144,7 @@ export class BlackBoxSyncService {
           break;
         }
 
-      const page = await this.fetchBlackBoxDeltaPage(client, pageCursor, upperWatermark, expectedUserId);
+        const page = await this.fetchBlackBoxDeltaPage(client, pageCursor, upperWatermark, scopedUserId);
         error = page.error;
 
         if (
@@ -2145,7 +2154,7 @@ export class BlackBoxSyncService {
           const refreshResult = await this.sessionManager.tryRefreshSessionWithSession('BlackBoxSync.pullChanges');
           if (refreshResult.refreshed) {
             this.logger.info('BlackBox pullChanges 会话已刷新，重试增量拉取');
-            const retry = await this.fetchBlackBoxDeltaPage(client, pageCursor, upperWatermark, expectedUserId);
+            const retry = await this.fetchBlackBoxDeltaPage(client, pageCursor, upperWatermark, scopedUserId);
             error = retry.error;
             page.data = retry.data;
           }
@@ -2222,7 +2231,7 @@ export class BlackBoxSyncService {
         client,
         preferRemoteForSyncedLocalDuringPull,
         repairingFutureCursor,
-        expectedUserId,
+        scopedUserId,
         expectedRealtimeGeneration,
       );
 
@@ -2245,9 +2254,13 @@ export class BlackBoxSyncService {
     client: Awaited<ReturnType<SupabaseClientService['clientAsync']>>,
     cursor: BlackBoxSyncCursor,
     upperWatermark: string | null,
-    expectedUserId?: string,
+    expectedUserId: string,
   ): Promise<{ data: unknown[] | null; error: unknown }> {
     if (!client) return { data: null, error: null };
+    if (!expectedUserId) {
+      this.logger.warn('黑匣子增量拉取缺少用户作用域，跳过远端读取');
+      return { data: null, error: null };
+    }
 
     if (!this.isValidBlackBoxCursor(cursor)) {
       this.logger.warn('黑匣子分页游标无效，回退到安全全量窗口', {
@@ -2261,15 +2274,13 @@ export class BlackBoxSyncService {
         .from('black_box_entries')
         .select('*');
     const eqQuery = this.getOptionalQueryMethod<[string, string]>(baseQuery, 'eq');
-    if (expectedUserId && !eqQuery) {
+    if (!eqQuery) {
       this.logger.warn('黑匣子增量拉取缺少 user_id 查询能力，跳过远端读取以避免跨用户误拉', {
         hasCursorId: Boolean(cursor.id),
       });
       return { data: null, error: null };
     }
-    if (expectedUserId && eqQuery) {
-      baseQuery = eqQuery('user_id', expectedUserId) as typeof baseQuery;
-    }
+    baseQuery = eqQuery('user_id', expectedUserId) as typeof baseQuery;
 
     const keysetFilter = this.createSafeBlackBoxKeysetFilter(cursor);
     let query = keysetFilter

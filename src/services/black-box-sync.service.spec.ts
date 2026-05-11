@@ -957,6 +957,33 @@ describe('BlackBoxSyncService', () => {
     expect(orderedResult.order).toHaveBeenCalledWith('id', { ascending: true });
   });
 
+  it('should scope delta pull with resolved session user when caller has no expected user', async () => {
+    const orderedResult = {
+      data: [],
+      error: null,
+      order: vi.fn(() => orderedResult),
+    };
+    const gtQuery = vi.fn(() => orderedResult);
+    const scopedQuery = createScopedQuery({
+      gt: gtQuery,
+    });
+    const selectQuery = vi.fn(() => scopedQuery);
+    const from = vi.fn(() => ({ select: selectQuery }));
+    const rpc = vi.fn().mockResolvedValue({ data: null, error: null });
+    const supabase = TestBed.inject(SupabaseClientService) as unknown as {
+      clientAsync: ReturnType<typeof vi.fn>;
+    };
+    vi.spyOn(service, 'saveToLocal').mockResolvedValue(undefined);
+    supabase.clientAsync.mockResolvedValue({ from, rpc });
+
+    await (service as unknown as {
+      doPullChanges: (preferRemoteForSyncedLocalDuringPull: boolean, expectedUserId?: string) => Promise<boolean>;
+    }).doPullChanges(false, undefined);
+
+    expect(scopedQuery.eq).toHaveBeenCalledWith('user_id', 'user-1');
+    expect(gtQuery).toHaveBeenCalledWith('updated_at', '1970-01-01T00:00:00Z');
+  });
+
   it('should page black box delta pulls to avoid unbounded Supabase reads', async () => {
     const rows = [0, 1, 2].map(index => ({
       id: crypto.randomUUID(),
