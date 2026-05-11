@@ -415,9 +415,22 @@ export class BlackBoxSyncService {
       // 既抬高“待同步”数字，也会在缺少并发保护时把旧状态重新推回云端。
       const validPending = await this.resolvePendingEntriesForRecovery(entries);
 
-      if (validPending.length > 0) {
-        this.logger.info(`Recovering ${validPending.length} pending entries to RetryQueue`);
-        for (const entry of validPending) {
+      // 【2026-05-11 根因修复·路径 A·配套】先按当前会话过滤掉 owner-mismatch 的 pending，
+      // 同样走 selfHealOwnerMismatchedEntry，避免它们在 RetryQueue 里被静默吞掉后 IDB
+      // 一直挂着 pending，UI 长期显示 待同步。
+      const sessionUserId = this.resolveRemoteSessionUserId();
+      const recoverable: BlackBoxEntry[] = [];
+      for (const entry of validPending) {
+        if (sessionUserId && entry.userId !== sessionUserId) {
+          await this.selfHealOwnerMismatchedEntry(entry, sessionUserId, undefined);
+          continue;
+        }
+        recoverable.push(entry);
+      }
+
+      if (recoverable.length > 0) {
+        this.logger.info(`Recovering ${recoverable.length} pending entries to RetryQueue`);
+        for (const entry of recoverable) {
           this.retryQueueHandler(entry);
         }
       }
@@ -989,6 +1002,132 @@ export class BlackBoxSyncService {
   }
 
   /**
+   * 处理 owner-mismatch 的本地 pending 条目，避免 UI 长期显示 待同步。
+   * 见 pushToServer / recoverPendingEntries 的调用点。
+   *
+   * 处理策略：
+   * 1. entry.userId === LOCAL_MODE_USER_ID 且当前会话是合法云端 UUID → 改写 owner 后
+   *    通过 retryQueueHandler / pushToServer 续推（保护 local→cloud 数据迁移）；
+   * 2. entry.userId 不是合法 UUID（"dev-preview" 等历史脏数据） → 物理删除；
+   * 3. entry.userId 是合法 UUID 但与当前会话不一致（跨账号残留） → markEntrySyncConflict
+   *    把 syncStatus 由 pending 降级为 conflict，让 UI 立即收敛。
+   */
+  private async selfHealOwnerMismatchedEntry(
+    entry: BlackBoxEntry,
+    sessionUserId: string,
+    sourceUserId: string | undefined,
+  ): Promise<void> {
+    // Case 1: 历史 local-mode 条目登录云账号后未迁移 owner → 改写并续推。
+    // 若 sourceUserId 与 sessionUserId 不一致（罕见），说明 RetryQueue 持久化的归属和当前会话冲突，
+    // 此时不安全地直接改写，留给 Case 3 走 conflict 路径。
+    if (
+      entry.userId === AUTH_CONFIG.LOCAL_MODE_USER_ID
+      && (!sourceUserId || sourceUserId === sessionUserId)
+    ) {
+      const rebranded: BlackBoxEntry = {
+        ...entry,
+        userId: sessionUserId,
+        syncStatus: 'pending',
+      };
+      try {
+        await this.saveToLocal(rebranded);
+      } catch (error) {
+        this.logger.warn('黑匣子 owner 改写持久化失败，跳过续推，保留下次启动时再恢复', {
+          entryId: entry.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return;
+      }
+
+      const visibleEntry = blackBoxEntriesMap().get(entry.id);
+      if (!visibleEntry || visibleEntry.userId === entry.userId) {
+        updateBlackBoxEntry(rebranded);
+      }
+
+      if (this.retryQueueHandler) {
+        this.retryQueueHandler(rebranded);
+      } else {
+        // 没接入 RetryQueue 时降级为内联推送，确保不留 pending 残留。
+        void this.pushToServer(rebranded, sessionUserId).catch(err => {
+          this.logger.error(
+            '黑匣子 owner 改写后内联续推失败',
+            err instanceof Error ? err.message : String(err),
+          );
+        });
+      }
+      return;
+    }
+
+    // Case 2: 非法 UUID owner（含空串）—— 纯脏数据，本地物理清理。
+    if (!entry.userId || !isValidUUID(entry.userId)) {
+      try {
+        await this.deleteFromLocal(entry.id);
+      } catch (error) {
+        this.logger.debug('黑匣子非法 owner 条目本地删除失败，忽略错误', {
+          entryId: entry.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      // 同步把内存 Map 里的副本移除，避免 UI 继续展示这条孤儿
+      const inMemory = blackBoxEntriesMap();
+      if (inMemory.has(entry.id)) {
+        const next = new Map(inMemory);
+        next.delete(entry.id);
+        setBlackBoxEntries(Array.from(next.values()));
+      }
+      return;
+    }
+
+    // Case 3: 合法 UUID 但与当前会话不一致 → 标 conflict，UI 收敛
+    try {
+      await this.markEntrySyncConflict(entry);
+    } catch (error) {
+      this.logger.warn('黑匣子 owner 冲突标记失败，保留 pending 由后续循环重试', {
+        entryId: entry.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  /**
+   * 当 push 完成时发现 latestLocalAfterPush 比 entry 更晚，按业务字段等价性决定：
+   *   - 等价（差异只是 updatedAt 这种同步元数据）→ 升级为 synced，避免 UI 长期 待同步；
+   *   - 不等价（latestLocal 含未推送的真实编辑）→ 保留 pending，等下次同步循环承接。
+   * 这是「Fix 3·路径 B」的核心收敛点，RPC / 直接 upsert 两条路径共用。
+   */
+  private async upgradeEquivalentLatestLocalToSynced(
+    latestLocal: BlackBoxEntry,
+    pushedEntry: BlackBoxEntry,
+    serverUpdatedAt: string,
+    pushPath: 'rpc' | 'upsert',
+  ): Promise<void> {
+    if (this.hasEquivalentEntryState(latestLocal, pushedEntry)) {
+      const synced: BlackBoxEntry = {
+        ...latestLocal,
+        updatedAt: serverUpdatedAt,
+        syncStatus: 'synced',
+      };
+      await this.saveToLocal(synced);
+      updateBlackBoxEntry(synced);
+      this.logger.debug('黑匣子 push 完成后业务字段等价的更晚本地快照已升级为 synced', {
+        entryId: pushedEntry.id,
+        pushedUpdatedAt: pushedEntry.updatedAt,
+        latestLocalUpdatedAt: latestLocal.updatedAt,
+        serverUpdatedAt,
+        pushPath,
+      });
+      return;
+    }
+
+    this.logger.debug('黑匣子推送完成时检测到更晚的本地快照，跳过旧状态回写，等待 latestLocal 自身续推', {
+      entryId: pushedEntry.id,
+      pushedUpdatedAt: pushedEntry.updatedAt,
+      latestLocalUpdatedAt: latestLocal.updatedAt,
+      pushPath,
+    });
+  }
+
+  /**
    * 从本地 IndexedDB 删除指定条目
    * 用于清理脏数据（如非法 ID 的条目）
    */
@@ -1494,11 +1633,17 @@ export class BlackBoxSyncService {
 
       const latestLocalAfterPush = await this.resolveLatestLocalEntry(entry.id);
       if (this.isEntryNewer(latestLocalAfterPush, entry)) {
-        this.logger.debug('黑匣子 RPC 推送完成时检测到更晚的本地快照，跳过旧状态回写', {
-          entryId: entry.id,
-          pushedUpdatedAt: entry.updatedAt,
-          latestLocalUpdatedAt: latestLocalAfterPush?.updatedAt,
-        });
+        // 【2026-05-11 根因修复·路径 B】upsert 已完成、远端权威状态等于 entry，但本地这一小段
+        // 时间又被并发路径（pull merge / 另一次 scheduleSync 自身的 saveToLocal(pending)）
+        // bump 了 updatedAt。若两边业务字段完全等价，单纯是同步元数据的"叠写"，安全地把
+        // syncStatus 推到 synced，避免 UI 长期"待同步"；否则保留 pending 让 latestLocal
+        // 自身的 scheduleSync / RetryQueue 继续承接。
+        await this.upgradeEquivalentLatestLocalToSynced(
+          latestLocalAfterPush!,
+          entry,
+          serverUpdatedAt,
+          'rpc',
+        );
         return true;
       }
 
@@ -1574,6 +1719,15 @@ export class BlackBoxSyncService {
         hasEntryUserId: !!entry.userId,
         hasSourceUserId: !!sourceUserId,
       });
+      // 【2026-05-11 根因修复·路径 A】不能只是 return true 让 RetryQueue 丢弃这条任务——
+      // 否则本地 IDB 里 `syncStatus='pending'` 的脏数据永远没人改正，UI 长期显示 待同步。
+      // 这里按 owner 形态做"自愈"：
+      //   1) entry.userId === LOCAL_MODE_USER_ID 且当前会话是合法云端 UUID → 改写 owner，
+      //      再通过同步通道续推（保护 local→cloud 迁移期间的数据）；
+      //   2) entry.userId 不是合法 UUID（"dev-preview" 等历史脏数据）→ 物理删除；
+      //   3) entry.userId 是合法 UUID 但与当前会话不一致（跨账号残留）→ 标 conflict，
+      //      让 UI 立即收敛，不再误报 待同步。
+      await this.selfHealOwnerMismatchedEntry(entry, sessionUserId, sourceUserId);
       return true;
     }
 
@@ -1805,11 +1959,15 @@ export class BlackBoxSyncService {
 
       const latestLocalAfterPush = await this.resolveLatestLocalEntry(entry.id);
       if (this.isEntryNewer(latestLocalAfterPush, entry)) {
-        this.logger.debug('黑匣子推送完成时检测到更晚的本地快照，跳过旧状态回写', {
-          entryId: entry.id,
-          pushedUpdatedAt: entry.updatedAt,
-          latestLocalUpdatedAt: latestLocalAfterPush?.updatedAt,
-        });
+        // 【2026-05-11 根因修复·路径 B】upsert 完成但本地 latestLocal 比 entry 更晚。
+        // 与 RPC 路径同策：业务字段等价则升级为 synced；否则保留 pending 等 latestLocal
+        // 自己的同步链路续推。
+        await this.upgradeEquivalentLatestLocalToSynced(
+          latestLocalAfterPush!,
+          entry,
+          serverUpdatedAt,
+          'upsert',
+        );
       } else {
         const synced: BlackBoxEntry = {
           ...entry,
@@ -2467,6 +2625,21 @@ export class BlackBoxSyncService {
         });
         await this.saveToLocal(merged);
         updateBlackBoxEntry(merged);
+
+        // 【2026-05-11 根因修复·路径 C】保留 pending 后必须主动把 merged 重新入队，
+        // 否则没有任何机制会再次触发这条 entry 的 push，直到用户下次手动 update，
+        // 表现就是 UI 长期"待同步"。优先走 retryQueueHandler 享受主同步通道的
+        // 持久化 + 指数回退；没有 handler 时降级为内联 pushToServer。
+        if (this.retryQueueHandler) {
+          this.retryQueueHandler(merged);
+        } else {
+          void this.pushToServer(merged).catch(err => {
+            this.logger.error(
+              '黑匣子 mergeWithLocal 续推失败',
+              err instanceof Error ? err.message : String(err),
+            );
+          });
+        }
         return;
       }
     }
