@@ -1632,14 +1632,14 @@ export class BlackBoxSyncService {
       }
 
       const latestLocalAfterPush = await this.resolveLatestLocalEntry(entry.id);
-      if (this.isEntryNewer(latestLocalAfterPush, entry)) {
+      if (latestLocalAfterPush && this.isEntryNewer(latestLocalAfterPush, entry)) {
         // 【2026-05-11 根因修复·路径 B】upsert 已完成、远端权威状态等于 entry，但本地这一小段
         // 时间又被并发路径（pull merge / 另一次 scheduleSync 自身的 saveToLocal(pending)）
         // bump 了 updatedAt。若两边业务字段完全等价，单纯是同步元数据的"叠写"，安全地把
         // syncStatus 推到 synced，避免 UI 长期"待同步"；否则保留 pending 让 latestLocal
         // 自身的 scheduleSync / RetryQueue 继续承接。
         await this.upgradeEquivalentLatestLocalToSynced(
-          latestLocalAfterPush!,
+          latestLocalAfterPush,
           entry,
           serverUpdatedAt,
           'rpc',
@@ -1958,12 +1958,12 @@ export class BlackBoxSyncService {
       }
 
       const latestLocalAfterPush = await this.resolveLatestLocalEntry(entry.id);
-      if (this.isEntryNewer(latestLocalAfterPush, entry)) {
+      if (latestLocalAfterPush && this.isEntryNewer(latestLocalAfterPush, entry)) {
         // 【2026-05-11 根因修复·路径 B】upsert 完成但本地 latestLocal 比 entry 更晚。
         // 与 RPC 路径同策：业务字段等价则升级为 synced；否则保留 pending 等 latestLocal
         // 自己的同步链路续推。
         await this.upgradeEquivalentLatestLocalToSynced(
-          latestLocalAfterPush!,
+          latestLocalAfterPush,
           entry,
           serverUpdatedAt,
           'upsert',

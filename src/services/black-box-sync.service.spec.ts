@@ -1788,7 +1788,6 @@ describe('BlackBoxSyncService', () => {
   });
 
   it('recoverPendingEntries 检测到 owner-mismatch pending 时不再灌入 RetryQueue，而是走 selfHeal 路径', async () => {
-    const sessionId = 'user-1';
     const foreignOwnerId = crypto.randomUUID();
     const foreignPending = createEntry({
       id: crypto.randomUUID(),
@@ -1815,7 +1814,6 @@ describe('BlackBoxSyncService', () => {
       id: foreignPending.id,
       syncStatus: 'conflict',
     }));
-    void sessionId;
   });
 
   // ============= Fix 2 回归：mergeWithLocal 保留 pending 后必须重新调度推送 =============
