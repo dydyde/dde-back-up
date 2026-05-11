@@ -1208,6 +1208,11 @@ export class BlackBoxSyncService {
       return;
     }
 
+    if (!expectedUserId) {
+      this.logger.warn('黑匣子 pending 对账缺少用户作用域，跳过远端对账以避免跨用户误判');
+      return;
+    }
+
     if (!this.isExpectedRealtimeContextCurrent(expectedUserId, expectedRealtimeGeneration)) {
       this.logger.info('黑匣子 pending 对账在会话切换后取消，避免旧用户数据写回当前会话');
       return;
@@ -1235,10 +1240,27 @@ export class BlackBoxSyncService {
       }
 
       const batchIds = pendingIds.slice(offset, offset + batchSize);
-      const { data, error } = await client
+      let query = client
         .from('black_box_entries')
-        .select('*')
-        .in('id', batchIds);
+        .select('*');
+      const eqQuery = this.getOptionalQueryMethod<[string, string]>(query, 'eq');
+      if (!eqQuery) {
+        this.logger.warn('黑匣子 pending 对账缺少 user_id 查询能力，跳过远端对账以避免跨用户误判', {
+          batchSize: batchIds.length,
+        });
+        return;
+      }
+      query = eqQuery('user_id', expectedUserId) as typeof query;
+
+      const inQuery = this.getOptionalQueryMethod<[string, string[]]>(query, 'in');
+      if (!inQuery) {
+        this.logger.warn('黑匣子 pending 对账缺少 in 查询能力，保留本地 pending 状态', {
+          batchSize: batchIds.length,
+        });
+        return;
+      }
+
+      const { data, error } = await inQuery('id', batchIds) as { data: unknown[] | null; error: unknown };
 
       if (error) {
         const enhanced = supabaseErrorToError(error);
@@ -1255,7 +1277,7 @@ export class BlackBoxSyncService {
           return;
         }
 
-        const remoteEntry = this.mapRowToEntry(row);
+        const remoteEntry = this.mapRowToEntry(row as Record<string, unknown>);
 
         const localEntry = sourcePendingEntryMap?.get(remoteEntry.id) ?? blackBoxEntriesMap().get(remoteEntry.id);
         if (localEntry?.syncStatus === 'pending' && this.hasEquivalentEntryState(localEntry, remoteEntry)) {
@@ -1308,9 +1330,16 @@ export class BlackBoxSyncService {
           return;
         }
 
+        const syncStatusRepairs: BlackBoxEntry[] = [];
         const visibleEntries = entries
           .filter(entry => entry.userId === visibleUserId)
-          .map(entry => this.normalizeLocalOnlySyncStatus(entry, visibleUserId));
+          .map(entry => {
+            const normalized = this.normalizeLocalOnlySyncStatus(entry, visibleUserId);
+            if (normalized !== entry) {
+              syncStatusRepairs.push(normalized);
+            }
+            return normalized;
+          });
 
         // 【2026-04-23 根因修复】“手机端内容业务不同步”的关键兼防：
         // IDB 内实际有条目，但过滤器 visibleUserId 与所有条目 user_id 都不匹配，
@@ -1332,6 +1361,17 @@ export class BlackBoxSyncService {
 
         // 更新状态
         setBlackBoxEntries(visibleEntries);
+        if (syncStatusRepairs.length > 0) {
+          this.persistLocalOnlySyncStatusRepairs(syncStatusRepairs)
+            .then(() => resolve(visibleEntries))
+            .catch((error: unknown) => {
+              this.logger.debug('黑匣子本地缓存同步状态修复流程失败，保留内存归一化结果', {
+                error: error instanceof Error ? error.message : String(error),
+              });
+              resolve(visibleEntries);
+            });
+          return;
+        }
 
         resolve(visibleEntries);
       };
@@ -1389,6 +1429,19 @@ export class BlackBoxSyncService {
       ...entry,
       syncStatus: 'synced',
     };
+  }
+
+  private async persistLocalOnlySyncStatusRepairs(entries: BlackBoxEntry[]): Promise<void> {
+    for (const entry of entries) {
+      try {
+        await this.saveToLocal(entry);
+      } catch (error) {
+        this.logger.debug('黑匣子本地缓存同步状态修复持久化失败，保留内存归一化结果', {
+          entryId: entry.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
   }
 
   /**
@@ -1589,11 +1642,36 @@ export class BlackBoxSyncService {
       //     isArchived 等非单调编辑），以合并后的 entry 继续后续 upsert，绝不让已经被
       //     完成/已读/软删除的条目悄悄回潮。
       try {
-        const { data: serverRow, error: preflightError } = await client
+        let preflightQuery = client
           .from('black_box_entries')
-          .select('id, project_id, user_id, content, focus_meta, date, created_at, updated_at, is_read, is_completed, is_archived, snooze_until, snooze_count, deleted_at')
-          .eq('id', entry.id)
-          .maybeSingle();
+          .select('id, project_id, user_id, content, focus_meta, date, created_at, updated_at, is_read, is_completed, is_archived, snooze_until, snooze_count, deleted_at');
+        const eqUserQuery = this.getOptionalQueryMethod<[string, string]>(preflightQuery, 'eq');
+        if (!eqUserQuery) {
+          this.logger.warn('黑匣子推送预检缺少 user_id 查询能力，延后推送以避免覆盖未对账的服务端状态', {
+            entryId: entry.id,
+          });
+          return false;
+        }
+        preflightQuery = eqUserQuery('user_id', sessionUserId) as typeof preflightQuery;
+
+        const eqIdQuery = this.getOptionalQueryMethod<[string, string]>(preflightQuery, 'eq');
+        if (!eqIdQuery) {
+          this.logger.warn('黑匣子推送预检缺少 id 查询能力，延后推送以避免覆盖未对账的服务端状态', {
+            entryId: entry.id,
+          });
+          return false;
+        }
+        preflightQuery = eqIdQuery('id', entry.id) as typeof preflightQuery;
+
+        const maybeSingleQuery = this.getOptionalQueryMethod<[]>(preflightQuery, 'maybeSingle');
+        if (!maybeSingleQuery) {
+          this.logger.warn('黑匣子推送预检缺少 maybeSingle 查询能力，延后推送以避免覆盖未对账的服务端状态', {
+            entryId: entry.id,
+          });
+          return false;
+        }
+
+        const { data: serverRow, error: preflightError } = await maybeSingleQuery() as { data: unknown; error: unknown };
 
         if (!preflightError && serverRow) {
           const serverEntry = this.mapRowToEntry(serverRow as Record<string, unknown>);
@@ -1666,18 +1744,18 @@ export class BlackBoxSyncService {
         } else if (!preflightError && !serverRow) {
           syncRpcBaseUpdatedAt = null;
         } else if (preflightError) {
-          // 预检失败不阻塞推送（保持向后兼容），仅记录，便于后续排查
-          this.logger.debug('黑匣子推送预检 SELECT 失败，按原路径继续 upsert', {
+          this.logger.debug('黑匣子推送预检 SELECT 失败，延后推送等待下次对账', {
             entryId: entry.id,
             message: supabaseErrorToError(preflightError).message,
           });
+          return false;
         }
       } catch (preflightException) {
-        // 预检异常不应阻塞推送，降级到原 upsert 路径
-        this.logger.debug('黑匣子推送预检异常，按原路径继续', {
+        this.logger.debug('黑匣子推送预检异常，延后推送等待下次对账', {
           entryId: entry.id,
           error: preflightException instanceof Error ? preflightException.message : String(preflightException),
         });
+        return false;
       }
 
       if (this.shouldUseSyncRpc()) {
@@ -1998,9 +2076,15 @@ export class BlackBoxSyncService {
         return false;
       }
 
-      if (!this.resolveRemoteSessionUserId()) {
+      const sessionUserId = this.resolveRemoteSessionUserId();
+      if (!sessionUserId) {
         this.logger.info('BlackBox 会话不可用，跳过远端增量拉取并保留本地快照');
         await this.loadFromLocal();
+        return false;
+      }
+      const scopedUserId = expectedUserId ?? sessionUserId;
+      if (scopedUserId !== sessionUserId) {
+        this.logger.info('黑匣子拉取用户上下文不一致，跳过远端读取');
         return false;
       }
 
@@ -2093,7 +2177,7 @@ export class BlackBoxSyncService {
           break;
         }
 
-        const page = await this.fetchBlackBoxDeltaPage(client, pageCursor, upperWatermark);
+        const page = await this.fetchBlackBoxDeltaPage(client, pageCursor, upperWatermark, scopedUserId);
         error = page.error;
 
         if (
@@ -2103,7 +2187,7 @@ export class BlackBoxSyncService {
           const refreshResult = await this.sessionManager.tryRefreshSessionWithSession('BlackBoxSync.pullChanges');
           if (refreshResult.refreshed) {
             this.logger.info('BlackBox pullChanges 会话已刷新，重试增量拉取');
-            const retry = await this.fetchBlackBoxDeltaPage(client, pageCursor, upperWatermark);
+            const retry = await this.fetchBlackBoxDeltaPage(client, pageCursor, upperWatermark, scopedUserId);
             error = retry.error;
             page.data = retry.data;
           }
@@ -2154,6 +2238,12 @@ export class BlackBoxSyncService {
       }
 
       if (error) {
+        if (this.isBlackBoxScopedQueryUnavailable(error)) {
+          this.logger.warn('BlackBox 远端拉取缺少用户作用域查询能力，保留本地快照并等待下次重试');
+          await this.loadFromLocal();
+          return false;
+        }
+
         const finalErr = supabaseErrorToError(error);
         // 【鲁棒性 2026-04-16】浏览器网络挂起属瞬时错误，降级为 debug，回退到本地快照但不报 ERROR
         if (isBrowserNetworkSuspendedError(finalErr) || isBrowserNetworkSuspendedWindow()) {
@@ -2180,7 +2270,7 @@ export class BlackBoxSyncService {
         client,
         preferRemoteForSyncedLocalDuringPull,
         repairingFutureCursor,
-        expectedUserId,
+        scopedUserId,
         expectedRealtimeGeneration,
       );
 
@@ -2203,8 +2293,13 @@ export class BlackBoxSyncService {
     client: Awaited<ReturnType<SupabaseClientService['clientAsync']>>,
     cursor: BlackBoxSyncCursor,
     upperWatermark: string | null,
+    expectedUserId: string,
   ): Promise<{ data: unknown[] | null; error: unknown }> {
     if (!client) return { data: null, error: null };
+    if (!expectedUserId) {
+      this.logger.warn('黑匣子增量拉取缺少用户作用域，跳过远端读取');
+      return { data: null, error: this.createBlackBoxScopedQueryUnavailableError() };
+    }
 
     if (!this.isValidBlackBoxCursor(cursor)) {
       this.logger.warn('黑匣子分页游标无效，回退到安全全量窗口', {
@@ -2214,31 +2309,24 @@ export class BlackBoxSyncService {
       cursor = { updatedAt: '1970-01-01T00:00:00Z', id: '' };
     }
 
+    let baseQuery = client
+        .from('black_box_entries')
+        .select('*');
+    const eqQuery = this.getOptionalQueryMethod<[string, string]>(baseQuery, 'eq');
+    if (!eqQuery) {
+      this.logger.warn('黑匣子增量拉取缺少 user_id 查询能力，跳过远端读取以避免跨用户误拉', {
+        hasCursorId: Boolean(cursor.id),
+      });
+      return { data: null, error: this.createBlackBoxScopedQueryUnavailableError() };
+    }
+    baseQuery = eqQuery('user_id', expectedUserId) as typeof baseQuery;
+
     const keysetFilter = this.createSafeBlackBoxKeysetFilter(cursor);
     let query = keysetFilter
-      ? client
-        .from('black_box_entries')
-        .select('*')
-        .or(keysetFilter)
-      : client
-        .from('black_box_entries')
-        .select('*')
-        .gt('updated_at', cursor.updatedAt);
+      ? baseQuery.or(keysetFilter)
+      : baseQuery.gt('updated_at', cursor.updatedAt);
 
-    const getOptionalQueryMethod = <TArgs extends unknown[]>(
-      target: unknown,
-      methodName: string,
-    ): ((...args: TArgs) => unknown) | undefined => {
-      const targetObject = target as Record<string, unknown>;
-      const candidate = targetObject[methodName];
-      if (typeof candidate !== 'function') {
-        return undefined;
-      }
-
-      return (...args: TArgs) => Reflect.apply(candidate, target as object, args);
-    };
-
-    const lteQuery = getOptionalQueryMethod<[string, string]>(query, 'lte');
+    const lteQuery = this.getOptionalQueryMethod<[string, string]>(query, 'lte');
     if (upperWatermark && typeof lteQuery === 'function') {
       query = lteQuery('updated_at', upperWatermark) as typeof query;
     }
@@ -2247,13 +2335,34 @@ export class BlackBoxSyncService {
       .order('updated_at', { ascending: true })
       .order('id', { ascending: true });
 
-    const limitQuery = getOptionalQueryMethod<[number]>(orderedQuery, 'limit');
+    const limitQuery = this.getOptionalQueryMethod<[number]>(orderedQuery, 'limit');
 
     if (typeof limitQuery !== 'function') {
       return orderedQuery as unknown as Promise<{ data: unknown[] | null; error: unknown }>;
     }
 
     return limitQuery(this.BLACKBOX_PULL_PAGE_SIZE) as Promise<{ data: unknown[] | null; error: unknown }>;
+  }
+
+  private createBlackBoxScopedQueryUnavailableError(): Error {
+    return new Error('blackbox_delta_missing_user_scope_query');
+  }
+
+  private isBlackBoxScopedQueryUnavailable(error: unknown): boolean {
+    return error instanceof Error && error.message === 'blackbox_delta_missing_user_scope_query';
+  }
+
+  private getOptionalQueryMethod<TArgs extends unknown[]>(
+    target: unknown,
+    methodName: string,
+  ): ((...args: TArgs) => unknown) | undefined {
+    const targetObject = target as Record<string, unknown>;
+    const candidate = targetObject[methodName];
+    if (typeof candidate !== 'function') {
+      return undefined;
+    }
+
+    return (...args: TArgs) => Reflect.apply(candidate, target as object, args);
   }
 
   private isValidBlackBoxCursor(cursor: BlackBoxSyncCursor): boolean {
