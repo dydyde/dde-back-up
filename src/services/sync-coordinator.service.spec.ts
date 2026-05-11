@@ -1260,6 +1260,8 @@ describe('持久化状态管理', () => {
         local: offlineProject,
         remote: cloudProject,
         projectId: 'proj-1',
+        conflictedAt: expect.any(String),
+        pendingTaskDeleteIds: undefined,
       });
       
       subscription.unsubscribe();
