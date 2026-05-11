@@ -1704,4 +1704,224 @@ describe('BlackBoxSyncService', () => {
     expect(saveSpy).not.toHaveBeenCalled();
     expect(blackBoxEntriesMap().get('entry-conflict-stale')?.syncStatus).toBe('synced');
   });
+
+  // ============= Fix 1 回归：pushToServer owner-mismatch 必须自愈本地 syncStatus =============
+
+  it('pushToServer owner-mismatch (local-user owner) → 改写 owner 后通过 retryQueueHandler 续推，且 pending 已落到合法 owner', async () => {
+    const entryId = crypto.randomUUID();
+    const legacyLocalEntry = createEntry({
+      id: entryId,
+      userId: AUTH_CONFIG.LOCAL_MODE_USER_ID,
+      updatedAt: '2026-03-04T00:00:00.000Z',
+      syncStatus: 'pending',
+    });
+    const enqueue = vi.fn();
+    const saveToLocalSpy = vi.spyOn(service, 'saveToLocal').mockResolvedValue(undefined);
+    setBlackBoxEntries([legacyLocalEntry]);
+    (service as unknown as { retryQueueHandler: ((entry: BlackBoxEntry) => void) | null }).retryQueueHandler = enqueue;
+
+    await expect(service.pushToServer(legacyLocalEntry)).resolves.toBe(true);
+
+    // 持久化前后的 syncStatus 仍是 pending，但 owner 已经改写到 sessionUserId
+    expect(saveToLocalSpy).toHaveBeenCalledWith(expect.objectContaining({
+      id: entryId,
+      userId: 'user-1',
+      syncStatus: 'pending',
+    }));
+    expect(enqueue).toHaveBeenCalledWith(expect.objectContaining({
+      id: entryId,
+      userId: 'user-1',
+      syncStatus: 'pending',
+    }));
+    // 内存 Map 也已被同步成新 owner，不会继续被当作 owner-mismatch 反复触发
+    expect(blackBoxEntriesMap().get(entryId)).toEqual(expect.objectContaining({
+      id: entryId,
+      userId: 'user-1',
+    }));
+  });
+
+  it('pushToServer owner-mismatch (非法 UUID owner) → 物理删除脏数据，UI Map 同步移除', async () => {
+    const entryId = crypto.randomUUID();
+    const dirtyEntry = createEntry({
+      id: entryId,
+      userId: 'not-a-uuid-owner',
+      updatedAt: '2026-03-04T00:00:00.000Z',
+      syncStatus: 'pending',
+    });
+    const enqueue = vi.fn();
+    const deleteSpy = vi.spyOn(service, 'deleteFromLocal').mockResolvedValue(undefined);
+    setBlackBoxEntries([dirtyEntry]);
+    (service as unknown as { retryQueueHandler: ((entry: BlackBoxEntry) => void) | null }).retryQueueHandler = enqueue;
+
+    await expect(service.pushToServer(dirtyEntry)).resolves.toBe(true);
+
+    expect(deleteSpy).toHaveBeenCalledWith(entryId);
+    expect(blackBoxEntriesMap().has(entryId)).toBe(false);
+    expect(enqueue).not.toHaveBeenCalled();
+  });
+
+  it('pushToServer owner-mismatch (合法跨账号 UUID) → markEntrySyncConflict 让 syncStatus 收敛为 conflict', async () => {
+    const entryId = crypto.randomUUID();
+    const foreignUserId = crypto.randomUUID();
+    const foreignEntry = createEntry({
+      id: entryId,
+      userId: foreignUserId,
+      updatedAt: '2026-03-04T00:00:00.000Z',
+      syncStatus: 'pending',
+    });
+    const enqueue = vi.fn();
+    const saveToLocalSpy = vi.spyOn(service, 'saveToLocal').mockResolvedValue(undefined);
+    setBlackBoxEntries([foreignEntry]);
+    (service as unknown as { retryQueueHandler: ((entry: BlackBoxEntry) => void) | null }).retryQueueHandler = enqueue;
+
+    await expect(service.pushToServer(foreignEntry)).resolves.toBe(true);
+
+    // markEntrySyncConflict 路径会把 entry 改写为 conflict 并持久化
+    expect(saveToLocalSpy).toHaveBeenCalledWith(expect.objectContaining({
+      id: entryId,
+      userId: foreignUserId,
+      syncStatus: 'conflict',
+    }));
+    expect(blackBoxEntriesMap().get(entryId)?.syncStatus).toBe('conflict');
+    // 跨账号条目不应被重新入队
+    expect(enqueue).not.toHaveBeenCalled();
+  });
+
+  it('recoverPendingEntries 检测到 owner-mismatch pending 时不再灌入 RetryQueue，而是走 selfHeal 路径', async () => {
+    const sessionId = 'user-1';
+    const foreignOwnerId = crypto.randomUUID();
+    const foreignPending = createEntry({
+      id: crypto.randomUUID(),
+      userId: foreignOwnerId,
+      updatedAt: '2026-03-04T00:00:00.000Z',
+      syncStatus: 'pending',
+    });
+    const enqueue = vi.fn();
+    const saveToLocalSpy = vi.spyOn(service, 'saveToLocal').mockResolvedValue(undefined);
+    vi.spyOn(service, 'loadFromLocal').mockResolvedValue([foreignPending]);
+    // 让前置远端对账分支短路（不依赖 supabase 请求），直接拿原始 validPending
+    vi.spyOn(
+      service as unknown as { resolvePendingEntriesForRecovery: (entries: BlackBoxEntry[]) => Promise<BlackBoxEntry[]> },
+      'resolvePendingEntriesForRecovery',
+    ).mockResolvedValue([foreignPending]);
+
+    setBlackBoxEntries([foreignPending]);
+    (service as unknown as { retryQueueHandler: ((entry: BlackBoxEntry) => void) | null }).retryQueueHandler = enqueue;
+
+    await (service as unknown as { recoverPendingEntries: () => Promise<void> }).recoverPendingEntries();
+
+    expect(enqueue).not.toHaveBeenCalled();
+    expect(saveToLocalSpy).toHaveBeenCalledWith(expect.objectContaining({
+      id: foreignPending.id,
+      syncStatus: 'conflict',
+    }));
+    void sessionId;
+  });
+
+  // ============= Fix 2 回归：mergeWithLocal 保留 pending 后必须重新调度推送 =============
+
+  it('mergeWithLocal 把远端单调真值合并进本地 pending 后，retryQueueHandler 应被 merged entry 调用一次', async () => {
+    const entryId = crypto.randomUUID();
+    const localPending = createEntry({
+      id: entryId,
+      isCompleted: false,
+      isRead: false,
+      updatedAt: '2026-03-04T00:00:10.000Z', // 比 remote 新 → LWW 本地胜
+      syncStatus: 'pending',
+    });
+    const remote = createEntry({
+      id: entryId,
+      isCompleted: true,
+      isRead: true,
+      updatedAt: '2026-03-04T00:00:05.000Z',
+      syncStatus: 'synced',
+    });
+
+    const saveToLocalSpy = vi.spyOn(service, 'saveToLocal').mockResolvedValue(undefined);
+    const enqueue = vi.fn();
+    setBlackBoxEntries([localPending]);
+    (service as unknown as { retryQueueHandler: ((entry: BlackBoxEntry) => void) | null }).retryQueueHandler = enqueue;
+
+    await (service as unknown as {
+      mergeWithLocal: (
+        remoteEntry: BlackBoxEntry,
+        preferRemoteForSyncedLocalDuringPull: boolean,
+        repairingFutureCursor: boolean,
+      ) => Promise<void>;
+    }).mergeWithLocal(remote, false, false);
+
+    // 单调真值被合并到 local，但 syncStatus 仍是 pending
+    const mergedSaveCall = saveToLocalSpy.mock.calls.find(args => {
+      const arg = args[0] as BlackBoxEntry;
+      return arg.id === entryId && arg.isCompleted === true && arg.isRead === true && arg.syncStatus === 'pending';
+    });
+    expect(mergedSaveCall).toBeDefined();
+
+    // 合并后必须重新入队，否则没有任何机制再次触发这条 pending 的 push
+    expect(enqueue).toHaveBeenCalledTimes(1);
+    expect(enqueue).toHaveBeenCalledWith(expect.objectContaining({
+      id: entryId,
+      isCompleted: true,
+      isRead: true,
+      syncStatus: 'pending',
+    }));
+  });
+
+  // ============= Fix 3 回归：upsert 完成但 latestLocalAfterPush 业务等价 → 升级 synced =============
+
+  it('pushToServer 直接 upsert 完成、latestLocalAfterPush 业务字段等价但 updatedAt 更晚时，应升级为 synced 而不是长期 pending', async () => {
+    const entryId = crypto.randomUUID();
+    const entry = createEntry({
+      id: entryId,
+      updatedAt: '2026-03-04T00:00:00.000Z',
+      isCompleted: false,
+      syncStatus: 'pending',
+    });
+    // 并发路径在 upsert 期间又把 pending 写了一遍（业务字段完全等价、只 bump updatedAt）
+    const concurrentlyBumped: BlackBoxEntry = {
+      ...entry,
+      updatedAt: '2026-03-04T00:00:02.000Z',
+      syncStatus: 'pending',
+    };
+    const serverUpdatedAt = '2026-03-04T00:00:03.000Z';
+
+    const preflightQuery = createPreflightQuery(vi.fn(async () => ({ data: null, error: null })));
+    const from = vi.fn(() => ({
+      select: vi.fn(() => preflightQuery),
+      upsert: vi.fn(() => ({
+        select: vi.fn(() => ({
+          single: vi.fn(async () => {
+            // 在 upsert 返回前，把内存 Map 升到等价但更晚的快照
+            setBlackBoxEntries([concurrentlyBumped]);
+            return {
+              data: { updated_at: serverUpdatedAt },
+              error: null,
+            };
+          }),
+        })),
+      })),
+    }));
+    const supabase = TestBed.inject(SupabaseClientService) as unknown as {
+      clientAsync: ReturnType<typeof vi.fn>;
+    };
+    const saveToLocalSpy = vi.spyOn(service, 'saveToLocal').mockResolvedValue(undefined);
+
+    setBlackBoxEntries([entry]);
+    supabase.clientAsync.mockResolvedValue({ from });
+
+    await expect(service.pushToServer(entry)).resolves.toBe(true);
+
+    // 关键断言：等价的更晚本地快照应被升级为 synced，并采纳服务端 updatedAt。
+    // UI 因此立刻从"待同步"收敛。
+    const syncedCall = saveToLocalSpy.mock.calls.find(args => {
+      const arg = args[0] as BlackBoxEntry;
+      return arg.id === entryId && arg.syncStatus === 'synced' && arg.updatedAt === serverUpdatedAt;
+    });
+    expect(syncedCall).toBeDefined();
+    expect(blackBoxEntriesMap().get(entryId)).toEqual(expect.objectContaining({
+      id: entryId,
+      syncStatus: 'synced',
+      updatedAt: serverUpdatedAt,
+    }));
+  });
 });
