@@ -1309,7 +1309,7 @@ export class BlackBoxSyncService {
       const store = tx.objectStore(this.STORE_NAME);
       const request = store.getAll();
 
-        request.onsuccess = async () => {
+      request.onsuccess = () => {
         const visibleUserId = this.resolveVisibleUserId();
         const entries = (request.result as IDBBlackBoxEntry[]).map(e => {
 
@@ -1362,7 +1362,15 @@ export class BlackBoxSyncService {
         // 更新状态
         setBlackBoxEntries(visibleEntries);
         if (syncStatusRepairs.length > 0) {
-          await this.persistLocalOnlySyncStatusRepairs(syncStatusRepairs);
+          this.persistLocalOnlySyncStatusRepairs(syncStatusRepairs)
+            .then(() => resolve(visibleEntries))
+            .catch((error: unknown) => {
+              this.logger.debug('黑匣子本地缓存同步状态修复流程失败，保留内存归一化结果', {
+                error: error instanceof Error ? error.message : String(error),
+              });
+              resolve(visibleEntries);
+            });
+          return;
         }
 
         resolve(visibleEntries);
@@ -2185,7 +2193,7 @@ export class BlackBoxSyncService {
           }
         }
 
-      if (error) break;
+        if (error) break;
 
         const pageRows = (page.data ?? []) as Record<string, unknown>[];
         pulledPageCount += 1;

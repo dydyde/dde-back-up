@@ -40,6 +40,7 @@ async function flushMicrotasks(turns = 6): Promise<void> {
   }
 }
 
+// 创建带 user_id 作用域查询能力的模拟查询对象，用于验证黑匣子远端读取不会跨用户。
 function createScopedQuery<TQuery extends Record<string, unknown>>(
   query: TQuery,
 ): TQuery & { eq: ReturnType<typeof vi.fn> } {
@@ -48,6 +49,7 @@ function createScopedQuery<TQuery extends Record<string, unknown>>(
   return scoped;
 }
 
+// 创建支持链式 eq 与 maybeSingle 的预检查询对象，用于覆盖 push 前置对账路径。
 function createPreflightQuery(
   maybeSingle: ReturnType<typeof vi.fn>,
 ): { eq: ReturnType<typeof vi.fn>; maybeSingle: ReturnType<typeof vi.fn> } {
