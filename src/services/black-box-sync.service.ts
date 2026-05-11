@@ -1235,10 +1235,23 @@ export class BlackBoxSyncService {
       }
 
       const batchIds = pendingIds.slice(offset, offset + batchSize);
-      const { data, error } = await client
+      let query = client
         .from('black_box_entries')
-        .select('*')
-        .in('id', batchIds);
+        .select('*');
+      const eqQuery = this.getOptionalQueryMethod<[string, string]>(query, 'eq');
+      if (expectedUserId && eqQuery) {
+        query = eqQuery('user_id', expectedUserId) as typeof query;
+      }
+
+      const inQuery = this.getOptionalQueryMethod<[string, string[]]>(query, 'in');
+      if (!inQuery) {
+        this.logger.warn('黑匣子 pending 对账缺少 in 查询能力，保留本地 pending 状态', {
+          batchSize: batchIds.length,
+        });
+        return;
+      }
+
+      const { data, error } = await inQuery('id', batchIds) as { data: unknown[] | null; error: unknown };
 
       if (error) {
         const enhanced = supabaseErrorToError(error);
@@ -1255,7 +1268,7 @@ export class BlackBoxSyncService {
           return;
         }
 
-        const remoteEntry = this.mapRowToEntry(row);
+        const remoteEntry = this.mapRowToEntry(row as Record<string, unknown>);
 
         const localEntry = sourcePendingEntryMap?.get(remoteEntry.id) ?? blackBoxEntriesMap().get(remoteEntry.id);
         if (localEntry?.syncStatus === 'pending' && this.hasEquivalentEntryState(localEntry, remoteEntry)) {
@@ -1308,9 +1321,16 @@ export class BlackBoxSyncService {
           return;
         }
 
+        const syncStatusRepairs: BlackBoxEntry[] = [];
         const visibleEntries = entries
           .filter(entry => entry.userId === visibleUserId)
-          .map(entry => this.normalizeLocalOnlySyncStatus(entry, visibleUserId));
+          .map(entry => {
+            const normalized = this.normalizeLocalOnlySyncStatus(entry, visibleUserId);
+            if (normalized !== entry) {
+              syncStatusRepairs.push(normalized);
+            }
+            return normalized;
+          });
 
         // 【2026-04-23 根因修复】“手机端内容业务不同步”的关键兼防：
         // IDB 内实际有条目，但过滤器 visibleUserId 与所有条目 user_id 都不匹配，
@@ -1332,6 +1352,9 @@ export class BlackBoxSyncService {
 
         // 更新状态
         setBlackBoxEntries(visibleEntries);
+        if (syncStatusRepairs.length > 0) {
+          void this.persistLocalOnlySyncStatusRepairs(syncStatusRepairs);
+        }
 
         resolve(visibleEntries);
       };
@@ -1389,6 +1412,19 @@ export class BlackBoxSyncService {
       ...entry,
       syncStatus: 'synced',
     };
+  }
+
+  private async persistLocalOnlySyncStatusRepairs(entries: BlackBoxEntry[]): Promise<void> {
+    for (const entry of entries) {
+      try {
+        await this.saveToLocal(entry);
+      } catch (error) {
+        this.logger.debug('黑匣子本地缓存同步状态修复持久化失败，保留内存归一化结果', {
+          entryId: entry.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
   }
 
   /**
@@ -2093,7 +2129,7 @@ export class BlackBoxSyncService {
           break;
         }
 
-        const page = await this.fetchBlackBoxDeltaPage(client, pageCursor, upperWatermark);
+      const page = await this.fetchBlackBoxDeltaPage(client, pageCursor, upperWatermark, expectedUserId);
         error = page.error;
 
         if (
@@ -2103,7 +2139,7 @@ export class BlackBoxSyncService {
           const refreshResult = await this.sessionManager.tryRefreshSessionWithSession('BlackBoxSync.pullChanges');
           if (refreshResult.refreshed) {
             this.logger.info('BlackBox pullChanges 会话已刷新，重试增量拉取');
-            const retry = await this.fetchBlackBoxDeltaPage(client, pageCursor, upperWatermark);
+            const retry = await this.fetchBlackBoxDeltaPage(client, pageCursor, upperWatermark, expectedUserId);
             error = retry.error;
             page.data = retry.data;
           }
@@ -2203,6 +2239,7 @@ export class BlackBoxSyncService {
     client: Awaited<ReturnType<SupabaseClientService['clientAsync']>>,
     cursor: BlackBoxSyncCursor,
     upperWatermark: string | null,
+    expectedUserId?: string,
   ): Promise<{ data: unknown[] | null; error: unknown }> {
     if (!client) return { data: null, error: null };
 
@@ -2225,20 +2262,12 @@ export class BlackBoxSyncService {
         .select('*')
         .gt('updated_at', cursor.updatedAt);
 
-    const getOptionalQueryMethod = <TArgs extends unknown[]>(
-      target: unknown,
-      methodName: string,
-    ): ((...args: TArgs) => unknown) | undefined => {
-      const targetObject = target as Record<string, unknown>;
-      const candidate = targetObject[methodName];
-      if (typeof candidate !== 'function') {
-        return undefined;
-      }
+    const eqQuery = this.getOptionalQueryMethod<[string, string]>(query, 'eq');
+    if (expectedUserId && eqQuery) {
+      query = eqQuery('user_id', expectedUserId) as typeof query;
+    }
 
-      return (...args: TArgs) => Reflect.apply(candidate, target as object, args);
-    };
-
-    const lteQuery = getOptionalQueryMethod<[string, string]>(query, 'lte');
+    const lteQuery = this.getOptionalQueryMethod<[string, string]>(query, 'lte');
     if (upperWatermark && typeof lteQuery === 'function') {
       query = lteQuery('updated_at', upperWatermark) as typeof query;
     }
@@ -2247,13 +2276,26 @@ export class BlackBoxSyncService {
       .order('updated_at', { ascending: true })
       .order('id', { ascending: true });
 
-    const limitQuery = getOptionalQueryMethod<[number]>(orderedQuery, 'limit');
+    const limitQuery = this.getOptionalQueryMethod<[number]>(orderedQuery, 'limit');
 
     if (typeof limitQuery !== 'function') {
       return orderedQuery as unknown as Promise<{ data: unknown[] | null; error: unknown }>;
     }
 
     return limitQuery(this.BLACKBOX_PULL_PAGE_SIZE) as Promise<{ data: unknown[] | null; error: unknown }>;
+  }
+
+  private getOptionalQueryMethod<TArgs extends unknown[]>(
+    target: unknown,
+    methodName: string,
+  ): ((...args: TArgs) => unknown) | undefined {
+    const targetObject = target as Record<string, unknown>;
+    const candidate = targetObject[methodName];
+    if (typeof candidate !== 'function') {
+      return undefined;
+    }
+
+    return (...args: TArgs) => Reflect.apply(candidate, target as object, args);
   }
 
   private isValidBlackBoxCursor(cursor: BlackBoxSyncCursor): boolean {
