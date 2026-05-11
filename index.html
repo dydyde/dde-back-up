@@ -18,6 +18,8 @@
         var ORIGIN_GATE_MODE = 'off';
         var EXPECTED_NGSW_HASH = '';
         var CLEANUP_PREFIX = 'nanoflow.originGate.cleanup';
+        var WRITE_GUARD_KEY = '__NANOFLOW_WRITE_GUARD__';
+        var ORIGIN_GATE_FIRED_KEY = 'nanoflow.originGate.fired';
 
         function writeGateMarker(mode) {
           window.__NANOFLOW_ORIGIN_GATE__ = {
@@ -26,13 +28,25 @@
             current: window.location.origin
           };
           try {
-            sessionStorage.setItem('__NANOFLOW_WRITE_GUARD__', mode === 'redirect' ? 'export-only' : mode);
-            sessionStorage.setItem('nanoflow.originGate.fired', JSON.stringify({
+            sessionStorage.setItem(WRITE_GUARD_KEY, mode === 'redirect' ? 'export-only' : mode);
+            sessionStorage.setItem(ORIGIN_GATE_FIRED_KEY, JSON.stringify({
               from: window.location.origin,
               to: CANONICAL_ORIGIN,
               mode: mode,
               ts: new Date().toISOString()
             }));
+          } catch (_e) { /* ignore */ }
+        }
+
+        function clearGateMarker() {
+          window.__NANOFLOW_ORIGIN_GATE__ = {
+            mode: 'off',
+            canonical: CANONICAL_ORIGIN,
+            current: window.location.origin
+          };
+          try {
+            sessionStorage.removeItem(WRITE_GUARD_KEY);
+            sessionStorage.removeItem(ORIGIN_GATE_FIRED_KEY);
           } catch (_e) { /* ignore */ }
         }
 
@@ -136,9 +150,18 @@
 
         if (scheduleNgswHashProbe()) return;
 
-        if (!CANONICAL_ORIGIN) return;
-        if (!ORIGIN_GATE_MODE || ORIGIN_GATE_MODE === 'off') return;
-        if (window.location.origin === CANONICAL_ORIGIN) return;
+        if (!CANONICAL_ORIGIN) {
+          clearGateMarker();
+          return;
+        }
+        if (!ORIGIN_GATE_MODE || ORIGIN_GATE_MODE === 'off') {
+          clearGateMarker();
+          return;
+        }
+        if (window.location.origin === CANONICAL_ORIGIN) {
+          clearGateMarker();
+          return;
+        }
 
         writeGateMarker(ORIGIN_GATE_MODE);
 
