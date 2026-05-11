@@ -392,6 +392,62 @@ describe('FlowOverviewService', () => {
     expect(finalCenteredBounds.y).toBe(70);
   });
 
+  it('【根因回归 2026-05-11】press → release（不移动）后 overview.scale 必须严格保持稳定（消除 smartLerp 残差跳动）', () => {
+    // 真正的根因：旧实现在 applyOverviewUpdate 中无条件用 smartLerp（18%/45%）
+    // 推进 overview.scale 向 target 收敛。终止条件 `|target - current| > 0.002`
+    // 意味着 idle 状态 scale 长期停在"接近但不等于 target"的位置。
+    //   - press 触发一次 apply → smartLerp 推进一小步 → scale 变化 1 次。
+    //   - release 触发一次 apply → smartLerp 再推进一小步 → scale 变化 2 次。
+    //   - 每次 scale 变化都让节点位置 `(loc - position) * scale` 重新映射到不同
+    //     canvas 像素 → 视觉上即"缩略块跃动且与主视图脱节"。
+    // 修复后：仅当 box 正被实际拖拽（hasManualBoxMovement）才走 smartLerp，
+    // press/release 不动场景一律 snap 到 target，apply 对稳定输入严格幂等。
+    const overview = service.overviewInstance as unknown as {
+      scale: number;
+    };
+
+    // 模拟真实使用场景：用户已经看过流程图，scale 已收敛到 target。
+    // 这里通过先回放一次 ViewportBoundsChanged 让 idle apply 把 scale snap 到 target。
+    viewportListener?.();
+    vi.runOnlyPendingTimers();
+    const scaleAfterIdle = overview.scale;
+
+    // press 不动
+    dispatchPointer('pointerdown', 20, 20);
+    vi.runOnlyPendingTimers();
+    const scaleAfterPress = overview.scale;
+
+    // release 不动
+    dispatchPointer('pointerup', 20, 20);
+    vi.runOnlyPendingTimers();
+    const scaleAfterRelease = overview.scale;
+
+    // 关键断言：稳定输入 ⇒ 稳定 scale ⇒ 缩略块无跃动。
+    // 严格相等（snap 实现保证完全幂等，而非"近似相等"）。
+    expect(scaleAfterPress).toBe(scaleAfterIdle);
+    expect(scaleAfterRelease).toBe(scaleAfterIdle);
+
+    // 主视图位置同样不应变化。
+    expect(diagramPosition.x).toBe(0);
+    expect(diagramPosition.y).toBe(0);
+  });
+
+  it('【回归保护】实际拖拽 box（press → move → release）仍能正常驱动主视图位置变化', () => {
+    // 修复 smartLerp 残差不应破坏真实拖拽行为：当用户产生实际位移时，
+    // hasManualBoxMovement=true，smartLerp 平滑动画照常生效，diagram.position
+    // 按 client 位移成比例更新。
+    dispatchPointer('pointerdown', 20, 20);
+    vi.runOnlyPendingTimers();
+    dispatchPointer('pointermove', 120, 90);
+    vi.runOnlyPendingTimers();
+    dispatchPointer('pointerup', 120, 90);
+    vi.runOnlyPendingTimers();
+
+    // client 位移 (100, 70) 应反映到 diagram.position（mock 中 view→doc 因子=1）。
+    expect(diagramPosition.x).toBe(100);
+    expect(diagramPosition.y).toBe(70);
+  });
+
   function createDiagramMock(): go.Diagram {
     const listeners = new Map<string, () => void>();
     const diagram = {
