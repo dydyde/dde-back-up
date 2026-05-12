@@ -48,12 +48,12 @@ describe('batch_upsert_tasks stale-write protection migration', () => {
 
   it('treats a payload as stale only when payload.updated_at lags existing.updated_at beyond 1s skew', () => {
     const sql = normalize(readMigration());
-    // Definition of v_is_stale must require all three guards.
+    // Definition of v_is_stale must require all three guards plus NULL-safe coercion.
     expect(sql).toContain(
       "v_skew_grace constant interval := interval '1 second'",
     );
     expect(sql).toMatch(
-      /v_is_stale := v_existing_exists\s+AND v_payload_updated IS NOT NULL\s+AND v_existing_updated IS NOT NULL\s+AND v_existing_updated > v_payload_updated \+ v_skew_grace/,
+      /v_is_stale := COALESCE\(\s*v_existing_exists\s+AND v_payload_updated IS NOT NULL\s+AND v_existing_updated IS NOT NULL\s+AND v_existing_updated > v_payload_updated \+ v_skew_grace,\s+FALSE\s*\)/,
     );
   });
 

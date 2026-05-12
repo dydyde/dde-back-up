@@ -119,10 +119,15 @@ BEGIN
 
     -- 仅在 payload 携带 updated_at 且明显晚于 existing.updated_at 时判定为陈旧。
     -- payload 没带 updated_at 时维持现有 server-arrival LWW 行为，与 0509 兼容。
-    v_is_stale := v_existing_exists
-      AND v_payload_updated IS NOT NULL
-      AND v_existing_updated IS NOT NULL
-      AND v_existing_updated > v_payload_updated + v_skew_grace;
+    -- COALESCE 兜底任何三值逻辑产生的 NULL（理论上 v_existing_updated 不会为 NULL，
+    -- 但显式收敛到 FALSE 可避免 CASE WHEN NULL 时的隐式回退依赖）。
+    v_is_stale := COALESCE(
+      v_existing_exists
+        AND v_payload_updated IS NOT NULL
+        AND v_existing_updated IS NOT NULL
+        AND v_existing_updated > v_payload_updated + v_skew_grace,
+      FALSE
+    );
 
     INSERT INTO public.tasks AS existing (
       id, project_id, title, content, stage, parent_id,
