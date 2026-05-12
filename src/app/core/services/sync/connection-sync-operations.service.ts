@@ -375,10 +375,19 @@ export class ConnectionSyncOperationsService {
       .from('connections')
       .insert(this.buildConnectionUpsertPayload(connection, projectId))
       .select('updated_at')
-      .single();
+      .maybeSingle();
 
     if (error) {
       throw supabaseErrorToError(error);
+    }
+
+    if (!data) {
+      throw this.createRemoteNewerConflictError(
+        connection.id,
+        projectId,
+        connection.updatedAt ?? null,
+        'remote-newer',
+      );
     }
 
     const updatedAt = (data as { updated_at?: string | null } | null)?.updated_at;

@@ -12,6 +12,7 @@ import { RetryQueueService } from './retry-queue.service';
 import { SessionManagerService } from './session-manager.service';
 import { SentryLazyLoaderService } from '../../../../services/sentry-lazy-loader.service';
 import type { Connection, Project, Task } from '../../../../models';
+import { PermanentFailureError } from '../../../../utils/permanent-failure-error';
 import {
   createBrowserNetworkSuspendedError,
   resetBrowserNetworkSuspensionTrackingForTests,
@@ -99,6 +100,8 @@ describe('BatchSyncService owner isolation', () => {
       taskUpdateFieldsById: {},
     })),
     clearTaskChange: vi.fn(),
+    clearTaskChangeIfFresh: vi.fn(() => true),
+    clearConnectionChangeIfFresh: vi.fn(() => true),
   };
 
   const mockMobileSync = {
@@ -652,6 +655,214 @@ describe('BatchSyncService owner isolation', () => {
     expect(result.failedTaskIds).toEqual(['task-retry-confirmation']);
     expect(result.retryEnqueued).not.toContain('task:task-retry-confirmation');
     expect(callbacks.confirmRetryQueuePersistence).toHaveBeenCalled();
+  });
+
+  it('task 版本冲突永久失败后应清理对应脏标记，避免下一轮重复推送', async () => {
+    const task: Task = {
+      id: 'task-terminal-conflict',
+      title: 'Task Terminal Conflict',
+      content: '',
+      stage: 0,
+      parentId: null,
+      order: 0,
+      rank: 0,
+      status: 'active',
+      x: 0,
+      y: 0,
+      displayId: '1',
+      createdDate: '2026-03-31T00:00:00.000Z',
+    };
+    const project = createProject({
+      id: 'project-task-terminal-conflict',
+      tasks: [task],
+    });
+    callbacks.pushTask = vi.fn().mockRejectedValue(
+      new PermanentFailureError(
+        'Version conflict',
+        Object.assign(new Error('版本冲突'), {
+          name: 'VersionConflictError',
+          errorType: 'VersionConflictError',
+          code: 'TASK_REMOTE_NEWER',
+        }),
+        { operation: 'pushTask', taskId: task.id, projectId: project.id },
+      ),
+    );
+    service.setCallbacks(callbacks);
+    mockClient.auth.getSession.mockResolvedValue({
+      data: { session: { user: { id: 'user-a' } } },
+    });
+
+    const result = await service.saveProjectToCloud(project, 'user-a');
+    const secondResult = await service.saveProjectToCloud(project, 'user-a');
+
+    expect(result.success).toBe(false);
+    expect(secondResult.success).toBe(false);
+    expect(result.failedTaskIds).toEqual([task.id]);
+    expect(secondResult.failedTaskIds).toEqual([task.id]);
+    expect(mockChangeTracker.clearTaskChangeIfFresh).toHaveBeenCalledWith(
+      project.id,
+      task.id,
+      expect.any(Number),
+    );
+    expect(callbacks.pushTask).toHaveBeenCalledTimes(1);
+    expect(mockSyncState.setSyncError).toHaveBeenCalledWith('检测到版本冲突，请刷新后重试');
+    expect(result.retryEnqueued).not.toContain(`task:${task.id}`);
+  });
+
+  it('刷新后的新任务快照应解除冲突抑制并允许后续批同步恢复', async () => {
+    const task: Task = {
+      id: 'task-terminal-conflict-recovered',
+      title: 'Task Terminal Conflict Recovered',
+      content: '',
+      stage: 0,
+      parentId: null,
+      order: 0,
+      rank: 0,
+      status: 'active',
+      x: 0,
+      y: 0,
+      displayId: '1',
+      createdDate: '2026-03-31T00:00:00.000Z',
+      updatedAt: '2026-03-31T00:00:00.000Z',
+    };
+    const project = createProject({
+      id: 'project-task-terminal-conflict-recovered',
+      tasks: [task],
+    });
+    callbacks.pushTask = vi.fn().mockRejectedValueOnce(
+      new PermanentFailureError(
+        'Version conflict',
+        Object.assign(new Error('版本冲突'), {
+          name: 'VersionConflictError',
+          errorType: 'VersionConflictError',
+          code: 'TASK_REMOTE_NEWER',
+        }),
+        { operation: 'pushTask', taskId: task.id, projectId: project.id },
+      ),
+    ).mockResolvedValue({ success: true, retryEnqueued: false });
+    service.setCallbacks(callbacks);
+    mockClient.auth.getSession.mockResolvedValue({
+      data: { session: { user: { id: 'user-a' } } },
+    });
+
+    const firstResult = await service.saveProjectToCloud(project, 'user-a');
+    const refreshedProject = createProject({
+      id: project.id,
+      tasks: [{ ...task, updatedAt: '2026-03-31T01:00:00.000Z' }],
+    });
+    const secondResult = await service.saveProjectToCloud(refreshedProject, 'user-a');
+
+    expect(firstResult.success).toBe(false);
+    expect(secondResult.success).toBe(true);
+    expect(callbacks.pushTask).toHaveBeenCalledTimes(2);
+    expect(secondResult.failedTaskIds).toEqual([]);
+  });
+
+  it('connection 版本冲突永久失败后应清理对应脏标记，避免下一轮重复推送', async () => {
+    const sourceTask: Task = {
+      id: 'task-connection-conflict-source',
+      title: 'Task Connection Conflict Source',
+      content: '',
+      stage: 0,
+      parentId: null,
+      order: 0,
+      rank: 0,
+      status: 'active',
+      x: 0,
+      y: 0,
+      displayId: '1',
+      createdDate: '2026-03-31T00:00:00.000Z',
+    };
+    const targetTask: Task = {
+      ...sourceTask,
+      id: 'task-connection-conflict-target',
+      title: 'Task Connection Conflict Target',
+      displayId: '2',
+    };
+    const connection: Connection = {
+      id: 'connection-terminal-conflict',
+      source: sourceTask.id,
+      target: targetTask.id,
+    };
+    const project = createProject({
+      id: 'project-connection-terminal-conflict',
+      tasks: [sourceTask, targetTask],
+      connections: [connection],
+    });
+    callbacks.pushConnection = vi.fn().mockRejectedValue(
+      new PermanentFailureError(
+        'Version conflict',
+        Object.assign(new Error('版本冲突'), {
+          name: 'VersionConflictError',
+          errorType: 'VersionConflictError',
+          code: 'CONNECTION_REMOTE_NEWER',
+        }),
+        { operation: 'pushConnection', connectionId: connection.id, projectId: project.id },
+      ),
+    );
+    service.setCallbacks(callbacks);
+    mockClient.auth.getSession.mockResolvedValue({
+      data: { session: { user: { id: 'user-a' } } },
+    });
+
+    const result = await service.saveProjectToCloud(project, 'user-a');
+    const secondResult = await service.saveProjectToCloud(project, 'user-a');
+
+    expect(result.success).toBe(false);
+    expect(secondResult.success).toBe(false);
+    expect(result.failedConnectionIds).toEqual([connection.id]);
+    expect(secondResult.failedConnectionIds).toEqual([connection.id]);
+    expect(mockChangeTracker.clearConnectionChangeIfFresh).toHaveBeenCalledWith(
+      project.id,
+      connection.id,
+      expect.any(Number),
+    );
+    expect(callbacks.pushConnection).toHaveBeenCalledTimes(1);
+    expect(mockSyncState.setSyncError).toHaveBeenCalledWith('检测到版本冲突，请刷新后重试');
+    expect(result.retryEnqueued).not.toContain(`connection:${connection.id}`);
+  });
+
+  it('已删除连接遇到版本冲突永久失败后不应重复推送，但应保持未解决冲突状态', async () => {
+    const deletedConnection: Connection = {
+      id: 'connection-deleted-terminal-conflict',
+      source: 'task-1',
+      target: 'task-2',
+      deletedAt: '2026-03-31T01:00:00.000Z',
+    };
+    const project = createProject({
+      id: 'project-deleted-connection-terminal-conflict',
+      connections: [deletedConnection],
+    });
+    callbacks.pushConnection = vi.fn().mockRejectedValue(
+      new PermanentFailureError(
+        'Version conflict',
+        Object.assign(new Error('版本冲突'), {
+          name: 'VersionConflictError',
+          errorType: 'VersionConflictError',
+          code: 'CONNECTION_REMOTE_TOMBSTONE_NEWER',
+        }),
+        { operation: 'pushConnection.remoteTombstone', connectionId: deletedConnection.id, projectId: project.id },
+      ),
+    );
+    service.setCallbacks(callbacks);
+    mockClient.auth.getSession.mockResolvedValue({
+      data: { session: { user: { id: 'user-a' } } },
+    });
+
+    const result = await service.saveProjectToCloud(project, 'user-a');
+    const secondResult = await service.saveProjectToCloud(project, 'user-a');
+
+    expect(result.success).toBe(false);
+    expect(secondResult.success).toBe(false);
+    expect(result.failedConnectionIds).toEqual([deletedConnection.id]);
+    expect(secondResult.failedConnectionIds).toEqual([deletedConnection.id]);
+    expect(mockChangeTracker.clearConnectionChangeIfFresh).toHaveBeenCalledWith(
+      project.id,
+      deletedConnection.id,
+      expect.any(Number),
+    );
+    expect(callbacks.pushConnection).toHaveBeenCalledTimes(1);
+    expect(mockSyncState.setSyncError).toHaveBeenCalledWith('检测到版本冲突，请刷新后重试');
   });
 
   it('task purge 成功后不应为引用已 purge 任务的连接创建无意义重试', async () => {

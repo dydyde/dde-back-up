@@ -688,10 +688,19 @@ export class TaskSyncOperationsService {
               .from('tasks')
               .insert(payload)
               .select('updated_at')
-              .single();
+              .maybeSingle();
 
             const code = (result.error as { code?: string | number } | null)?.code;
             if (result.error && (code === '23505' || code === 23505)) {
+              throw this.createRemoteNewerConflictError(
+                task.id,
+                projectId,
+                task.updatedAt ?? null,
+                'remote-newer',
+              );
+            }
+
+            if (!result.error && !result.data) {
               throw this.createRemoteNewerConflictError(
                 task.id,
                 projectId,

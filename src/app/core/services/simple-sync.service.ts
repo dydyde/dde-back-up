@@ -1849,10 +1849,18 @@ export class SimpleSyncService {
         .from('projects')
         .insert(projectInsertPayload)
         .select('updated_at')
-        .single());
+        .maybeSingle());
 
       const code = (error as { code?: string | number } | null)?.code;
       if (error && (code === '23505' || code === 23505)) {
+        throw this.createProjectDirectConflictError(
+          project.id,
+          project.updatedAt ?? null,
+          'remote-newer',
+        );
+      }
+
+      if (!error && !data) {
         throw this.createProjectDirectConflictError(
           project.id,
           project.updatedAt ?? null,

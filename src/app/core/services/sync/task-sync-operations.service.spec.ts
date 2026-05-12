@@ -179,7 +179,7 @@ describe('TaskSyncOperationsService', () => {
             upsertPayload = payload;
             return {
               select: vi.fn(() => ({
-                single: vi.fn(async () => taskInsertResult),
+                maybeSingle: vi.fn(async () => taskInsertResult),
               })),
             };
           }),
@@ -566,7 +566,7 @@ describe('TaskSyncOperationsService', () => {
             upsertPayload = payload;
             return {
               select: vi.fn(() => ({
-                single: vi.fn(async () => ({
+                maybeSingle: vi.fn(async () => ({
                   data: { updated_at: serverUpdatedAt },
                   error: null,
                 })),
@@ -642,7 +642,7 @@ describe('TaskSyncOperationsService', () => {
             upsertPayload = payload;
             return {
               select: vi.fn(() => ({
-                single: vi.fn(async () => ({
+                maybeSingle: vi.fn(async () => ({
                   data: { updated_at: new Date().toISOString() },
                   error: null,
                 })),
@@ -713,6 +713,34 @@ describe('TaskSyncOperationsService', () => {
 
     await expect(service.pushTask(task, 'project-1')).rejects.toBeInstanceOf(PermanentFailureError);
 
+    expect(mockRetryQueue.add).not.toHaveBeenCalled();
+    expect(mockRetryQueue.recordCircuitSuccess).not.toHaveBeenCalled();
+  });
+
+  it('pushTask 直接 insert 在写回未返回行时应以版本冲突失败收口，避免 406 冒泡', async () => {
+    taskFreshnessResult = { data: null, error: null };
+    taskInsertResult = { data: null, error: null };
+
+    const task: Task = {
+      id: 'task-direct-insert-empty',
+      title: '任务',
+      content: '内容',
+      stage: 0,
+      parentId: null,
+      order: 0,
+      rank: 10000,
+      status: 'active',
+      x: 0,
+      y: 0,
+      displayId: 'T-DIE',
+      createdDate: '2026-04-30T08:00:00.000Z',
+      updatedAt: '2026-04-30T08:00:00.000Z',
+      deletedAt: null,
+    };
+
+    await expect(service.pushTask(task, 'project-1')).rejects.toBeInstanceOf(PermanentFailureError);
+
+    expect(upsertPayload).not.toBeNull();
     expect(mockRetryQueue.add).not.toHaveBeenCalled();
     expect(mockRetryQueue.recordCircuitSuccess).not.toHaveBeenCalled();
   });
@@ -1127,7 +1155,7 @@ describe('TaskSyncOperationsService', () => {
               upsertPayload = payload;
               return {
                 select: vi.fn(() => ({
-                  single: vi.fn(async () => ({
+                  maybeSingle: vi.fn(async () => ({
                     data: { updated_at: new Date().toISOString() },
                     error: null,
                   })),

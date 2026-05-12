@@ -1066,7 +1066,7 @@ describe('SimpleSyncService', () => {
         })),
         insert: vi.fn((payload: Record<string, unknown>) => ({
           select: vi.fn(() => ({
-            single: vi.fn(async () => ({
+            maybeSingle: vi.fn(async () => ({
               data: { updated_at: serverUpdatedAt },
               error: null,
               payload,
@@ -1176,6 +1176,38 @@ describe('SimpleSyncService', () => {
       await expect(service.pushProject(project, false, 'test-user-id')).rejects.toBeInstanceOf(PermanentFailureError);
 
       expect(projectsQueryMock.insert).not.toHaveBeenCalled();
+      expect(mockRetryQueueService.addDurably).not.toHaveBeenCalled();
+    });
+
+    it('pushProject 直接 insert 在写回未返回行时应抛出版本冲突，避免 406 冒泡', async () => {
+      mockSyncRpcClient.isFeatureEnabled.mockReturnValue(false);
+      const projectsQueryMock = {
+        select: vi.fn(() => ({
+          eq: vi.fn(() => ({
+            eq: vi.fn(() => ({
+              maybeSingle: vi.fn(async () => ({ data: null, error: null })),
+            })),
+          })),
+        })),
+        insert: vi.fn(() => ({
+          select: vi.fn(() => ({
+            maybeSingle: vi.fn(async () => ({ data: null, error: null })),
+          })),
+        })),
+        update: vi.fn(),
+      };
+      mockClient.from = vi.fn().mockImplementation((table: string) => {
+        if (table === 'projects') return projectsQueryMock;
+        return {};
+      });
+      const project = createMockProject({
+        id: 'project-direct-insert-empty',
+        updatedAt: '2026-04-30T05:00:00.000Z',
+      });
+
+      await expect(service.pushProject(project, false, 'test-user-id')).rejects.toBeInstanceOf(PermanentFailureError);
+
+      expect(projectsQueryMock.insert).toHaveBeenCalled();
       expect(mockRetryQueueService.addDurably).not.toHaveBeenCalled();
     });
 

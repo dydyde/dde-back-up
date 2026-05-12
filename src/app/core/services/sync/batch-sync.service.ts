@@ -122,6 +122,10 @@ export class BatchSyncService {
   
   /** 同步计数器（用于数据漂移检测） */
   private syncCounter = 0;
+
+  private readonly suppressedTaskIds = new Map<string, Map<string, string>>();
+
+  private readonly suppressedConnectionIds = new Map<string, Map<string, string>>();
   
   /** 回调函数（由 SimpleSyncService 注入） */
   private callbacks: BatchSyncCallbacks | null = null;
@@ -240,6 +244,99 @@ export class BatchSyncService {
     };
 
     tracker.clearConnectionChangeIfFresh?.(projectId, connectionId, batchChangeRevision);
+  }
+
+  private createTaskConflictFingerprint(task: Task): string {
+    return `${task.updatedAt ?? ''}|${task.deletedAt ?? ''}`;
+  }
+
+  private createConnectionConflictFingerprint(connection: Connection): string {
+    return `${connection.updatedAt ?? ''}|${connection.deletedAt ?? ''}`;
+  }
+
+  private suppressEntityUntilFingerprintChanges(
+    registry: Map<string, Map<string, string>>,
+    projectId: string,
+    entityId: string,
+    fingerprint: string,
+  ): void {
+    const suppressedIds = registry.get(projectId) ?? new Map<string, string>();
+    suppressedIds.set(entityId, fingerprint);
+    registry.set(projectId, suppressedIds);
+  }
+
+  private isEntitySuppressedUntilFreshEdit(
+    registry: Map<string, Map<string, string>>,
+    projectId: string,
+    entityId: string,
+    changedEntityIds: Set<string>,
+  ): boolean {
+    const suppressedIds = registry.get(projectId);
+    if (!suppressedIds?.has(entityId)) {
+      return false;
+    }
+
+    if (changedEntityIds.has(entityId)) {
+      suppressedIds.delete(entityId);
+      if (suppressedIds.size === 0) {
+        registry.delete(projectId);
+      }
+      return false;
+    }
+
+    return true;
+  }
+
+  private reconcileSuppressedEntities(
+    registry: Map<string, Map<string, string>>,
+    projectId: string,
+    shouldKeepSuppressed: (entityId: string, fingerprint: string) => boolean,
+  ): string[] {
+    const suppressedIds = registry.get(projectId);
+    if (!suppressedIds) {
+      return [];
+    }
+
+    for (const [entityId, fingerprint] of Array.from(suppressedIds.entries())) {
+      if (!shouldKeepSuppressed(entityId, fingerprint)) {
+        suppressedIds.delete(entityId);
+      }
+    }
+
+    if (suppressedIds.size === 0) {
+      registry.delete(projectId);
+      return [];
+    }
+
+    return Array.from(suppressedIds.keys());
+  }
+
+  private shouldClearDirtyMarkerAfterPermanentFailure(error: unknown): boolean {
+    if (!isPermanentFailureError(error)) {
+      return false;
+    }
+
+    const permanentError = error as {
+      originalError?: { code?: unknown; errorType?: unknown; name?: unknown };
+      context?: Record<string, unknown>;
+    };
+    const originalError = permanentError.originalError;
+    const code = typeof originalError?.code === 'string' ? originalError.code : null;
+    const errorType = typeof originalError?.errorType === 'string' ? originalError.errorType : null;
+    const name = typeof originalError?.name === 'string' ? originalError.name : null;
+    const operation = typeof permanentError.context?.['operation'] === 'string'
+      ? permanentError.context['operation']
+      : null;
+
+    if (errorType === 'VersionConflictError' || name === 'VersionConflictError') {
+      return true;
+    }
+
+    if (code?.endsWith('_REMOTE_NEWER') || code?.endsWith('_REMOTE_TOMBSTONE_NEWER')) {
+      return true;
+    }
+
+    return operation === 'pushTaskTombstone' || operation === 'pushConnection.remoteTombstone';
   }
 
   private markBatchSyncSuccess(): void {
@@ -362,7 +459,16 @@ export class BatchSyncService {
       };
     }
 
-    const changes = this.changeTracker.getProjectChanges(project.id);
+    const rawChanges = this.changeTracker.getProjectChanges(project.id);
+    const changes = {
+      tasksToCreate: rawChanges.tasksToCreate ?? [],
+      tasksToUpdate: rawChanges.tasksToUpdate ?? [],
+      taskIdsToDelete: rawChanges.taskIdsToDelete ?? [],
+      connectionsToCreate: rawChanges.connectionsToCreate ?? [],
+      connectionsToUpdate: rawChanges.connectionsToUpdate ?? [],
+      connectionsToDelete: rawChanges.connectionsToDelete ?? [],
+      taskUpdateFieldsById: rawChanges.taskUpdateFieldsById ?? {},
+    };
     const pendingTaskIdsToDelete = taskIdsToDelete ?? changes.taskIdsToDelete;
     const durablyConfirmedRetryMarkers = new Set<string>();
     const recordRetryMarker = (marker: string): void => {
@@ -668,7 +774,58 @@ export class BatchSyncService {
     try {
       // 1. 获取 tombstones，过滤已永久删除的任务
       const tombstoneIds = await this.callbacks.getTombstoneIds(projectSnapshot.id);
-      const tasksToSync = projectSnapshot.tasks.filter(task => !tombstoneIds.has(task.id));
+      const changedTaskIds = new Set([
+        ...changes.tasksToCreate.map(task => task.id),
+        ...changes.tasksToUpdate.map(task => task.id),
+        ...changes.taskIdsToDelete,
+      ]);
+      const changedConnectionIds = new Set([
+        ...changes.connectionsToCreate.map(connection => connection.id),
+        ...changes.connectionsToUpdate.map(connection => connection.id),
+        ...changes.connectionsToDelete.map(connection => connection.id),
+      ]);
+      const taskSnapshotById = new Map(projectSnapshot.tasks.map(task => [task.id, task]));
+      const connectionSnapshotById = new Map(projectSnapshot.connections.map(connection => [connection.id, connection]));
+      failedTaskIds.push(
+        ...this.reconcileSuppressedEntities(
+          this.suppressedTaskIds,
+          project.id,
+          (id, fingerprint) => {
+            if (changedTaskIds.has(id)) {
+              return false;
+            }
+
+            const task = taskSnapshotById.get(id);
+            return !!task && this.createTaskConflictFingerprint(task) === fingerprint;
+          },
+        )
+      );
+      failedConnectionIds.push(
+        ...this.reconcileSuppressedEntities(
+          this.suppressedConnectionIds,
+          project.id,
+          (id, fingerprint) => {
+            if (changedConnectionIds.has(id)) {
+              return false;
+            }
+
+            const connection = connectionSnapshotById.get(id);
+            return !!connection && this.createConnectionConflictFingerprint(connection) === fingerprint;
+          },
+        )
+      );
+      const tasksToSync = projectSnapshot.tasks.filter(task => {
+        if (tombstoneIds.has(task.id)) {
+          return false;
+        }
+
+        return !this.isEntitySuppressedUntilFreshEdit(
+          this.suppressedTaskIds,
+          projectSnapshot.id,
+          task.id,
+          changedTaskIds,
+        );
+      });
       const connectionTombstoneIds = await this.callbacks.getConnectionTombstoneIds(projectSnapshot.id);
       
       // 2. 保存项目元数据
@@ -739,6 +896,14 @@ export class BatchSyncService {
       const deletedConnections = projectSnapshot.connections.filter(conn => {
         if (!conn.deletedAt) return false;
         if (connectionTombstoneIds.has(conn.id)) return false;
+        if (this.isEntitySuppressedUntilFreshEdit(
+          this.suppressedConnectionIds,
+          projectSnapshot.id,
+          conn.id,
+          changedConnectionIds,
+        )) {
+          return false;
+        }
         return true;
       });
 
@@ -795,8 +960,19 @@ export class BatchSyncService {
           }
         } catch (e) {
           if (isPermanentFailureError(e)) {
-            failedConnectionIds.push(deletedConnections[i].id);
-            this.logger.warn('跳过永久失败的已删除连接', { connectionId: deletedConnections[i].id });
+            const connectionId = deletedConnections[i].id;
+            const clearedDirtyMarker = this.shouldClearDirtyMarkerAfterPermanentFailure(e);
+            failedConnectionIds.push(connectionId);
+            if (clearedDirtyMarker) {
+              this.suppressEntityUntilFingerprintChanges(
+                this.suppressedConnectionIds,
+                projectSnapshot.id,
+                connectionId,
+                this.createConnectionConflictFingerprint(deletedConnections[i]),
+              );
+              this.clearConnectionChangeAfterSuccessfulPush(projectSnapshot.id, connectionId, batchChangeRevision);
+            }
+            this.logger.warn('跳过永久失败的已删除连接', { connectionId, clearedDirtyMarker });
             continue;
           }
           if (isBrowserNetworkSuspendedError(e)) {
@@ -896,8 +1072,19 @@ export class BatchSyncService {
           }
         } catch (e) {
           if (isPermanentFailureError(e)) {
-            failedTaskIds.push(sortedTasks[i].id);
-            this.logger.warn('跳过永久失败的任务', { taskId: sortedTasks[i].id });
+            const taskId = sortedTasks[i].id;
+            const clearedDirtyMarker = this.shouldClearDirtyMarkerAfterPermanentFailure(e);
+            failedTaskIds.push(taskId);
+            if (clearedDirtyMarker) {
+              this.suppressEntityUntilFingerprintChanges(
+                this.suppressedTaskIds,
+                projectSnapshot.id,
+                taskId,
+                this.createTaskConflictFingerprint(sortedTasks[i]),
+              );
+              this.clearTaskChangeAfterSuccessfulPush(projectSnapshot.id, taskId, batchChangeRevision);
+            }
+            this.logger.warn('跳过永久失败的任务', { taskId, clearedDirtyMarker });
             continue;
           }
           if (isBrowserNetworkSuspendedError(e)) {
@@ -912,6 +1099,14 @@ export class BatchSyncService {
       const activeConnections = projectSnapshot.connections.filter(conn => {
         if (conn.deletedAt) return false;
         if (connectionTombstoneIds.has(conn.id)) return false;
+        if (this.isEntitySuppressedUntilFreshEdit(
+          this.suppressedConnectionIds,
+          projectSnapshot.id,
+          conn.id,
+          changedConnectionIds,
+        )) {
+          return false;
+        }
         return true;
       });
 
@@ -1024,8 +1219,18 @@ export class BatchSyncService {
         } catch (e) {
           if (isPermanentFailureError(e)) {
             const connectionId = connectionsToSync[i].id;
+            const clearedDirtyMarker = this.shouldClearDirtyMarkerAfterPermanentFailure(e);
             failedConnectionIds.push(connectionId);
-            this.logger.warn('跳过永久失败的连接', { connectionId });
+            if (clearedDirtyMarker) {
+              this.suppressEntityUntilFingerprintChanges(
+                this.suppressedConnectionIds,
+                projectSnapshot.id,
+                connectionId,
+                this.createConnectionConflictFingerprint(connectionsToSync[i]),
+              );
+              this.clearConnectionChangeAfterSuccessfulPush(projectSnapshot.id, connectionId, batchChangeRevision);
+            }
+            this.logger.warn('跳过永久失败的连接', { connectionId, clearedDirtyMarker });
             continue;
           }
           if (isBrowserNetworkSuspendedError(e)) {
@@ -1053,6 +1258,15 @@ export class BatchSyncService {
       const dedupedFailedTaskIds = Array.from(new Set(failedTaskIds));
       const dedupedFailedConnectionIds = Array.from(new Set(failedConnectionIds));
       const dedupedRetryEnqueued = Array.from(new Set(retryEnqueued));
+      const terminalTaskIds = new Set<string>(
+        Array.from((this.suppressedTaskIds.get(project.id) ?? new Map<string, string>()).keys())
+      );
+      const terminalConnectionIds = new Set<string>(
+        Array.from((this.suppressedConnectionIds.get(project.id) ?? new Map<string, string>()).keys())
+      );
+      const hasTerminalConflicts =
+        dedupedFailedTaskIds.some(id => terminalTaskIds.has(id)) ||
+        dedupedFailedConnectionIds.some(id => terminalConnectionIds.has(id));
       
       this.syncState.setSyncing(false);
       if (success) {
@@ -1066,21 +1280,24 @@ export class BatchSyncService {
         //    syncError（保留 pendingCount 提示足矣）；RetryQueue 回放成功后会自动清错。
         //  - 存在未入队失败（RetryQueue 已满/存储冻结/project 重试入队失败）→ 才写红错。
         const retryEnqueuedSet = new Set(dedupedRetryEnqueued);
-        const allTasksHandedOff = dedupedFailedTaskIds.every(
-          id => retryEnqueuedSet.has(`task:${id}`)
+        const allTasksResolved = dedupedFailedTaskIds.every(
+          id => retryEnqueuedSet.has(`task:${id}`) || terminalTaskIds.has(id)
         );
-        const allConnectionsHandedOff = dedupedFailedConnectionIds.every(
-          id => retryEnqueuedSet.has(`connection:${id}`)
+        const allConnectionsResolved = dedupedFailedConnectionIds.every(
+          id => retryEnqueuedSet.has(`connection:${id}`) || terminalConnectionIds.has(id)
         );
         const projectHandedOff = projectPushed || retryEnqueuedSet.has(`project:${project.id}`);
-        const fullyHandedOffToRetryQueue =
-          projectHandedOff && allTasksHandedOff && allConnectionsHandedOff;
+        const fullyResolved =
+          projectHandedOff && allTasksResolved && allConnectionsResolved;
 
-        if (fullyHandedOffToRetryQueue) {
-          // 全部失败已交接给 RetryQueue：清理可能残留的旧错误文案，交由 RetryQueue 回放收口。
-          this.syncState.setSyncError(null);
+        if (fullyResolved) {
+          this.syncState.setSyncError(hasTerminalConflicts ? '检测到版本冲突，请刷新后重试' : null);
         } else {
-          this.syncState.setSyncError('部分同步失败，已进入重试队列');
+          this.syncState.setSyncError(
+            hasTerminalConflicts
+              ? '部分同步失败，且存在版本冲突，请刷新后重试'
+              : '部分同步失败，已进入重试队列'
+          );
         }
       }
       
@@ -1094,7 +1311,11 @@ export class BatchSyncService {
         failedTaskIds: dedupedFailedTaskIds,
         failedConnectionIds: dedupedFailedConnectionIds,
         retryEnqueued: dedupedRetryEnqueued,
-        failureReason: success ? undefined : 'project batch sync delegated remaining work to retry queue'
+        failureReason: success
+          ? undefined
+          : hasTerminalConflicts
+            ? 'project batch sync finished with terminal conflicts'
+            : 'project batch sync delegated remaining work to retry queue'
       };
     } catch (e) {
       if (!retryEnqueued.includes(`project:${project.id}`)) {

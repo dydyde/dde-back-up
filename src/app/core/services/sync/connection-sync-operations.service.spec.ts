@@ -106,7 +106,7 @@ describe('ConnectionSyncOperationsService', () => {
 
     return {
       select: vi.fn(() => ({
-        single: vi.fn(async () => {
+        maybeSingle: vi.fn(async () => {
           const resolved = await Promise.resolve(rawResult);
           return (resolved ?? { data: null, error: null }) as {
             data: { updated_at: string } | null;
@@ -457,6 +457,31 @@ describe('ConnectionSyncOperationsService', () => {
     await expect(service.pushConnection(connection, 'project-1', false, false, false, 'user-1'))
       .rejects.toBeInstanceOf(PermanentFailureError);
 
+    expect(mockRetryQueue.add).not.toHaveBeenCalled();
+    expect(mockRetryQueue.recordCircuitSuccess).not.toHaveBeenCalled();
+  });
+
+  it('pushConnection 直接 insert 在写回未返回行时应以版本冲突失败收口，避免 406 冒泡', async () => {
+    connectionFreshnessResult = {
+      data: null,
+      error: null,
+    };
+    connectionUpsertResult = {
+      data: null,
+      error: null,
+    };
+
+    const connection: Connection = {
+      id: 'connection-direct-insert-empty',
+      source: 'task-a',
+      target: 'task-b',
+      updatedAt: '2026-04-30T00:00:00.000Z',
+    };
+
+    await expect(service.pushConnection(connection, 'project-1', false, false, false, 'user-1'))
+      .rejects.toBeInstanceOf(PermanentFailureError);
+
+    expect(mockConnectionsUpsert).toHaveBeenCalled();
     expect(mockRetryQueue.add).not.toHaveBeenCalled();
     expect(mockRetryQueue.recordCircuitSuccess).not.toHaveBeenCalled();
   });
