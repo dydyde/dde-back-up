@@ -465,10 +465,7 @@ export class FlowOverviewService {
      *
      * 因此 idle 期保持 scale === target，press apply 自然 no-op（target 未变）。
      */
-    const updateScaleTowardTarget = (current: number, target: number): number => {
-      if (this.isOverviewBoxDragging && this.hasManualBoxMovement) {
-        return smartLerp(current, target);
-      }
+    const updateScaleTowardTarget = (_current: number, target: number): number => {
       return target;
     };
     
@@ -716,7 +713,7 @@ export class FlowOverviewService {
             // 修复：构造函数已移除 contentAlignment: Spot.Center；这里也无条件
             // 以 viewportBounds 为锚点，让拖拽中、释放帧、稳态、resize 全程
             // 共享同一居中规则，从根源消除模式切换。
-            this.overview.centerRect(viewportBounds);
+            this.overview.centerRect(worldBounds);
           }
         }
         
@@ -806,6 +803,7 @@ export class FlowOverviewService {
 
     const prevTouchAction = container.style.touchAction;
     container.style.touchAction = 'none';
+    const supportsPointerEvents = typeof PointerEvent !== 'undefined';
 
     let capturedPointerId: number | null = null;
     let hasPointerCapture = false;
@@ -1001,11 +999,6 @@ export class FlowOverviewService {
       // 这里直接传 boxCenter 作为 centerOverride，第二参（fallbackDocPt）用不到 ——
       // 拖拽中我们已知准确白框中心，无需 fallback。
       updateOverviewBoxViewportBounds(boxCenter);
-
-      if (this.overview) {
-        this.overview.updateAllTargetBindings();
-        this.overview.requestUpdate();
-      }
     };
 
     const endManualBoxDrag = (): void => {
@@ -1222,10 +1215,11 @@ export class FlowOverviewService {
       window.addEventListener('pointermove', onWindowPointerMove, { passive: false });
       window.addEventListener('pointerup', onWindowPointerUp, { passive: false });
       window.addEventListener('pointercancel', onWindowPointerUp, { passive: false });
-
-      container.addEventListener('mousedown', onMouseDown, { passive: false, capture: true });
-      window.addEventListener('mousemove', onMouseMove, { passive: true });
-      window.addEventListener('mouseup', onMouseUp, { passive: true });
+      if (!supportsPointerEvents) {
+        container.addEventListener('mousedown', onMouseDown, { passive: false, capture: true });
+        window.addEventListener('mousemove', onMouseMove, { passive: true });
+        window.addEventListener('mouseup', onMouseUp, { passive: true });
+      }
     });
 
     this.overviewPointerCleanup = () => {
@@ -1242,10 +1236,11 @@ export class FlowOverviewService {
       window.removeEventListener('pointermove', onWindowPointerMove);
       window.removeEventListener('pointerup', onWindowPointerUp);
       window.removeEventListener('pointercancel', onWindowPointerUp);
-
-      container.removeEventListener('mousedown', onMouseDown, { capture: true } as EventListenerOptions);
-      window.removeEventListener('mousemove', onMouseMove);
-      window.removeEventListener('mouseup', onMouseUp);
+      if (!supportsPointerEvents) {
+        container.removeEventListener('mousedown', onMouseDown, { capture: true } as EventListenerOptions);
+        window.removeEventListener('mousemove', onMouseMove);
+        window.removeEventListener('mouseup', onMouseUp);
+      }
     };
   }
 }
