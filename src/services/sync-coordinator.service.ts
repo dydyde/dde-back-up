@@ -1411,6 +1411,22 @@ export class SyncCoordinatorService {
     ownerUserId?: string | null,
     pendingTaskDeleteIds?: string[],
   ): void {
+    const activeConflict = this.conflictData();
+    if (this.isDuplicateActiveConflict(activeConflict, localProject, remoteProject, pendingTaskDeleteIds)) {
+      void this.saveConflictSilently(
+        localProject,
+        remoteProject,
+        [],
+        ownerUserId,
+        pendingTaskDeleteIds,
+        activeConflict?.conflictedAt,
+      ).catch(error => {
+        this.logger.warn('保存重复冲突隔离区记录失败', { error, projectId: localProject.id });
+      });
+      this.logger.debug('跳过重复冲突发布', { projectId: localProject.id });
+      return;
+    }
+
     const conflictedAt = new Date().toISOString();
     void this.saveConflictSilently(localProject, remoteProject, [], ownerUserId, pendingTaskDeleteIds, conflictedAt).catch(error => {
       this.logger.warn('保存冲突隔离区记录失败', { error, projectId: localProject.id });
@@ -1428,6 +1444,35 @@ export class SyncCoordinatorService {
       remoteProject,
       projectId: localProject.id,
       pendingTaskDeleteIds,
+    });
+  }
+
+  private isDuplicateActiveConflict(
+    activeConflict: SyncConflictData | null,
+    localProject: Project,
+    remoteProject: Project,
+    pendingTaskDeleteIds?: string[],
+  ): boolean {
+    if (!activeConflict || activeConflict.projectId !== localProject.id) {
+      return false;
+    }
+
+    return this.buildConflictSnapshotSignature(
+      activeConflict.local,
+      activeConflict.remote,
+      activeConflict.pendingTaskDeleteIds,
+    ) === this.buildConflictSnapshotSignature(localProject, remoteProject, pendingTaskDeleteIds);
+  }
+
+  private buildConflictSnapshotSignature(
+    localProject: Project | undefined,
+    remoteProject: Project | undefined,
+    pendingTaskDeleteIds?: string[],
+  ): string {
+    return JSON.stringify({
+      localProject: localProject ?? null,
+      remoteProject: remoteProject ?? null,
+      pendingTaskDeleteIds: [...(pendingTaskDeleteIds ?? [])].sort(),
     });
   }
   

@@ -1267,6 +1267,74 @@ describe('持久化状态管理', () => {
       subscription.unsubscribe();
     });
 
+    it('重复快照冲突不应重复发布 onConflict$ 或刷新 conflictedAt', async () => {
+      const cloudProject = createTestProject({
+        id: 'proj-dup',
+        version: 5,
+        updatedAt: '2026-05-12T14:20:00.000Z',
+      });
+      const offlineProject = createTestProject({
+        id: 'proj-dup',
+        version: 6,
+        updatedAt: '2026-05-12T14:21:00.000Z',
+      });
+      const onConflictSpy = vi.fn();
+      const subscription = service.onConflict$.subscribe(onConflictSpy);
+
+      await service.captureConflict(offlineProject, cloudProject, 'user-123', ['task-delete-1']);
+      const firstConflict = service.conflictData();
+
+      await service.captureConflict(
+        { ...offlineProject },
+        { ...cloudProject },
+        'user-123',
+        ['task-delete-1'],
+      );
+
+      expect(onConflictSpy).toHaveBeenCalledTimes(1);
+      expect(service.conflictData()).toEqual(firstConflict);
+      expect(mockLoggerCategory.debug).toHaveBeenCalledWith('跳过重复冲突发布', { projectId: 'proj-dup' });
+
+      subscription.unsubscribe();
+    });
+
+    it('相同项目元数据但任务内容变化时仍应发布新的冲突快照', async () => {
+      const cloudProject = createTestProject({
+        id: 'proj-dup-refresh',
+        version: 5,
+        updatedAt: '2026-05-12T14:20:00.000Z',
+        tasks: [createTestTask({ id: 'task-1', title: 'Remote A', updatedAt: '2026-05-12T14:19:00.000Z' })],
+      });
+      const offlineProject = createTestProject({
+        id: 'proj-dup-refresh',
+        version: 6,
+        updatedAt: '2026-05-12T14:21:00.000Z',
+        tasks: [createTestTask({ id: 'task-1', title: 'Local A', updatedAt: '2026-05-12T14:21:00.000Z' })],
+      });
+      const refreshedOfflineProject = {
+        ...offlineProject,
+        tasks: [createTestTask({ id: 'task-1', title: 'Local B', updatedAt: '2026-05-12T14:21:00.000Z' })],
+      };
+      const onConflictSpy = vi.fn();
+      const subscription = service.onConflict$.subscribe(onConflictSpy);
+
+      await service.captureConflict(offlineProject, cloudProject, 'user-123');
+      const firstConflict = service.conflictData();
+
+      await service.captureConflict(refreshedOfflineProject, cloudProject, 'user-123');
+
+      expect(onConflictSpy).toHaveBeenCalledTimes(2);
+      expect(service.conflictData()).toEqual(expect.objectContaining({
+        local: refreshedOfflineProject,
+        remote: cloudProject,
+        projectId: 'proj-dup-refresh',
+      }));
+      expect(service.conflictData()?.local.tasks[0]?.title).toBe('Local B');
+      expect(firstConflict?.local.tasks[0]?.title).toBe('Local A');
+
+      subscription.unsubscribe();
+    });
+
     it('冲突时应记录冲突（LWW 冲突解决入口）', async () => {
       // Sprint 9: resyncActiveProject 现在委托给 ProjectSyncOperationsService
       const localProject = createTestProject({ id: 'proj-1', version: 2 });

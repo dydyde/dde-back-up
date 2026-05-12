@@ -14,6 +14,7 @@ import { SyncCoordinatorService } from './sync-coordinator.service';
 import { AppAuthCoordinatorService } from '../app/core/services/app-auth-coordinator.service';
 import { Router } from '@angular/router';
 import { type ConflictData } from './modal.service';
+import { type ConflictResolutionPlan } from './conflict-resolution.types';
 
 // ── Fake component for modal loading ─────────────────────────
 class FakeComponent {}
@@ -275,6 +276,54 @@ describe('WorkspaceModalCoordinatorService', () => {
     });
     expect(mockModalCloseRef.close).toHaveBeenCalledWith({ choice: 'merge' });
     expect(mockToast.success).toHaveBeenCalled();
+  });
+
+  it('should wire conflict modal applyPlan output to the plan resolver', async () => {
+    service.setPendingConflict({ projectId: 'p-1' } as ConflictData);
+    await service.openConflictModal({ projectId: 'p-1' } as ConflictData);
+
+    const openCall = mockDynamicModal.open.mock.calls[0] as unknown[];
+    const config = openCall[1] as {
+      outputs: {
+        applyPlan: (plan: ConflictResolutionPlan) => Promise<void>;
+      };
+    };
+
+    await config.outputs.applyPlan({
+      taskChoices: { 'task-1': 'local' },
+      appliedBy: 'mixed',
+    });
+
+    expect(mockProjectOps.resolveConflictWithPlan).toHaveBeenCalledWith('p-1', {
+      taskChoices: { 'task-1': 'local' },
+      appliedBy: 'mixed',
+    });
+    expect(mockModalCloseRef.close).toHaveBeenCalledWith({ choice: 'merge' });
+  });
+
+  it('should keep conflict modal open when applyPlan resolution returns false', async () => {
+    service.setPendingConflict({ projectId: 'p-1' } as ConflictData);
+    await service.openConflictModal({ projectId: 'p-1' } as ConflictData);
+    mockProjectOps.resolveConflictWithPlan.mockResolvedValueOnce(false);
+
+    const openCall = mockDynamicModal.open.mock.calls[0] as unknown[];
+    const config = openCall[1] as {
+      outputs: {
+        applyPlan: (plan: ConflictResolutionPlan) => Promise<void>;
+      };
+    };
+
+    await config.outputs.applyPlan({
+      taskChoices: { 'task-1': 'remote' },
+      appliedBy: 'user',
+    });
+
+    expect(mockProjectOps.resolveConflictWithPlan).toHaveBeenCalledWith('p-1', {
+      taskChoices: { 'task-1': 'remote' },
+      appliedBy: 'user',
+    });
+    expect(mockModalCloseRef.close).not.toHaveBeenCalled();
+    expect(mockToast.success).not.toHaveBeenCalled();
   });
 
   // ── cancelConflictResolution ───────────────────────────────
