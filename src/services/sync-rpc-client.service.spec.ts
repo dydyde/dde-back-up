@@ -165,6 +165,7 @@ describe('SyncRpcClientService', () => {
         wait_minutes: 5,
         tags: ['sync'],
         completedAt: '2026-04-30T01:00:00.000Z',
+        updatedAt: '2026-04-30T00:05:00.000Z',
         deletedAt: null,
         attachments: [{ id: 'att-1' }],
         parkingMeta: { state: 'parked' },
@@ -202,6 +203,7 @@ describe('SyncRpcClientService', () => {
       wait_minutes: 5,
       tags: ['sync'],
       completed_at: '2026-04-30T01:00:00.000Z',
+      updated_at: '2026-04-30T00:05:00.000Z',
       deleted_at: null,
       attachments: [{ id: 'att-1' }],
       parking_meta: { state: 'parked' },
@@ -269,6 +271,7 @@ describe('SyncRpcClientService', () => {
         target: 't-2',
         title: 'Link',
         description: 'Link detail',
+        updatedAt: '2026-04-30T02:00:00.000Z',
         deletedAt: null,
         projectId: 'p-1',
       } as unknown as Connection,
@@ -280,6 +283,7 @@ describe('SyncRpcClientService', () => {
     expect(cap.connection.target_id).toBe('t-2');
     expect(cap.connection.title).toBe('Link');
     expect(cap.connection.description).toBe('Link detail');
+    expect(cap.connection.updated_at).toBe('2026-04-30T02:00:00.000Z');
     expect(cap.connection.deleted_at).toBeNull();
   });
 
@@ -382,6 +386,7 @@ describe('SyncRpcClientService', () => {
         name: 'RPC Project',
         description: 'Project metadata',
         version: 7,
+        updatedAt: '2026-04-30T01:30:00.000Z',
         deletedAt: null,
       } as unknown as Project,
       ownerId: 'user-1',
@@ -407,6 +412,7 @@ describe('SyncRpcClientService', () => {
       description: 'Project metadata',
       version: 7,
       migrated_to_v2: true,
+      updated_at: '2026-04-30T01:30:00.000Z',
       deleted_at: null,
     });
   });

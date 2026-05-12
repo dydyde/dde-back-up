@@ -176,6 +176,69 @@ export class TaskSyncOperationsService {
     this.clockSync.recordServerTimestamp(serverUpdatedAt, task.id);
   }
 
+  private createRemoteNewerConflictError(
+    taskId: string,
+    projectId: string,
+    remoteUpdatedAt: string | null,
+    reason: 'remote-newer' | 'remote-tombstone',
+  ): EnhancedError {
+    return Object.assign(
+      new Error('版本冲突：数据已被修改，请刷新后重试'),
+      {
+        name: 'VersionConflictError',
+        errorType: 'VersionConflictError',
+        code: reason === 'remote-tombstone' ? 'TASK_REMOTE_TOMBSTONE_NEWER' : 'TASK_REMOTE_NEWER',
+        isRetryable: false,
+        details: `taskId=${taskId}, projectId=${projectId}, remoteUpdatedAt=${remoteUpdatedAt ?? 'unknown'}`,
+      },
+    ) as EnhancedError;
+  }
+
+  private createClockUncertainError(
+    taskId: string,
+    projectId: string,
+    localUpdatedAt: string | null,
+    remoteUpdatedAt: string | null,
+  ): EnhancedError {
+    return Object.assign(
+      new Error('无法确认本地时间基线，已延后同步以避免覆盖远端更新'),
+      {
+        name: 'ClockSyncUncertainError',
+        errorType: 'ClockSyncUncertainError',
+        code: 'TASK_CLOCK_SYNC_UNCERTAIN',
+        isRetryable: true,
+        details: `taskId=${taskId}, projectId=${projectId}, localUpdatedAt=${localUpdatedAt ?? 'unknown'}, remoteUpdatedAt=${remoteUpdatedAt ?? 'unknown'}`,
+      },
+    ) as EnhancedError;
+  }
+
+  private async loadRemoteTaskFreshness(
+    client: SupabaseClient,
+    taskId: string,
+    projectId: string,
+  ): Promise<{ updatedAt: string | null; deletedAt: string | null } | null> {
+    const { data, error } = await client
+      .from('tasks')
+      .select('id,updated_at,deleted_at')
+      .eq('id', taskId)
+      .eq('project_id', projectId)
+      .maybeSingle();
+
+    if (error) {
+      throw supabaseErrorToError(error);
+    }
+
+    if (!data) {
+      return null;
+    }
+
+    const row = data as { updated_at?: string | null; deleted_at?: string | null };
+    return {
+      updatedAt: typeof row.updated_at === 'string' ? row.updated_at : null,
+      deletedAt: typeof row.deleted_at === 'string' ? row.deleted_at : null,
+    };
+  }
+
   private applyTaskPositionSnapshot(
     taskId: string,
     projectId: string | undefined,
@@ -391,7 +454,9 @@ export class TaskSyncOperationsService {
         throw e;
       }
 
-      const enhanced = supabaseErrorToError(e);
+      const enhanced = e && typeof e === 'object' && 'errorType' in e
+        ? e as EnhancedError
+        : supabaseErrorToError(e);
       
       // 检测到认证错误时先尝试刷新 session
       if (this.sessionManager.isSessionExpiredError(enhanced)) {
@@ -411,7 +476,9 @@ export class TaskSyncOperationsService {
           try {
             return await executeTaskPush();
           } catch (retryError) {
-            const retryEnhanced = supabaseErrorToError(retryError);
+            const retryEnhanced = retryError && typeof retryError === 'object' && 'errorType' in retryError
+              ? retryError as EnhancedError
+              : supabaseErrorToError(retryError);
             if (this.sessionManager.isSessionExpiredError(retryEnhanced)) {
               // 会话刷新成功后重试仍然失败
               if (this.sessionManager.isRlsPolicyViolation(retryEnhanced)) {
@@ -519,6 +586,47 @@ export class TaskSyncOperationsService {
             return;
           }
 
+          const remoteTask = await this.loadRemoteTaskFreshness(client, task.id, projectId);
+          const remoteHasTombstone = !!remoteTask?.deletedAt;
+          const remoteUpdatedAt = remoteTask?.updatedAt ?? null;
+          const localUpdatedAt = task.updatedAt ?? null;
+          const rawRemoteMs = remoteUpdatedAt ? new Date(remoteUpdatedAt).getTime() : Number.NaN;
+          const rawLocalMs = localUpdatedAt ? new Date(localUpdatedAt).getTime() : Number.NaN;
+          const timestampsDiffer = Number.isFinite(rawRemoteMs)
+            && Number.isFinite(rawLocalMs)
+            && rawLocalMs !== rawRemoteMs;
+          const clockSyncResult = timestampsDiffer
+            ? await this.clockSync.ensureSynced().catch(() => null)
+            : null;
+
+          if (timestampsDiffer && !clockSyncResult?.reliable) {
+            throw this.createClockUncertainError(
+              task.id,
+              projectId,
+              localUpdatedAt,
+              remoteUpdatedAt,
+            );
+          }
+
+          const remoteIsNewer = !!(
+            remoteUpdatedAt
+            && localUpdatedAt
+            && (
+              clockSyncResult?.reliable
+                ? this.clockSync.compareTimestamps(localUpdatedAt, remoteUpdatedAt) < 0
+                : rawRemoteMs > rawLocalMs
+            )
+          );
+
+          if (remoteHasTombstone || remoteIsNewer) {
+            throw this.createRemoteNewerConflictError(
+              task.id,
+              projectId,
+              remoteTask?.updatedAt ?? remoteTask?.deletedAt ?? null,
+              remoteHasTombstone ? 'remote-tombstone' : 'remote-newer',
+            );
+          }
+
           const row = {
             id: task.id,
             project_id: projectId,
@@ -544,20 +652,65 @@ export class TaskSyncOperationsService {
             // State Overlap 停泊元数据（A3.2/A3.6）
             parking_meta: task.parkingMeta ?? null,
           };
-          const upsertTask = async (payload: typeof row | Omit<typeof row, 'completed_at'>) => await client
-            .from('tasks')
-            .upsert(payload)
-            .select('updated_at')
-            .single();
+          const writeTask = async (payload: typeof row | Omit<typeof row, 'completed_at'>) => {
+            if (remoteTask?.updatedAt) {
+              const { data, error } = await client
+                .from('tasks')
+                .update(payload)
+                .eq('id', task.id)
+                .eq('project_id', projectId)
+                .eq('updated_at', remoteTask.updatedAt)
+                .select('updated_at')
+                .maybeSingle();
 
-          let { data: upsertedData, error } = await upsertTask(getCompatibleTaskWriteRow(row));
+              if (!error && !data) {
+                throw this.createRemoteNewerConflictError(
+                  task.id,
+                  projectId,
+                  remoteTask.updatedAt,
+                  'remote-newer',
+                );
+              }
+
+              return { data, error };
+            }
+
+            if (remoteTask) {
+              throw this.createRemoteNewerConflictError(
+                task.id,
+                projectId,
+                remoteTask.updatedAt ?? remoteTask.deletedAt ?? null,
+                'remote-newer',
+              );
+            }
+
+            const result = await client
+              .from('tasks')
+              .insert(payload)
+              .select('updated_at')
+              .single();
+
+            const code = (result.error as { code?: string | number } | null)?.code;
+            if (result.error && (code === '23505' || code === 23505)) {
+              throw this.createRemoteNewerConflictError(
+                task.id,
+                projectId,
+                task.updatedAt ?? null,
+                'remote-newer',
+              );
+            }
+
+            return result;
+          };
+
+          let { data: upsertedData, error } = await writeTask(getCompatibleTaskWriteRow(row));
           if (error && markTaskCompletedAtColumnUnavailable(error)) {
             this.logger.warn('tasks.completed_at 缺失，任务推送已降级为旧 schema 写入', {
               taskId: task.id,
               projectId,
               error,
             });
-            ({ data: upsertedData, error } = await upsertTask(omitTaskCompletedAtColumn(row)));
+            ({ data: upsertedData, error } = await writeTask(omitTaskCompletedAtColumn(row)));
           }
           
           if (error) throw supabaseErrorToError(error);
@@ -827,13 +980,67 @@ export class TaskSyncOperationsService {
         return false;
       }
     }
+
+    if (!projectId || !fallbackTask) {
+      this.logger.warn('pushTaskPosition: 缺少任务快照或 projectId，跳过未受保护的位置直写', {
+        taskId,
+        projectId: projectId ?? null,
+      });
+      return false;
+    }
     
     try {
-      // 【P2-2 修复】不发送客户端 updated_at，让 DB 触发器统一设置，与 pushTask 一致
+      const remoteTask = await this.loadRemoteTaskFreshness(client, taskId, projectId);
+      const remoteHasTombstone = !!remoteTask?.deletedAt;
+      const remoteUpdatedAt = remoteTask?.updatedAt ?? null;
+      const localUpdatedAt = fallbackTask.updatedAt ?? null;
+      const rawRemoteMs = remoteUpdatedAt ? new Date(remoteUpdatedAt).getTime() : Number.NaN;
+      const rawLocalMs = localUpdatedAt ? new Date(localUpdatedAt).getTime() : Number.NaN;
+      const timestampsDiffer = Number.isFinite(rawRemoteMs)
+        && Number.isFinite(rawLocalMs)
+        && rawLocalMs !== rawRemoteMs;
+      const clockSyncResult = timestampsDiffer
+        ? await this.clockSync.ensureSynced().catch(() => null)
+        : null;
+
+      if (timestampsDiffer && !clockSyncResult?.reliable) {
+        this.logger.warn('pushTaskPosition 时钟基线不可靠，延后位置同步避免洗白陈旧快照', {
+          taskId,
+          projectId,
+          localUpdatedAt,
+          remoteUpdatedAt,
+        });
+        return false;
+      }
+
+      const remoteIsNewer = !!(
+        remoteUpdatedAt
+        && localUpdatedAt
+        && (
+          clockSyncResult?.reliable
+            ? this.clockSync.compareTimestamps(localUpdatedAt, remoteUpdatedAt) < 0
+            : rawRemoteMs > rawLocalMs
+        )
+      );
+
+      if (remoteHasTombstone || remoteIsNewer || !remoteUpdatedAt) {
+        this.logger.warn('pushTaskPosition 预检阻止未受保护的位置直写，需回退完整推送', {
+          taskId,
+          projectId,
+          remoteHasTombstone,
+          remoteUpdatedAt,
+          localUpdatedAt,
+          reason: remoteHasTombstone ? 'remote-tombstone' : remoteIsNewer ? 'remote-newer' : 'remote-missing',
+        });
+        return false;
+      }
+
       const { data, error } = await client
         .from('tasks')
         .update({ x, y })
         .eq('id', taskId)
+        .eq('project_id', projectId)
+        .eq('updated_at', remoteUpdatedAt)
         .select('updated_at');
       
       if (error) {

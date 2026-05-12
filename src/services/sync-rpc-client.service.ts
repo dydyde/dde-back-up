@@ -286,7 +286,7 @@ export class SyncRpcClientService {
 
   private serializeTask(task: Task, projectId?: string): Record<string, unknown> {
     // 仅传递服务端关心的字段，避免泄漏额外内部状态。
-    const taskWithProject = task as Task & { projectId?: string };
+    const taskWithProject = task as Task & { projectId?: string; updatedAt?: string | null };
     return {
       id: task.id,
       project_id: projectId ?? taskWithProject.projectId,
@@ -314,6 +314,7 @@ export class SyncRpcClientService {
       tags: task.tags ?? [],
       completed_at: task.completedAt ?? null,
       completedAt: task.completedAt ?? null,
+      updated_at: taskWithProject.updatedAt ?? null,
       deleted_at: task.deletedAt ?? null,
       deletedAt: task.deletedAt ?? null,
       attachments: task.attachments ?? [],
@@ -329,6 +330,7 @@ export class SyncRpcClientService {
       targetId?: string;
       from?: string;
       to?: string;
+      updatedAt?: string | null;
     };
     return {
       id: conn.id,
@@ -337,6 +339,7 @@ export class SyncRpcClientService {
       target_id: aliased.targetId ?? conn.target ?? aliased.to,
       title: conn.title ?? null,
       description: conn.description ?? null,
+      updated_at: aliased.updatedAt ?? null,
       deleted_at: conn.deletedAt ?? null,
     };
   }
@@ -366,6 +369,7 @@ export class SyncRpcClientService {
   }
 
   private serializeProject(project: Project, ownerId: string): Record<string, unknown> {
+    const projectWithTimestamp = project as Project & { updatedAt?: string | null };
     return {
       id: project.id,
       owner_id: ownerId,
@@ -373,6 +377,7 @@ export class SyncRpcClientService {
       description: project.description ?? null,
       version: project.version ?? 1,
       migrated_to_v2: true,
+      updated_at: projectWithTimestamp.updatedAt ?? null,
       deleted_at: project.deletedAt ?? null,
     };
   }

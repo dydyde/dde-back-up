@@ -1775,6 +1775,7 @@ export class BlackBoxSyncService {
       entry = this.hydrateBlankContentFromSource(entry, latestLocalBeforePush, 'latest-local');
 
       let syncRpcBaseUpdatedAt: string | null = entry.updatedAt ?? null;
+      let preflightServerEntry: BlackBoxEntry | null = null;
 
       // 【2026-04-22 根因修复】服务端状态预检：防止陈旧本地 pending 快照反向压盖远端
       // 权威状态。典型场景：Device B（移动端 / PWA / 久未刷新的标签页）IDB 中仍保留着
@@ -1829,9 +1830,30 @@ export class BlackBoxSyncService {
 
         if (!preflightError && serverRow) {
           const serverEntry = this.mapRowToEntry(serverRow as Record<string, unknown>);
+          preflightServerEntry = serverEntry;
           syncRpcBaseUpdatedAt = serverEntry.updatedAt;
           entry = this.hydrateBlankContentFromSource(entry, serverEntry, 'server-preflight');
-          const serverIsNewer = this.clockSync.isLocalNewer(serverEntry.updatedAt, entry.updatedAt);
+          const rawServerMs = new Date(serverEntry.updatedAt).getTime();
+          const rawLocalMs = new Date(entry.updatedAt).getTime();
+          const timestampsDiffer = Number.isFinite(rawServerMs)
+            && Number.isFinite(rawLocalMs)
+            && rawLocalMs !== rawServerMs;
+          const clockSyncResult = timestampsDiffer
+            ? await this.clockSync.ensureSynced().catch(() => null)
+            : null;
+
+          if (timestampsDiffer && !clockSyncResult?.reliable) {
+            this.logger.warn('黑匣子推送预检检测到不可信时间基线，延后本轮推送避免误判覆盖或回退本地更新', {
+              entryId: entry.id,
+              localUpdatedAt: entry.updatedAt,
+              serverUpdatedAt: serverEntry.updatedAt,
+            });
+            return false;
+          }
+
+          const serverIsNewer = clockSyncResult?.reliable
+            ? this.clockSync.compareTimestamps(entry.updatedAt, serverEntry.updatedAt) < 0
+            : rawServerMs > rawLocalMs;
           const wouldRegressRead = serverEntry.isRead && !entry.isRead;
           const wouldRegressCompleted = serverEntry.isCompleted && !entry.isCompleted;
           const wouldResurrectDeleted = Boolean(serverEntry.deletedAt) && !entry.deletedAt;
@@ -1896,6 +1918,7 @@ export class BlackBoxSyncService {
             }
           }
         } else if (!preflightError && !serverRow) {
+          preflightServerEntry = null;
           syncRpcBaseUpdatedAt = null;
         } else if (preflightError) {
           this.logger.debug('黑匣子推送预检 SELECT 失败，延后推送等待下次对账', {
@@ -1922,27 +1945,75 @@ export class BlackBoxSyncService {
       }
 
       // 让数据库触发器生成权威 updated_at，避免客户端时钟偏差把跨设备完成状态盖回去。
-      const { data: savedRow, error } = await client
-        .from('black_box_entries')
-        .upsert({
-          id: entry.id,
-          project_id: entry.projectId,
-          user_id: entry.userId,
-          content: entry.content,
-          focus_meta: (entry.focusMeta ?? null) as unknown as Json | null,
-          date: entry.date,
-          created_at: entry.createdAt,
-          is_read: entry.isRead,
-          is_completed: entry.isCompleted,
-          is_archived: entry.isArchived,
-          snooze_until: entry.snoozeUntil,
-          snooze_count: entry.snoozeCount,
-          deleted_at: entry.deletedAt
-        }, {
-          onConflict: 'id'
-        })
-        .select('id, updated_at')
-        .single();
+      const blackBoxInsertPayload = {
+        id: entry.id,
+        project_id: entry.projectId,
+        user_id: entry.userId,
+        content: entry.content,
+        focus_meta: (entry.focusMeta ?? null) as unknown as Json | null,
+        date: entry.date,
+        created_at: entry.createdAt,
+        is_read: entry.isRead,
+        is_completed: entry.isCompleted,
+        is_archived: entry.isArchived,
+        snooze_until: entry.snoozeUntil,
+        snooze_count: entry.snoozeCount,
+        deleted_at: entry.deletedAt,
+      };
+      const blackBoxUpdatePayload = {
+        project_id: entry.projectId,
+        content: entry.content,
+        focus_meta: (entry.focusMeta ?? null) as unknown as Json | null,
+        date: entry.date,
+        created_at: entry.createdAt,
+        is_read: entry.isRead,
+        is_completed: entry.isCompleted,
+        is_archived: entry.isArchived,
+        snooze_until: entry.snoozeUntil,
+        snooze_count: entry.snoozeCount,
+        deleted_at: entry.deletedAt,
+      };
+
+      let savedRow: { id?: string; updated_at?: string | null } | null = null;
+      let error: unknown | null = null;
+
+      if (preflightServerEntry?.updatedAt) {
+        ({ data: savedRow, error } = await client
+          .from('black_box_entries')
+          .update(blackBoxUpdatePayload)
+          .eq('id', entry.id)
+          .eq('user_id', sessionUserId)
+          .eq('updated_at', preflightServerEntry.updatedAt)
+          .select('id, updated_at')
+          .maybeSingle());
+
+        if (!error && !savedRow) {
+          this.logger.warn('黑匣子 CAS 写入被并发更新打断，延后到下一轮重试', {
+            entryId: entry.id,
+            baseUpdatedAt: preflightServerEntry.updatedAt,
+          });
+          return false;
+        }
+      } else if (preflightServerEntry) {
+        this.logger.warn('黑匣子预检命中缺失 updated_at 的远端行，放弃本轮写入避免覆盖未对账状态', {
+          entryId: entry.id,
+        });
+        return false;
+      } else {
+        ({ data: savedRow, error } = await client
+          .from('black_box_entries')
+          .insert(blackBoxInsertPayload)
+          .select('id, updated_at')
+          .single());
+
+        const code = (error as { code?: string | number } | null)?.code;
+        if (error && (code === '23505' || code === 23505)) {
+          this.logger.warn('黑匣子 insert 命中并发主键冲突，延后到下一轮重试', {
+            entryId: entry.id,
+          });
+          return false;
+        }
+      }
 
       if (error) {
         const enhanced = supabaseErrorToError(error);

@@ -7,6 +7,7 @@ import { LoggerService } from '../../../../services/logger.service';
 import { ToastService } from '../../../../services/toast.service';
 import { RequestThrottleService } from '../../../../services/request-throttle.service';
 import { ProjectStateService } from '../../../../services/project-state.service';
+import { ClockSyncService } from '../../../../services/clock-sync.service';
 import { SyncOperationHelperService } from './sync-operation-helper.service';
 import { SessionManagerService } from './session-manager.service';
 import { RetryQueueService } from './retry-queue.service';
@@ -84,8 +85,10 @@ describe('ConnectionSyncOperationsService', () => {
   let legacyConnectionTombstoneResult: { data: { deleted_at: string; source_id: string | null; target_id: string | null } | null; error: unknown | null };
   let taskExistenceResult: { data: Array<{ id: string }>; error: unknown | null };
   let endpointDedupResponses: Array<{ data: Array<{ id: string; deleted_at: string | null; updated_at?: string | null; title?: string | null; description?: string | null }>; error: unknown | null }>;
+  let connectionFreshnessResult: { data: { id: string; updated_at: string | null; deleted_at: string | null } | null; error: unknown | null };
   let connectionReadbackQueryCount: number;
   let connectionUpsertResult: { data: { updated_at: string } | null; error: unknown | null };
+  let connectionUpdateResult: { data: { updated_at: string } | null; error: unknown | null };
   const mockConnectionsUpsert = vi.fn();
   let mockProjects: Array<{ id: string; connections: Connection[]; tasks: unknown[] }>;
 
@@ -191,6 +194,16 @@ describe('ConnectionSyncOperationsService', () => {
       if (table === 'connections') {
         return {
           select: vi.fn((columns: string) => {
+            if (columns === 'id,updated_at,deleted_at') {
+              return {
+                eq: vi.fn(() => ({
+                  eq: vi.fn(() => ({
+                    maybeSingle: vi.fn(async () => connectionFreshnessResult),
+                  })),
+                })),
+              };
+            }
+
             if (columns === 'updated_at') {
               connectionReadbackQueryCount += 1;
               return {
@@ -214,7 +227,30 @@ describe('ConnectionSyncOperationsService', () => {
               })),
             };
           }),
-          upsert: (...args: unknown[]) => buildUpsertQuery(mockConnectionsUpsert(...args)),
+          insert: (payload: unknown) => {
+            const rawResult = mockConnectionsUpsert(payload, { onConflict: 'id', ignoreDuplicates: false });
+            return buildUpsertQuery(rawResult === undefined ? connectionUpsertResult : rawResult);
+          },
+          update: (payload: unknown) => {
+            const rawResult = mockConnectionsUpsert(payload, { mode: 'cas-update' });
+            return {
+              eq: vi.fn(() => ({
+                eq: vi.fn(() => ({
+                  eq: vi.fn(() => ({
+                    select: vi.fn(() => ({
+                      maybeSingle: vi.fn(async () => {
+                        const resolved = await Promise.resolve(rawResult);
+                        return (resolved === undefined ? connectionUpdateResult : resolved) as {
+                          data: { updated_at: string } | null;
+                          error: unknown | null;
+                        };
+                      }),
+                    })),
+                  })),
+                })),
+              })),
+            };
+          },
         };
       }
 
@@ -238,16 +274,17 @@ describe('ConnectionSyncOperationsService', () => {
       error: null,
     };
     endpointDedupResponses = [{ data: [], error: null }];
+    connectionFreshnessResult = { data: null, error: null };
     connectionReadbackQueryCount = 0;
     connectionUpsertResult = {
       data: { updated_at: '2026-04-11T00:01:00.000Z' },
       error: null,
     };
-    mockConnectionsUpsert.mockImplementation(() => ({
-      select: vi.fn(() => ({
-        single: vi.fn(async () => connectionUpsertResult),
-      })),
-    }));
+    connectionUpdateResult = {
+      data: { updated_at: '2026-04-11T00:01:00.000Z' },
+      error: null,
+    };
+    mockConnectionsUpsert.mockImplementation(() => undefined);
     mockProjects = [{ id: 'project-1', connections: [], tasks: [] }];
 
     TestBed.configureTestingModule({
@@ -271,6 +308,15 @@ describe('ConnectionSyncOperationsService', () => {
           provide: RequestThrottleService,
           useValue: {
             execute: vi.fn(async (_key: string, fn: () => Promise<void>) => await fn()),
+          },
+        },
+        {
+          provide: ClockSyncService,
+          useValue: {
+            isLocalNewer: vi.fn((left: string, right: string) => new Date(left).getTime() > new Date(right).getTime()),
+            compareTimestamps: vi.fn((left: string, right: string) => new Date(left).getTime() - new Date(right).getTime()),
+            ensureSynced: vi.fn().mockResolvedValue({ reliable: true }),
+            recordServerTimestamp: vi.fn(),
           },
         },
         { provide: ProjectStateService, useValue: mockProjectState },
@@ -359,6 +405,59 @@ describe('ConnectionSyncOperationsService', () => {
     expect(result).toBe(false);
     expect(mockConnectionsUpsert).not.toHaveBeenCalled();
     expect(mockRetryQueue.add).toHaveBeenCalledWith('connection', 'upsert', connection, 'project-1', 'user-1');
+    expect(mockRetryQueue.recordCircuitSuccess).not.toHaveBeenCalled();
+  });
+
+  it('pushConnection 直接 upsert 前若远端连接更新更晚则应抛出版本冲突并阻止覆盖', async () => {
+    connectionFreshnessResult = {
+      data: {
+        id: 'connection-direct-conflict',
+        updated_at: '2026-04-30T00:02:00.000Z',
+        deleted_at: null,
+      },
+      error: null,
+    };
+
+    const connection: Connection = {
+      id: 'connection-direct-conflict',
+      source: 'task-a',
+      target: 'task-b',
+      updatedAt: '2026-04-30T00:00:00.000Z',
+    };
+
+    await expect(service.pushConnection(connection, 'project-1', false, false, false, 'user-1'))
+      .rejects.toBeInstanceOf(PermanentFailureError);
+
+    expect(mockConnectionsUpsert).not.toHaveBeenCalled();
+    expect(mockRetryQueue.add).not.toHaveBeenCalled();
+    expect(mockRetryQueue.recordCircuitSuccess).not.toHaveBeenCalled();
+  });
+
+  it('pushConnection 直接写入在 preflight 后被并发更新抢先时应抛出版本冲突', async () => {
+    connectionFreshnessResult = {
+      data: {
+        id: 'connection-direct-cas-miss',
+        updated_at: '2026-04-30T00:02:00.000Z',
+        deleted_at: null,
+      },
+      error: null,
+    };
+    connectionUpdateResult = {
+      data: null,
+      error: null,
+    };
+
+    const connection: Connection = {
+      id: 'connection-direct-cas-miss',
+      source: 'task-a',
+      target: 'task-b',
+      updatedAt: '2026-04-30T00:02:00.000Z',
+    };
+
+    await expect(service.pushConnection(connection, 'project-1', false, false, false, 'user-1'))
+      .rejects.toBeInstanceOf(PermanentFailureError);
+
+    expect(mockRetryQueue.add).not.toHaveBeenCalled();
     expect(mockRetryQueue.recordCircuitSuccess).not.toHaveBeenCalled();
   });
 

@@ -16,6 +16,7 @@ import { LoggerService } from '../../../../services/logger.service';
 import { ToastService } from '../../../../services/toast.service';
 import { RequestThrottleService } from '../../../../services/request-throttle.service';
 import { ProjectStateService } from '../../../../services/project-state.service';
+import { ClockSyncService } from '../../../../services/clock-sync.service';
 import { SyncOperationHelperService } from './sync-operation-helper.service';
 import { SessionManagerService } from './session-manager.service';
 import { RetryQueueService } from './retry-queue.service';
@@ -75,6 +76,7 @@ export class ConnectionSyncOperationsService {
   private readonly toast = inject(ToastService);
   private readonly throttle = inject(RequestThrottleService);
   private readonly projectState = inject(ProjectStateService);
+  private readonly clockSync = inject(ClockSyncService);
   private readonly syncOpHelper = inject(SyncOperationHelperService);
   private readonly sessionManager = inject(SessionManagerService);
   private readonly retryQueueService = inject(RetryQueueService);
@@ -129,6 +131,70 @@ export class ConnectionSyncOperationsService {
           }
         : project;
     }));
+  }
+
+  private createRemoteNewerConflictError(
+    connectionId: string,
+    projectId: string,
+    remoteUpdatedAt: string | null,
+    reason: 'remote-newer' | 'remote-tombstone',
+  ): EnhancedError {
+    return Object.assign(
+      new Error('版本冲突：数据已被修改，请刷新后重试'),
+      {
+        name: 'VersionConflictError',
+        errorType: 'VersionConflictError',
+        code: reason === 'remote-tombstone' ? 'CONNECTION_REMOTE_TOMBSTONE_NEWER' : 'CONNECTION_REMOTE_NEWER',
+        isRetryable: false,
+        details: `connectionId=${connectionId}, projectId=${projectId}, remoteUpdatedAt=${remoteUpdatedAt ?? 'unknown'}`,
+      },
+    ) as EnhancedError;
+  }
+
+  private createClockUncertainError(
+    connectionId: string,
+    projectId: string,
+    localUpdatedAt: string | null,
+    remoteUpdatedAt: string | null,
+  ): EnhancedError {
+    return Object.assign(
+      new Error('无法确认本地时间基线，已延后同步以避免覆盖远端更新'),
+      {
+        name: 'ClockSyncUncertainError',
+        errorType: 'ClockSyncUncertainError',
+        code: 'CONNECTION_CLOCK_SYNC_UNCERTAIN',
+        isRetryable: true,
+        details: `connectionId=${connectionId}, projectId=${projectId}, localUpdatedAt=${localUpdatedAt ?? 'unknown'}, remoteUpdatedAt=${remoteUpdatedAt ?? 'unknown'}`,
+      },
+    ) as EnhancedError;
+  }
+
+  private async loadRemoteConnectionFreshness(
+    client: SupabaseClient,
+    connectionId: string,
+    projectId: string,
+  ): Promise<Pick<EndpointConnectionMatch, 'id' | 'updated_at' | 'deleted_at'> | null> {
+    const { data, error } = await client
+      .from('connections')
+      .select('id,updated_at,deleted_at')
+      .eq('id', connectionId)
+      .eq('project_id', projectId)
+      .maybeSingle();
+
+    if (error) {
+      throw supabaseErrorToError(error);
+    }
+
+    if (!data) {
+      return null;
+    }
+
+    const row = data as { id: string; updated_at?: string | null; deleted_at?: string | null };
+    return {
+      id: row.id,
+      updated_at: typeof row.updated_at === 'string' ? row.updated_at : null,
+      deleted_at: typeof row.deleted_at === 'string' ? row.deleted_at : null,
+    };
   }
 
   private applyCanonicalConnectionPatchToLocalStore(
@@ -267,13 +333,47 @@ export class ConnectionSyncOperationsService {
     client: SupabaseClient,
     connection: Connection,
     projectId: string,
+    remoteConnection: Pick<EndpointConnectionMatch, 'updated_at' | 'deleted_at'> | null,
   ): Promise<string | null> {
+    if (remoteConnection?.updated_at) {
+      const { data, error } = await client
+        .from('connections')
+        .update(this.buildConnectionUpsertPayload(connection, projectId))
+        .eq('id', connection.id)
+        .eq('project_id', projectId)
+        .eq('updated_at', remoteConnection.updated_at)
+        .select('updated_at')
+        .maybeSingle();
+
+      if (error) {
+        throw supabaseErrorToError(error);
+      }
+
+      if (!data) {
+        throw this.createRemoteNewerConflictError(
+          connection.id,
+          projectId,
+          remoteConnection.updated_at,
+          'remote-newer',
+        );
+      }
+
+      const updatedAt = (data as { updated_at?: string | null } | null)?.updated_at;
+      return typeof updatedAt === 'string' ? updatedAt : null;
+    }
+
+    if (remoteConnection) {
+      throw this.createRemoteNewerConflictError(
+        connection.id,
+        projectId,
+        remoteConnection.deleted_at ?? null,
+        'remote-newer',
+      );
+    }
+
     const { data, error } = await client
       .from('connections')
-      .upsert(this.buildConnectionUpsertPayload(connection, projectId), {
-        onConflict: 'id',
-        ignoreDuplicates: false,
-      })
+      .insert(this.buildConnectionUpsertPayload(connection, projectId))
       .select('updated_at')
       .single();
 
@@ -803,8 +903,54 @@ export class ConnectionSyncOperationsService {
               return;
             }
 
+            const remoteConnection = await this.loadRemoteConnectionFreshness(client, connection.id, projectId);
+            const remoteHasTombstone = !!(remoteConnection?.deleted_at && !connection.deletedAt);
+            const remoteUpdatedAt = remoteConnection?.updated_at ?? null;
+            const localUpdatedAt = connection.updatedAt ?? null;
+            const rawRemoteMs = remoteUpdatedAt ? new Date(remoteUpdatedAt).getTime() : Number.NaN;
+            const rawLocalMs = localUpdatedAt ? new Date(localUpdatedAt).getTime() : Number.NaN;
+            const timestampsDiffer = Number.isFinite(rawRemoteMs)
+              && Number.isFinite(rawLocalMs)
+              && rawLocalMs !== rawRemoteMs;
+            const clockSyncResult = timestampsDiffer
+              ? await this.clockSync.ensureSynced().catch(() => null)
+              : null;
+
+            if (timestampsDiffer && !clockSyncResult?.reliable) {
+              throw this.createClockUncertainError(
+                connection.id,
+                projectId,
+                localUpdatedAt,
+                remoteUpdatedAt,
+              );
+            }
+
+            const remoteIsNewer = !!(
+              remoteUpdatedAt
+              && localUpdatedAt
+              && (
+                clockSyncResult?.reliable
+                  ? this.clockSync.compareTimestamps(localUpdatedAt, remoteUpdatedAt) < 0
+                  : rawRemoteMs > rawLocalMs
+              )
+            );
+
+            if (remoteHasTombstone || remoteIsNewer) {
+              throw this.createRemoteNewerConflictError(
+                connection.id,
+                projectId,
+                remoteConnection?.updated_at ?? remoteConnection?.deleted_at ?? null,
+                remoteHasTombstone ? 'remote-tombstone' : 'remote-newer',
+              );
+            }
+
             try {
-              persistedUpdatedAt = await this.upsertConnectionReturningUpdatedAt(client, connection, projectId);
+              persistedUpdatedAt = await this.upsertConnectionReturningUpdatedAt(
+                client,
+                connection,
+                projectId,
+                remoteConnection,
+              );
               pushed = true;
               return;
             } catch (upsertError) {
@@ -827,7 +973,53 @@ export class ConnectionSyncOperationsService {
                 }
 
                 this.applyCanonicalConnectionIdentity(projectId, connection, racedCanonicalMatch);
-                persistedUpdatedAt = await this.upsertConnectionReturningUpdatedAt(client, connection, projectId);
+                const canonicalRemoteConnection = await this.loadRemoteConnectionFreshness(client, connection.id, projectId);
+                const canonicalHasTombstone = !!(canonicalRemoteConnection?.deleted_at && !connection.deletedAt);
+                const canonicalRemoteUpdatedAt = canonicalRemoteConnection?.updated_at ?? null;
+                const canonicalLocalUpdatedAt = connection.updatedAt ?? null;
+                const canonicalRawRemoteMs = canonicalRemoteUpdatedAt ? new Date(canonicalRemoteUpdatedAt).getTime() : Number.NaN;
+                const canonicalRawLocalMs = canonicalLocalUpdatedAt ? new Date(canonicalLocalUpdatedAt).getTime() : Number.NaN;
+                const canonicalTimestampsDiffer = Number.isFinite(canonicalRawRemoteMs)
+                  && Number.isFinite(canonicalRawLocalMs)
+                  && canonicalRawLocalMs !== canonicalRawRemoteMs;
+                const canonicalClockSyncResult = canonicalTimestampsDiffer
+                  ? await this.clockSync.ensureSynced().catch(() => null)
+                  : null;
+
+                if (canonicalTimestampsDiffer && !canonicalClockSyncResult?.reliable) {
+                  throw this.createClockUncertainError(
+                    connection.id,
+                    projectId,
+                    canonicalLocalUpdatedAt,
+                    canonicalRemoteUpdatedAt,
+                  );
+                }
+
+                const canonicalIsNewer = !!(
+                  canonicalRemoteUpdatedAt
+                  && canonicalLocalUpdatedAt
+                  && (
+                    canonicalClockSyncResult?.reliable
+                      ? this.clockSync.compareTimestamps(canonicalLocalUpdatedAt, canonicalRemoteUpdatedAt) < 0
+                      : canonicalRawRemoteMs > canonicalRawLocalMs
+                  )
+                );
+
+                if (canonicalHasTombstone || canonicalIsNewer) {
+                  throw this.createRemoteNewerConflictError(
+                    connection.id,
+                    projectId,
+                    canonicalRemoteConnection?.updated_at ?? canonicalRemoteConnection?.deleted_at ?? null,
+                    canonicalHasTombstone ? 'remote-tombstone' : 'remote-newer',
+                  );
+                }
+
+                persistedUpdatedAt = await this.upsertConnectionReturningUpdatedAt(
+                  client,
+                  connection,
+                  projectId,
+                  canonicalRemoteConnection,
+                );
                 pushed = true;
                 this.logger.info('连接已存在（幂等成功）', {
                   connectionId: connection.id,
@@ -835,6 +1027,14 @@ export class ConnectionSyncOperationsService {
                   target: connection.target
                 });
                 return;
+              }
+              if (code === '23505' || code === 23505) {
+                throw this.createRemoteNewerConflictError(
+                  connection.id,
+                  projectId,
+                  connection.updatedAt ?? null,
+                  'remote-newer',
+                );
               }
               throw enhancedError;
             }

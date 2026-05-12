@@ -318,6 +318,9 @@ describe('SimpleSyncService', () => {
       currentDriftMs: vi.fn().mockReturnValue(0),
       correctTimestamp: vi.fn().mockImplementation((ts: unknown) => typeof ts === 'string' ? ts : new Date().toISOString()),
       getEstimatedServerTime: vi.fn().mockReturnValue(new Date()),
+      ensureSynced: vi.fn().mockResolvedValue({ reliable: true }),
+      isLocalNewer: vi.fn((left: string, right: string) => new Date(left).getTime() > new Date(right).getTime()),
+      compareTimestamps: vi.fn((left: string, right: string) => new Date(left).getTime() - new Date(right).getTime()),
       recordServerTimestamp: vi.fn()
     };
     
@@ -1054,7 +1057,14 @@ describe('SimpleSyncService', () => {
       const serverUpdatedAt = '2026-04-30T06:15:00.000Z';
       mockSyncRpcClient.isFeatureEnabled.mockReturnValue(false);
       const projectsQueryMock = {
-        upsert: vi.fn((payload: Record<string, unknown>) => ({
+        select: vi.fn(() => ({
+          eq: vi.fn(() => ({
+            eq: vi.fn(() => ({
+              maybeSingle: vi.fn(async () => ({ data: null, error: null })),
+            })),
+          })),
+        })),
+        insert: vi.fn((payload: Record<string, unknown>) => ({
           select: vi.fn(() => ({
             single: vi.fn(async () => ({
               data: { updated_at: serverUpdatedAt },
@@ -1063,6 +1073,7 @@ describe('SimpleSyncService', () => {
             })),
           })),
         })),
+        update: vi.fn(),
       };
       mockClient.from = vi.fn().mockImplementation((table: string) => {
         if (table === 'projects') return projectsQueryMock;
@@ -1082,8 +1093,90 @@ describe('SimpleSyncService', () => {
         id: 'project-direct-canonical',
         updatedAt: serverUpdatedAt,
       }));
-      const payload = projectsQueryMock.upsert.mock.calls[0]?.[0] as Record<string, unknown>;
+      const payload = projectsQueryMock.insert.mock.calls[0]?.[0] as Record<string, unknown>;
       expect(payload['updated_at']).toBeUndefined();
+    });
+
+    it('pushProject 直接 upsert 前若远端项目更新更晚则应抛出版本冲突并阻止覆盖', async () => {
+      mockSyncRpcClient.isFeatureEnabled.mockReturnValue(false);
+      const projectsQueryMock = {
+        select: vi.fn(() => ({
+          eq: vi.fn(() => ({
+            eq: vi.fn(() => ({
+              maybeSingle: vi.fn(async () => ({
+                data: {
+                  id: 'project-direct-conflict',
+                  updated_at: '2026-04-30T06:45:00.000Z',
+                  deleted_at: null,
+                },
+                error: null,
+              })),
+            })),
+          })),
+        })),
+        upsert: vi.fn(),
+        insert: vi.fn(),
+        update: vi.fn(),
+      };
+      mockClient.from = vi.fn().mockImplementation((table: string) => {
+        if (table === 'projects') return projectsQueryMock;
+        return {};
+      });
+      const project = createMockProject({
+        id: 'project-direct-conflict',
+        updatedAt: '2026-04-30T05:00:00.000Z',
+      });
+
+      await expect(service.pushProject(project, false, 'test-user-id')).rejects.toBeInstanceOf(PermanentFailureError);
+
+      expect(projectsQueryMock.insert).not.toHaveBeenCalled();
+      expect(projectsQueryMock.update).not.toHaveBeenCalled();
+      expect(mockRetryQueueService.addDurably).not.toHaveBeenCalled();
+    });
+
+    it('pushProject 直接写入在 preflight 后发生并发更新时应抛出版本冲突', async () => {
+      mockSyncRpcClient.isFeatureEnabled.mockReturnValue(false);
+      const projectsQueryMock = {
+        select: vi.fn(() => ({
+          eq: vi.fn(() => ({
+            eq: vi.fn(() => ({
+              maybeSingle: vi.fn(async () => ({
+                data: {
+                  id: 'project-direct-cas-miss',
+                  updated_at: '2026-04-30T06:15:00.000Z',
+                  deleted_at: null,
+                },
+                error: null,
+              })),
+            })),
+          })),
+        })),
+        update: vi.fn(() => ({
+          eq: vi.fn(() => ({
+            eq: vi.fn(() => ({
+              eq: vi.fn(() => ({
+                select: vi.fn(() => ({
+                  maybeSingle: vi.fn(async () => ({ data: null, error: null })),
+                })),
+              })),
+            })),
+          })),
+        })),
+        insert: vi.fn(),
+      };
+      mockClient.from = vi.fn().mockImplementation((table: string) => {
+        if (table === 'projects') return projectsQueryMock;
+        return {};
+      });
+      const project = createMockProject({
+        id: 'project-direct-cas-miss',
+        updatedAt: '2026-04-30T06:15:00.000Z',
+      });
+
+      await expect(service.pushProject(project, false, 'test-user-id')).rejects.toBeInstanceOf(PermanentFailureError);
+
+      expect(projectsQueryMock.insert).not.toHaveBeenCalled();
+      expect(mockRetryQueueService.addDurably).not.toHaveBeenCalled();
     });
 
     it('pushProject 命中 remote-newer 时应抛出版本冲突而不是写入 RetryQueue', async () => {
@@ -1407,6 +1500,13 @@ describe('SimpleSyncService', () => {
       });
 
       const projectsQueryMock = {
+        select: vi.fn(() => ({
+          eq: vi.fn(() => ({
+            eq: vi.fn(() => ({
+              maybeSingle: vi.fn(async () => ({ data: null, error: null })),
+            })),
+          })),
+        })),
         upsert: vi.fn().mockResolvedValue({ error: null })
       };
 
@@ -1474,6 +1574,13 @@ describe('SimpleSyncService', () => {
       mockClient.from = vi.fn().mockImplementation((table: string) => {
         if (table === 'projects') {
           return {
+            select: vi.fn(() => ({
+              eq: vi.fn(() => ({
+                eq: vi.fn(() => ({
+                  maybeSingle: vi.fn(async () => ({ data: null, error: null })),
+                })),
+              })),
+            })),
             upsert: vi.fn().mockReturnValue({
               select: vi.fn().mockReturnValue({
                 single: vi.fn().mockResolvedValue({

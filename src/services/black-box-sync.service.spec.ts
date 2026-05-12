@@ -154,6 +154,7 @@ describe('BlackBoxSyncService', () => {
           provide: ClockSyncService,
           useValue: {
             isLocalNewer: vi.fn((left: string, right: string) => new Date(left).getTime() > new Date(right).getTime()),
+            compareTimestamps: vi.fn((left: string, right: string) => new Date(left).getTime() - new Date(right).getTime()),
             recordServerTimestamp: vi.fn(),
             lastSyncResult: vi.fn(() => ({ reliable: true })),
             needsResync: vi.fn(() => false),
@@ -725,7 +726,7 @@ describe('BlackBoxSyncService', () => {
     const preflightQuery = createPreflightQuery(vi.fn(async () => ({ data: null, error: null })));
     const from = vi.fn(() => ({
       select: vi.fn(() => preflightQuery),
-      upsert: vi.fn(() => ({
+      insert: vi.fn(() => ({
         select: vi.fn(() => ({
           single: vi.fn(async () => {
             setBlackBoxEntries([newerEntry]);
@@ -736,6 +737,7 @@ describe('BlackBoxSyncService', () => {
           }),
         })),
       })),
+      update: vi.fn(),
     }));
     const supabase = TestBed.inject(SupabaseClientService) as unknown as {
       clientAsync: ReturnType<typeof vi.fn>;
@@ -1886,7 +1888,7 @@ describe('BlackBoxSyncService', () => {
     const preflightQuery = createPreflightQuery(vi.fn(async () => ({ data: null, error: null })));
     const from = vi.fn(() => ({
       select: vi.fn(() => preflightQuery),
-      upsert: vi.fn(() => ({
+      insert: vi.fn(() => ({
         select: vi.fn(() => ({
           single: vi.fn(async () => {
             // 在 upsert 返回前，把内存 Map 升到等价但更晚的快照
@@ -1898,6 +1900,7 @@ describe('BlackBoxSyncService', () => {
           }),
         })),
       })),
+      update: vi.fn(),
     }));
     const supabase = TestBed.inject(SupabaseClientService) as unknown as {
       clientAsync: ReturnType<typeof vi.fn>;
@@ -1921,5 +1924,57 @@ describe('BlackBoxSyncService', () => {
       syncStatus: 'synced',
       updatedAt: serverUpdatedAt,
     }));
+  });
+
+  it('pushToServer 直接写入在 preflight 后被并发更新抢先时应返回 false 而不是覆盖远端', async () => {
+    const entry = createEntry({
+      id: crypto.randomUUID(),
+      updatedAt: '2026-03-04T00:00:00.000Z',
+      syncStatus: 'pending',
+    });
+    const preflightQuery = createPreflightQuery(vi.fn(async () => ({
+      data: {
+        id: entry.id,
+        project_id: entry.projectId,
+        user_id: entry.userId,
+        content: entry.content,
+        focus_meta: null,
+        date: entry.date,
+        created_at: entry.createdAt,
+        updated_at: entry.updatedAt,
+        is_read: entry.isRead,
+        is_completed: entry.isCompleted,
+        is_archived: entry.isArchived,
+        snooze_until: null,
+        snooze_count: 0,
+        deleted_at: null,
+      },
+      error: null,
+    })));
+    const update = vi.fn(() => ({
+      eq: vi.fn(() => ({
+        eq: vi.fn(() => ({
+          eq: vi.fn(() => ({
+            select: vi.fn(() => ({
+              maybeSingle: vi.fn(async () => ({ data: null, error: null })),
+            })),
+          })),
+        })),
+      })),
+    }));
+    const from = vi.fn(() => ({
+      select: vi.fn(() => preflightQuery),
+      update,
+      insert: vi.fn(),
+    }));
+    const supabase = TestBed.inject(SupabaseClientService) as unknown as {
+      clientAsync: ReturnType<typeof vi.fn>;
+    };
+
+    setBlackBoxEntries([entry]);
+    supabase.clientAsync.mockResolvedValue({ from });
+
+    await expect(service.pushToServer(entry)).resolves.toBe(false);
+    expect(update).toHaveBeenCalled();
   });
 });

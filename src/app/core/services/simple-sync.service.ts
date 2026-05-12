@@ -61,6 +61,7 @@ import { ProjectRow, TaskRow, ConnectionRow } from '../../../models/supabase-typ
 import { nowISO } from '../../../utils/date';
 import {
   supabaseErrorToError,
+  type EnhancedError,
   classifySupabaseClientFailure
 } from '../../../utils/supabase-error';
 import { PermanentFailureError, isPermanentFailureError } from '../../../utils/permanent-failure-error';
@@ -1352,7 +1353,9 @@ export class SimpleSyncService {
         throw e;
       }
       
-      const enhanced = supabaseErrorToError(e);
+      const enhanced = e && typeof e === 'object' && 'errorType' in e
+        ? e as EnhancedError
+        : supabaseErrorToError(e);
       
       // 【#95057880 修复】检测到认证错误时先尝试刷新 session（与 pushTask 对齐）
       if (this.sessionManager.isSessionExpiredError(enhanced)) {
@@ -1372,7 +1375,9 @@ export class SimpleSyncService {
             };
           } catch (retryError) {
             if (isPermanentFailureError(retryError)) throw retryError;
-            const retryEnhanced = supabaseErrorToError(retryError);
+            const retryEnhanced = retryError && typeof retryError === 'object' && 'errorType' in retryError
+              ? retryError as EnhancedError
+              : supabaseErrorToError(retryError);
             if (this.sessionManager.isSessionExpiredError(retryEnhanced)) {
               // 会话刷新成功后重试仍然失败
               if (this.sessionManager.isRlsPolicyViolation(retryEnhanced)) {
@@ -1487,6 +1492,67 @@ export class SimpleSyncService {
 
     project.updatedAt = serverUpdatedAt;
     this.clockSync.recordServerTimestamp(serverUpdatedAt, project.id);
+  }
+
+  private createProjectDirectConflictError(
+    projectId: string,
+    remoteUpdatedAt: string | null,
+    reason: 'remote-newer' | 'remote-tombstone',
+  ): Error {
+    return Object.assign(
+      new Error('版本冲突：数据已被修改，请刷新后重试'),
+      {
+        name: 'VersionConflictError',
+        errorType: 'VersionConflictError',
+        code: reason === 'remote-tombstone' ? 'PROJECT_REMOTE_TOMBSTONE_NEWER' : 'PROJECT_REMOTE_NEWER',
+        isRetryable: false,
+        details: `projectId=${projectId}, remoteUpdatedAt=${remoteUpdatedAt ?? 'unknown'}`,
+      },
+    );
+  }
+
+  private createProjectClockUncertainError(
+    projectId: string,
+    localUpdatedAt: string | null,
+    remoteUpdatedAt: string | null,
+  ): Error {
+    return Object.assign(
+      new Error('无法确认本地时间基线，已延后同步以避免覆盖远端更新'),
+      {
+        name: 'ClockSyncUncertainError',
+        errorType: 'ClockSyncUncertainError',
+        code: 'PROJECT_CLOCK_SYNC_UNCERTAIN',
+        isRetryable: true,
+        details: `projectId=${projectId}, localUpdatedAt=${localUpdatedAt ?? 'unknown'}, remoteUpdatedAt=${remoteUpdatedAt ?? 'unknown'}`,
+      },
+    );
+  }
+
+  private async loadRemoteProjectFreshness(
+    client: SupabaseClient,
+    projectId: string,
+    userId: string,
+  ): Promise<{ updatedAt: string | null; deletedAt: string | null } | null> {
+    const { data, error } = await client
+      .from('projects')
+      .select('id,updated_at,deleted_at')
+      .eq('id', projectId)
+      .eq('owner_id', userId)
+      .maybeSingle();
+
+    if (error) {
+      throw supabaseErrorToError(error);
+    }
+
+    if (!data) {
+      return null;
+    }
+
+    const row = data as { updated_at?: string | null; deleted_at?: string | null };
+    return {
+      updatedAt: typeof row.updated_at === 'string' ? row.updated_at : null,
+      deletedAt: typeof row.deleted_at === 'string' ? row.deleted_at : null,
+    };
   }
 
   private createProjectRpcConflictError(
@@ -1696,21 +1762,104 @@ export class SimpleSyncService {
       );
     }
 
-    // 【P2-1 修复】不发送客户端 updated_at，让 DB 触发器统一设置，避免时钟偏移影响 LWW 判定
-    // 【RLS 修复】显式传 deleted_at: null，确保本地活跃项目能清除远端软删除状态（LWW 语义）
-    const { data, error } = await client
-      .from('projects')
-      .upsert({
-        id: project.id,
-        owner_id: userId,
-        title: project.name,
-        description: project.description,
-        version: project.version || 1,
-        migrated_to_v2: true,
-        deleted_at: project.deletedAt ?? null,
-      })
-      .select('updated_at')
-      .single();
+    const remoteProject = await this.loadRemoteProjectFreshness(client, project.id, userId);
+    const remoteHasTombstone = !!(remoteProject?.deletedAt && !project.deletedAt);
+    const remoteUpdatedAt = remoteProject?.updatedAt ?? null;
+    const localUpdatedAt = project.updatedAt ?? null;
+    const rawRemoteMs = remoteUpdatedAt ? new Date(remoteUpdatedAt).getTime() : Number.NaN;
+    const rawLocalMs = localUpdatedAt ? new Date(localUpdatedAt).getTime() : Number.NaN;
+    const timestampsDiffer = Number.isFinite(rawRemoteMs)
+      && Number.isFinite(rawLocalMs)
+      && rawLocalMs !== rawRemoteMs;
+    const clockSyncResult = timestampsDiffer
+      ? await this.clockSync.ensureSynced().catch(() => null)
+      : null;
+
+    if (timestampsDiffer && !clockSyncResult?.reliable) {
+      throw this.createProjectClockUncertainError(
+        project.id,
+        localUpdatedAt,
+        remoteUpdatedAt,
+      );
+    }
+
+    const remoteIsNewer = !!(
+      remoteUpdatedAt
+      && localUpdatedAt
+      && (
+        clockSyncResult?.reliable
+          ? this.clockSync.compareTimestamps(localUpdatedAt, remoteUpdatedAt) < 0
+          : rawRemoteMs > rawLocalMs
+      )
+    );
+
+    if (remoteHasTombstone || remoteIsNewer) {
+      throw this.createProjectDirectConflictError(
+        project.id,
+        remoteProject?.updatedAt ?? remoteProject?.deletedAt ?? null,
+        remoteHasTombstone ? 'remote-tombstone' : 'remote-newer',
+      );
+    }
+
+    const projectInsertPayload = {
+      id: project.id,
+      owner_id: userId,
+      title: project.name,
+      description: project.description,
+      version: project.version || 1,
+      migrated_to_v2: true,
+      deleted_at: project.deletedAt ?? null,
+    };
+    const projectUpdatePayload = {
+      title: project.name,
+      description: project.description,
+      version: project.version || 1,
+      migrated_to_v2: true,
+      deleted_at: project.deletedAt ?? null,
+    };
+
+    let data: { updated_at?: string | null } | null = null;
+    let error: unknown | null = null;
+
+    if (remoteProject?.updatedAt) {
+      ({ data, error } = await client
+        .from('projects')
+        .update(projectUpdatePayload)
+        .eq('id', project.id)
+        .eq('owner_id', userId)
+        .eq('updated_at', remoteProject.updatedAt)
+        .select('updated_at')
+        .maybeSingle());
+
+      if (!error && !data) {
+        throw this.createProjectDirectConflictError(
+          project.id,
+          remoteProject.updatedAt,
+          'remote-newer',
+        );
+      }
+    } else if (remoteProject) {
+      throw this.createProjectDirectConflictError(
+        project.id,
+        remoteProject.updatedAt ?? remoteProject.deletedAt ?? null,
+        'remote-newer',
+      );
+    } else {
+      ({ data, error } = await client
+        .from('projects')
+        .insert(projectInsertPayload)
+        .select('updated_at')
+        .single());
+
+      const code = (error as { code?: string | number } | null)?.code;
+      if (error && (code === '23505' || code === 23505)) {
+        throw this.createProjectDirectConflictError(
+          project.id,
+          project.updatedAt ?? null,
+          'remote-newer',
+        );
+      }
+    }
     
     if (error) throw supabaseErrorToError(error);
     this.normalizeLocalProjectUpdatedAt(

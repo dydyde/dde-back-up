@@ -50,6 +50,9 @@ const isSyncRpcClientRejectedMock = vi.fn(() => false);
 describe('TaskSyncOperationsService', () => {
   let service: TaskSyncOperationsService;
   let upsertPayload: Record<string, unknown> | null;
+  let taskFreshnessResult: { data: { id: string; updated_at: string | null; deleted_at: string | null } | null; error: unknown | null };
+  let taskInsertResult: { data: { updated_at: string } | null; error: unknown | null };
+  let taskUpdateResult: { data: { updated_at: string } | null; error: unknown | null };
   const mockProjectDataService = {
     rowToTask: vi.fn((row: Task) => row),
   };
@@ -151,14 +154,32 @@ describe('TaskSyncOperationsService', () => {
 
       if (table === 'tasks') {
         return {
-          upsert: vi.fn((payload: Record<string, unknown>) => {
+          select: vi.fn(() => ({
+            eq: vi.fn(() => ({
+              eq: vi.fn(() => ({
+                maybeSingle: vi.fn(async () => taskFreshnessResult),
+              })),
+            })),
+          })),
+          update: vi.fn((payload: Record<string, unknown>) => {
+            upsertPayload = payload;
+            return {
+              eq: vi.fn(() => ({
+                eq: vi.fn(() => ({
+                  eq: vi.fn(() => ({
+                    select: vi.fn(() => ({
+                      maybeSingle: vi.fn(async () => taskUpdateResult),
+                    })),
+                  })),
+                })),
+              })),
+            } as unknown as Record<string, unknown>;
+          }),
+          insert: vi.fn((payload: Record<string, unknown>) => {
             upsertPayload = payload;
             return {
               select: vi.fn(() => ({
-                single: vi.fn(async () => ({
-                  data: { updated_at: new Date().toISOString() },
-                  error: null,
-                })),
+                single: vi.fn(async () => taskInsertResult),
               })),
             };
           }),
@@ -176,6 +197,9 @@ describe('TaskSyncOperationsService', () => {
     setVisibilityState('visible');
     mockSyncRpcClient.isFeatureEnabled.mockReturnValue(false);
     mockSyncRpcClient.isClientRejected.mockReturnValue(false);
+    taskFreshnessResult = { data: null, error: null };
+    taskInsertResult = { data: { updated_at: new Date().toISOString() }, error: null };
+    taskUpdateResult = { data: { updated_at: new Date().toISOString() }, error: null };
     const defaultUpsertTaskRpcResult: SyncRpcResult = createSyncRpcResult({ entityId: 'task-1' });
     mockSyncRpcClient.upsertTask.mockImplementation(async () => defaultUpsertTaskRpcResult);
     mockTaskStore.getTask.mockReturnValue(undefined);
@@ -225,7 +249,15 @@ describe('TaskSyncOperationsService', () => {
             execute: vi.fn(async (_key: string, fn: () => Promise<void>) => await fn()),
           },
         },
-        { provide: ClockSyncService, useValue: { recordServerTimestamp: vi.fn() } },
+        {
+          provide: ClockSyncService,
+          useValue: {
+            isLocalNewer: vi.fn((left: string, right: string) => new Date(left).getTime() > new Date(right).getTime()),
+            compareTimestamps: vi.fn((left: string, right: string) => new Date(left).getTime() - new Date(right).getTime()),
+            ensureSynced: vi.fn().mockResolvedValue({ reliable: true }),
+            recordServerTimestamp: vi.fn(),
+          },
+        },
         { provide: TaskStore, useValue: mockTaskStore },
         {
           provide: SyncOperationHelperService,
@@ -386,13 +418,47 @@ describe('TaskSyncOperationsService', () => {
       }
 
       return {
+        select: vi.fn(() => ({
+          eq: vi.fn(() => ({
+            eq: vi.fn(() => ({
+              maybeSingle: vi.fn(async () => ({
+                data: {
+                  id: 'task-position-direct',
+                  updated_at: '2026-04-30T07:00:00.000Z',
+                  deleted_at: null,
+                },
+                error: null,
+              })),
+            })),
+          })),
+        })),
+      };
+    });
+    mockClient.from.mockImplementationOnce((table: string) => {
+      if (table !== 'tasks') {
+        throw new Error(`Unexpected table: ${table}`);
+      }
+
+      return {
         update: vi.fn((payload: Record<string, unknown>) => ({
-          eq: vi.fn((column: string, value: string) => ({
-            select: vi.fn(async () => ({
-              data: column === 'id' && value === 'task-position-direct' && payload['x'] === 10 && payload['y'] === 20
-                ? [{ updated_at: serverUpdatedAt }]
-                : [],
-              error: null,
+          eq: vi.fn((firstColumn: string, firstValue: string) => ({
+            eq: vi.fn((secondColumn: string, secondValue: string) => ({
+              eq: vi.fn((thirdColumn: string, thirdValue: string) => ({
+                select: vi.fn(async () => ({
+                  data:
+                    firstColumn === 'id'
+                    && firstValue === 'task-position-direct'
+                    && secondColumn === 'project_id'
+                    && secondValue === 'project-1'
+                    && thirdColumn === 'updated_at'
+                    && thirdValue === '2026-04-30T07:00:00.000Z'
+                    && payload['x'] === 10
+                    && payload['y'] === 20
+                      ? [{ updated_at: serverUpdatedAt }]
+                      : [],
+                  error: null,
+                })),
+              })),
             })),
           })),
         })),
@@ -489,7 +555,14 @@ describe('TaskSyncOperationsService', () => {
 
       if (table === 'tasks') {
         return {
-          upsert: vi.fn((payload: Record<string, unknown>) => {
+          select: vi.fn(() => ({
+            eq: vi.fn(() => ({
+              eq: vi.fn(() => ({
+                maybeSingle: vi.fn(async () => ({ data: null, error: null })),
+              })),
+            })),
+          })),
+          insert: vi.fn((payload: Record<string, unknown>) => {
             upsertPayload = payload;
             return {
               select: vi.fn(() => ({
@@ -500,6 +573,7 @@ describe('TaskSyncOperationsService', () => {
               })),
             };
           }),
+          update: vi.fn(),
         };
       }
 
@@ -534,6 +608,113 @@ describe('TaskSyncOperationsService', () => {
       }),
       'project-1',
     );
+  });
+
+  it('pushTask 直接 upsert 前若远端任务更新更晚则应抛出版本冲突并阻止覆盖', async () => {
+    mockClient.from.mockImplementation((table: string) => {
+      if (table === 'task_tombstones') {
+        return {
+          select: vi.fn(() => ({
+            eq: vi.fn(() => ({
+              maybeSingle: vi.fn(async () => ({ data: null, error: null })),
+            })),
+          })),
+        };
+      }
+
+      if (table === 'tasks') {
+        return {
+          select: vi.fn(() => ({
+            eq: vi.fn(() => ({
+              eq: vi.fn(() => ({
+                maybeSingle: vi.fn(async () => ({
+                  data: {
+                    id: 'task-direct-conflict',
+                    updated_at: '2026-04-30T09:00:00.000Z',
+                    deleted_at: null,
+                  },
+                  error: null,
+                })),
+              })),
+            })),
+          })),
+          insert: vi.fn((payload: Record<string, unknown>) => {
+            upsertPayload = payload;
+            return {
+              select: vi.fn(() => ({
+                single: vi.fn(async () => ({
+                  data: { updated_at: new Date().toISOString() },
+                  error: null,
+                })),
+              })),
+            };
+          }),
+          update: vi.fn(),
+        };
+      }
+
+      throw new Error(`Unexpected table: ${table}`);
+    });
+
+    const task: Task = {
+      id: 'task-direct-conflict',
+      title: '任务',
+      content: '内容',
+      stage: 0,
+      parentId: null,
+      order: 0,
+      rank: 10000,
+      status: 'active',
+      x: 0,
+      y: 0,
+      displayId: 'T-DCF',
+      createdDate: '2026-04-30T08:00:00.000Z',
+      updatedAt: '2026-04-30T08:00:00.000Z',
+      deletedAt: null,
+    };
+
+    await expect(service.pushTask(task, 'project-1')).rejects.toBeInstanceOf(PermanentFailureError);
+
+    expect(upsertPayload).toBeNull();
+    expect(mockRetryQueue.add).not.toHaveBeenCalled();
+    expect(mockRetryQueue.recordCircuitSuccess).not.toHaveBeenCalled();
+  });
+
+  it('pushTask 直接写入在 preflight 后被并发更新抢先时应以版本冲突失败收口', async () => {
+    taskFreshnessResult = {
+      data: {
+        id: 'task-direct-cas-miss',
+        updated_at: '2026-04-30T08:00:00.000Z',
+        deleted_at: null,
+      },
+      error: null,
+    };
+    taskUpdateResult = {
+      data: null,
+      error: null,
+    };
+
+    const task: Task = {
+      id: 'task-direct-cas-miss',
+      title: '任务',
+      content: '内容',
+      stage: 0,
+      parentId: null,
+      order: 0,
+      rank: 10000,
+      status: 'active',
+      x: 0,
+      y: 0,
+      displayId: 'T-DCM',
+      createdDate: '2026-04-30T08:00:00.000Z',
+      updatedAt: '2026-04-30T08:00:00.000Z',
+      deletedAt: null,
+    };
+
+    await expect(service.pushTask(task, 'project-1')).rejects.toBeInstanceOf(PermanentFailureError);
+
+    expect(mockRetryQueue.add).not.toHaveBeenCalled();
+    expect(mockRetryQueue.recordCircuitSuccess).not.toHaveBeenCalled();
   });
 
   it('pushTask 在 sync RPC flag 开启时应走 RPC/CAS 而不是直接 table upsert', async () => {
