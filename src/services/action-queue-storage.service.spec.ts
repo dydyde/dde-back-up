@@ -19,6 +19,7 @@ import { ToastService } from './toast.service';
 import { SentryLazyLoaderService } from './sentry-lazy-loader.service';
 import { NetworkAwarenessService } from './network-awareness.service';
 import { AuthService } from './auth.service';
+import { QueueBackupService } from './queue-backup.service';
 import { AUTH_CONFIG } from '../config/auth.config';
 import { mockSentryLazyLoaderService } from '../test-setup.mocks';
 import type { QueuedAction, DeadLetterItem } from './action-queue.types';
@@ -43,6 +44,12 @@ const mockToastService = {
 
 const mockNetworkAwarenessService = {
   setStoragePressure: vi.fn(),
+};
+
+const mockQueueBackupService = {
+  backupQueue: vi.fn().mockResolvedValue(true),
+  restoreQueue: vi.fn().mockResolvedValue(null),
+  getQueueBackupRecordId: vi.fn((userId: string) => `queue-backup:${userId}`),
 };
 
 function createMockAction(overrides: Partial<QueuedAction> = {}): QueuedAction {
@@ -93,6 +100,7 @@ describe('ActionQueueStorageService', () => {
         { provide: SentryLazyLoaderService, useValue: mockSentryLazyLoaderService },
         { provide: NetworkAwarenessService, useValue: mockNetworkAwarenessService },
         { provide: AuthService, useValue: { currentUserId } },
+        { provide: QueueBackupService, useValue: mockQueueBackupService },
       ],
     });
 
@@ -299,18 +307,14 @@ describe('ActionQueueStorageService', () => {
       try {
         ctx.pendingActions.set([freshAction]);
 
-        const backupSpy = vi.spyOn(service as unknown as {
-          backupQueueToIndexedDB: (queue: QueuedAction[], ownerUserId?: string) => Promise<boolean>;
-        }, 'backupQueueToIndexedDB').mockResolvedValue(true);
-        const restoreSpy = vi.spyOn(service as unknown as {
-          restoreQueueFromIndexedDB: (ownerUserId?: string) => Promise<QueuedAction[] | null>;
-        }, 'restoreQueueFromIndexedDB').mockResolvedValue([freshAction]);
+        mockQueueBackupService.backupQueue.mockResolvedValue(true);
+        mockQueueBackupService.restoreQueue.mockResolvedValue([freshAction]);
 
         service.saveQueueToStorage();
         await Promise.resolve();
         await Promise.resolve();
 
-        expect(backupSpy).toHaveBeenCalled();
+        expect(mockQueueBackupService.backupQueue).toHaveBeenCalled();
         expect(globalThis.localStorage.getItem(scopedKey)).toBeNull();
 
         ctx.pendingActions.set([]);
@@ -319,7 +323,7 @@ describe('ActionQueueStorageService', () => {
         await Promise.resolve();
         await Promise.resolve();
 
-        expect(restoreSpy).toHaveBeenCalled();
+        expect(mockQueueBackupService.restoreQueue).toHaveBeenCalled();
         expect(ctx.pendingActions()).toEqual([freshAction]);
       } finally {
         Object.defineProperty(globalThis, 'localStorage', {
@@ -363,12 +367,8 @@ describe('ActionQueueStorageService', () => {
       });
 
       try {
-        vi.spyOn(service as unknown as {
-          backupQueueToIndexedDB: (queue: QueuedAction[], ownerUserId?: string) => Promise<boolean>;
-        }, 'backupQueueToIndexedDB').mockResolvedValue(true);
-        vi.spyOn(service as unknown as {
-          restoreQueueFromIndexedDB: (ownerUserId?: string) => Promise<QueuedAction[] | null>;
-        }, 'restoreQueueFromIndexedDB').mockResolvedValue([freshAction]);
+        mockQueueBackupService.backupQueue.mockResolvedValue(true);
+        mockQueueBackupService.restoreQueue.mockResolvedValue([freshAction]);
 
         await (service as unknown as {
           saveQueueSnapshotForOwner: (ownerUserId: string, queue: QueuedAction[]) => Promise<void>;
