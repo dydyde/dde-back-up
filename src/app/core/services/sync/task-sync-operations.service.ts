@@ -566,6 +566,17 @@ export class TaskSyncOperationsService {
         }
         
         await this.syncOpHelper.retryWithBackoff(async () => {
+          await this.primeTaskSyncRpcCapability();
+
+          if (this.syncRpcClient?.isClientRejected() === true) {
+            this.reportTaskSyncRpcClientRejected('pushTask', {
+              taskId: task.id,
+              projectId,
+            });
+            blockedBySyncRpc = true;
+            return;
+          }
+
           if (this.shouldUseSyncRpc()) {
             const operationId = this.createSyncRpcOperationId();
             const result = await this.syncRpcClient!.upsertTask({
@@ -757,6 +768,33 @@ export class TaskSyncOperationsService {
     return this.syncRpcClient?.isFeatureEnabled() === true && this.syncRpcClient.isClientRejected() === false;
   }
 
+  private async primeTaskSyncRpcCapability(): Promise<void> {
+    if (!this.syncRpcClient) {
+      return;
+    }
+
+    if (this.shouldUseSyncRpc() || this.syncRpcClient.isClientRejected() === true) {
+      return;
+    }
+
+    await this.syncRpcClient.checkProtocol();
+  }
+
+  private reportTaskSyncRpcClientRejected(
+    operation: 'pushTask' | 'pushTaskPosition' | 'softDeleteTasksBatch' | 'purgeTasksFromCloud',
+    extra: Record<string, unknown>,
+  ): void {
+    const message = '当前客户端同步协议已过期，请刷新后重试';
+
+    this.syncStateService.setSyncError(message);
+    this.logger.warn(`${operation}: sync RPC 探测判定客户端已过期`, extra);
+    this.sentryLazyLoader.captureMessage('sync_rpc_task_probe_rejected', {
+      level: 'warning',
+      tags: { operation, entityType: 'task', status: 'client-version-rejected' },
+      extra,
+    });
+  }
+
   private createSyncRpcOperationId(): string {
     return globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
   }
@@ -937,6 +975,16 @@ export class TaskSyncOperationsService {
         });
         return false;
       }
+    }
+
+    await this.primeTaskSyncRpcCapability();
+
+    if (this.syncRpcClient?.isClientRejected() === true) {
+      this.reportTaskSyncRpcClientRejected('pushTaskPosition', {
+        taskId,
+        projectId: projectId ?? null,
+      });
+      return false;
     }
 
     if (this.shouldUseSyncRpc()) {
@@ -1282,6 +1330,18 @@ export class TaskSyncOperationsService {
     }
 
     try {
+      await this.primeTaskSyncRpcCapability();
+
+      if (this.syncRpcClient?.isClientRejected() === true) {
+        this.reportTaskSyncRpcClientRejected('softDeleteTasksBatch', {
+          projectId,
+          taskIds,
+        });
+        this.tombstoneService.addLocalTombstones(projectId, taskIds, tombstoneTimestamps);
+        this.settleDeletedTaskDependencies(projectId, taskIds);
+        return -1;
+      }
+
       if (this.shouldUseSyncRpc()) {
         const result = await this.syncRpcClient!.deleteTasks({
           operationId: this.createSyncRpcOperationId(),
@@ -1421,6 +1481,16 @@ export class TaskSyncOperationsService {
           this.queueTaskDeletesForRetry(taskIds, projectId, fromRetryQueue, sourceUserId);
           return false;
         }
+      }
+
+      await this.primeTaskSyncRpcCapability();
+
+      if (this.syncRpcClient?.isClientRejected() === true) {
+        this.reportTaskSyncRpcClientRejected('purgeTasksFromCloud', {
+          projectId,
+          taskIds,
+        });
+        return false;
       }
 
       if (this.shouldUseSyncRpc()) {

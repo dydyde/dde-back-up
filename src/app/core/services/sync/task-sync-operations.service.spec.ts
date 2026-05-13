@@ -44,6 +44,7 @@ function createSyncRpcResult(overrides: Partial<SyncRpcResult> = {}): SyncRpcRes
 
 const upsertTaskRpcMock = vi.fn<SyncRpcClientService['upsertTask']>();
 const deleteTasksRpcMock = vi.fn<SyncRpcClientService['deleteTasks']>();
+const checkProtocolMock = vi.fn<SyncRpcClientService['checkProtocol']>();
 const isSyncRpcFeatureEnabledMock = vi.fn(() => false);
 const isSyncRpcClientRejectedMock = vi.fn(() => false);
 
@@ -86,11 +87,13 @@ describe('TaskSyncOperationsService', () => {
   const mockSyncRpcClient: {
     isFeatureEnabled: typeof isSyncRpcFeatureEnabledMock;
     isClientRejected: typeof isSyncRpcClientRejectedMock;
+    checkProtocol: typeof checkProtocolMock;
     upsertTask: typeof upsertTaskRpcMock;
     deleteTasks: typeof deleteTasksRpcMock;
   } = {
     isFeatureEnabled: isSyncRpcFeatureEnabledMock,
     isClientRejected: isSyncRpcClientRejectedMock,
+    checkProtocol: checkProtocolMock,
     upsertTask: upsertTaskRpcMock,
     deleteTasks: deleteTasksRpcMock,
   };
@@ -197,6 +200,7 @@ describe('TaskSyncOperationsService', () => {
     setVisibilityState('visible');
     mockSyncRpcClient.isFeatureEnabled.mockReturnValue(false);
     mockSyncRpcClient.isClientRejected.mockReturnValue(false);
+    mockSyncRpcClient.checkProtocol.mockImplementation(async () => null);
     taskFreshnessResult = { data: null, error: null };
     taskInsertResult = { data: { updated_at: new Date().toISOString() }, error: null };
     taskUpdateResult = { data: { updated_at: new Date().toISOString() }, error: null };
@@ -777,6 +781,74 @@ describe('TaskSyncOperationsService', () => {
     expect(mockRetryQueue.recordCircuitSuccess).toHaveBeenCalled();
   });
 
+  it('pushTask 在 feature 默认关闭但 probe 成功时仍应走 sync_upsert_task', async () => {
+    mockSyncRpcClient.isFeatureEnabled.mockReturnValue(false);
+    mockSyncRpcClient.checkProtocol.mockImplementationOnce(async () => {
+      mockSyncRpcClient.isFeatureEnabled.mockReturnValue(true);
+      return { minProtocolVersion: 1, deploymentEpoch: 0 };
+    });
+    const task: Task = {
+      id: 'task-rpc-probed',
+      title: '任务',
+      content: '内容',
+      stage: 0,
+      parentId: null,
+      order: 0,
+      rank: 10000,
+      status: 'active',
+      x: 0,
+      y: 0,
+      displayId: 'T-RPCP',
+      createdDate: new Date().toISOString(),
+      updatedAt: '2026-05-14T00:00:00.000Z',
+      deletedAt: null,
+    };
+
+    const result = await service.pushTask(task, 'project-1');
+
+    expect(result).toBe(true);
+    expect(mockSyncRpcClient.checkProtocol).toHaveBeenCalledTimes(1);
+    expect(mockSyncRpcClient.upsertTask).toHaveBeenCalledWith(expect.objectContaining({
+      task,
+      projectId: 'project-1',
+      baseUpdatedAt: '2026-05-14T00:00:00.000Z',
+    }));
+    expect(upsertPayload).toBeNull();
+  });
+
+  it('pushTask 在 probe 判定客户端已过期时不应回退直接 table upsert', async () => {
+    mockSyncRpcClient.isFeatureEnabled.mockReturnValue(false);
+    mockSyncRpcClient.checkProtocol.mockImplementationOnce(async () => {
+      mockSyncRpcClient.isClientRejected.mockReturnValue(true);
+      return { minProtocolVersion: 99, deploymentEpoch: 99 };
+    });
+    const task: Task = {
+      id: 'task-rpc-rejected',
+      title: '任务',
+      content: '内容',
+      stage: 0,
+      parentId: null,
+      order: 0,
+      rank: 10000,
+      status: 'active',
+      x: 0,
+      y: 0,
+      displayId: 'T-RPCR',
+      createdDate: new Date().toISOString(),
+      updatedAt: '2026-05-14T00:00:00.000Z',
+      deletedAt: null,
+    };
+
+    const result = await service.pushTask(task, 'project-1', false, false, 'user-1');
+
+    expect(result).toBe(false);
+    expect(mockSyncRpcClient.checkProtocol).toHaveBeenCalledTimes(1);
+    expect(mockSyncRpcClient.upsertTask).not.toHaveBeenCalled();
+    expect(upsertPayload).toBeNull();
+    expect(mockSyncState.setSyncError).toHaveBeenCalledWith('当前客户端同步协议已过期，请刷新后重试');
+    expect(mockRetryQueue.add).not.toHaveBeenCalled();
+  });
+
   it('pushTask sync RPC 成功后应把服务端 canonical updated_at 写回本地任务', async () => {
     const serverUpdatedAt = '2026-04-30T08:20:00.000Z';
     mockSyncRpcClient.isFeatureEnabled.mockReturnValue(true);
@@ -982,6 +1054,30 @@ describe('TaskSyncOperationsService', () => {
       'project-1',
       ['task-soft-rpc-a', 'task-soft-rpc-b'],
     );
+  });
+
+  it('softDeleteTasksBatch 在 feature 默认关闭但 probe 成功时仍应走 sync_delete_tasks', async () => {
+    mockSyncRpcClient.isFeatureEnabled.mockReturnValue(false);
+    mockSyncRpcClient.checkProtocol.mockImplementationOnce(async () => {
+      mockSyncRpcClient.isFeatureEnabled.mockReturnValue(true);
+      return { minProtocolVersion: 1, deploymentEpoch: 0 };
+    });
+    mockSyncRpcClient.deleteTasks.mockImplementationOnce(async () => createSyncRpcResult({
+      entityId: 'project-1',
+      affectedCount: 2,
+      attachmentPaths: [] as string[],
+    }));
+
+    const result = await service.softDeleteTasksBatch('project-1', ['task-soft-probed-a', 'task-soft-probed-b']);
+
+    expect(result).toBe(2);
+    expect(mockSyncRpcClient.checkProtocol).toHaveBeenCalledTimes(1);
+    expect(mockSyncRpcClient.deleteTasks).toHaveBeenCalledWith(expect.objectContaining({
+      projectId: 'project-1',
+      taskIds: ['task-soft-probed-a', 'task-soft-probed-b'],
+      deleteMode: 'soft',
+    }));
+    expect(mockClient.rpc).not.toHaveBeenCalledWith('safe_delete_tasks', expect.anything());
   });
 
   it('softDeleteTasksBatch 成功后也应清理引用已删任务的连接重试项', async () => {
