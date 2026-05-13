@@ -32,7 +32,7 @@ import { ClockSyncService } from '../../../services/clock-sync.service';
 import { EventBusService } from '../../../services/event-bus.service';
 // 拆分的子服务
 import {
-  TombstoneService, 
+  TombstoneService,
   RealtimePollingService,
   SessionManagerService,
   SyncOperationHelperService,
@@ -43,6 +43,7 @@ import {
   TaskSyncOperationsService,
   ConnectionSyncOperationsService,
   RetryQueueService,
+  ConnectivityRecoveryService,
   type RetryableEntityType,
   type RetryableOperation
 } from './sync';
@@ -199,6 +200,7 @@ export class SimpleSyncService {
   private readonly syncCursorPersistence = inject(SyncCursorPersistenceService);
   private readonly syncRpcClient = inject(SyncRpcClientService, { optional: true });
   private readonly projectStore = inject(ProjectStore, { optional: true });
+  private readonly connectivityRecovery = inject(ConnectivityRecoveryService);
 
   private getActionQueue(): ActionQueueService | null {
     return this.injector.get(ActionQueueService, null);
@@ -270,19 +272,16 @@ export class SimpleSyncService {
     { createdAt: number; modes: Set<'light' | 'heavy'>; probeCompleted: boolean }
   >();
   private runtimeStarted = false;
-  private connectivityRecoveryTimer: ReturnType<typeof setTimeout> | null = null;
-  private connectivityRecoveryPromise: Promise<void> | null = null;
-  private connectivityRecoveryEpoch = 0;
+  // 连接恢复状态已迁移到 ConnectivityRecoveryService (2026-05-13)
   private readonly handleOnline = () => {
     this.logger.info('网络恢复');
     this.syncStateService.setOnline(true);
-    void this.restoreRemoteConnectivity('online-event');
+    void this.connectivityRecovery.restoreRemoteConnectivity('online-event');
   };
   private readonly handleOffline = () => {
     this.logger.info('网络断开');
     this.syncStateService.setOnline(false);
     this.syncStateService.setOfflineMode(true);
-    this.clearConnectivityRecoveryTimer();
     void this.realtimePollingService.suspendTransport();
   };
   
@@ -452,13 +451,14 @@ export class SimpleSyncService {
     }
 
     this.runtimeStarted = true;
+    this.connectivityRecovery.startRuntime();
     this.realtimePollingService.initializeRuntime();
     this.setupNetworkListeners();
     this.retryQueueService.startLoop(this.RETRY_INTERVAL);
 
     if (this.supabase.isConfigured && this.supabase.isOfflineMode()) {
       this.syncStateService.setOfflineMode(true);
-      this.scheduleConnectivityRecovery('runtime-start', SYNC_CONFIG.CONNECTIVITY_PROBE_INTERVAL);
+      this.connectivityRecovery.scheduleConnectivityRecovery('runtime-start', SYNC_CONFIG.CONNECTIVITY_PROBE_INTERVAL);
     }
   }
 
@@ -468,9 +468,7 @@ export class SimpleSyncService {
     }
 
     this.runtimeStarted = false;
-  this.connectivityRecoveryEpoch += 1;
-    this.clearConnectivityRecoveryTimer();
-  this.connectivityRecoveryPromise = null;
+    this.connectivityRecovery.stopRuntime();
     this.teardownNetworkListeners();
     this.retryQueueService.stopLoop();
     this.realtimePollingService.teardownRuntime();
@@ -498,205 +496,13 @@ export class SimpleSyncService {
   }
 
   async suspendRemoteTransport(): Promise<void> {
-    this.clearConnectivityRecoveryTimer();
     await this.realtimePollingService.suspendTransport();
   }
 
   private handleSupabaseConnectivityChange(change: SupabaseConnectivityChange): void {
-    this.syncStateService.setOfflineMode(change.offline);
-
-    if (!this.runtimeStarted || change.source !== 'request') {
-      return;
-    }
-
-    if (change.offline) {
-      this.clearConnectivityRecoveryTimer();
-      void this.realtimePollingService.suspendTransport();
-      this.scheduleConnectivityRecovery('supabase-request-offline', SYNC_CONFIG.CONNECTIVITY_PROBE_INTERVAL);
-      return;
-    }
-
-    if (!this.syncState().isOnline) {
-      return;
-    }
-
-    void this.restoreRemoteConnectivity('supabase-request-restored');
+    this.connectivityRecovery.handleSupabaseConnectivityChange(change, this.syncState().isOnline);
   }
 
-  private clearConnectivityRecoveryTimer(): void {
-    if (!this.connectivityRecoveryTimer) {
-      return;
-    }
-
-    clearTimeout(this.connectivityRecoveryTimer);
-    this.connectivityRecoveryTimer = null;
-  }
-
-  private async probeRemoteReachability(
-    reason: string,
-    timeoutMs: number = SYNC_CONFIG.CONNECTIVITY_PROBE_TIMEOUT,
-    force = true
-  ): Promise<boolean> {
-    if (isBrowserNetworkSuspendedWindow()) {
-      const delayMs = Math.max(100, getRemainingBrowserNetworkResumeDelayMs() + 50);
-      this.logger.debug('浏览器网络仍处于挂起窗口，延后远端可达性探测', {
-        reason,
-        delayMs,
-      });
-      this.scheduleConnectivityRecovery(`${reason}:network-suspended`, delayMs);
-      return false;
-    }
-
-    const reachable = await this.supabase.probeReachability({ timeoutMs, force });
-    this.syncStateService.setOfflineMode(!reachable);
-
-    if (!reachable) {
-      this.logger.info('Supabase 远端暂不可达，保持连接中断模式', { reason });
-      await this.realtimePollingService.suspendTransport();
-      return false;
-    }
-
-    return true;
-  }
-
-  private async ensureConnectivityRecoverySessionReady(reason: string): Promise<boolean> {
-    const sessionSnapshot = FEATURE_FLAGS.RESUME_SESSION_SNAPSHOT_V1
-      ? this.sessionManager.getRecentValidationSnapshot(10_000)
-      : null;
-
-    if (sessionSnapshot?.valid) {
-      return true;
-    }
-
-    const session = await this.sessionManager.validateOrRefreshOnResume(`connectivity:${reason}`);
-
-    if (session.deferred) {
-      const delayMs = Math.max(100, getRemainingBrowserNetworkResumeDelayMs() + 50);
-      this.scheduleConnectivityRecovery(`${reason}:session-deferred`, delayMs);
-      this.logger.info('连接恢复等待会话稳定后重试', {
-        reason,
-        delayMs,
-        deferredReason: session.reason ?? 'client-unready',
-      });
-      return false;
-    }
-
-    if (!session.ok) {
-      this.logger.info('连接恢复因会话不可用而跳过', {
-        reason,
-        failureReason: session.reason,
-      });
-      return false;
-    }
-
-    return true;
-  }
-
-  private scheduleConnectivityRecovery(reason: string, delayMs: number = SYNC_CONFIG.DEBOUNCE_DELAY): void {
-    if (!this.runtimeStarted || this.connectivityRecoveryTimer) {
-      return;
-    }
-
-    if (typeof document !== 'undefined' && document.visibilityState !== 'visible') {
-      this.logger.debug('页面仍处于后台，跳过连接恢复定时器，等待下一次可见恢复事件', {
-        reason,
-      });
-      return;
-    }
-
-    this.connectivityRecoveryTimer = setTimeout(() => {
-      this.connectivityRecoveryTimer = null;
-
-      if (typeof navigator !== 'undefined' && navigator.onLine === false) {
-        return;
-      }
-
-      void this.restoreRemoteConnectivity(`scheduled:${reason}`);
-    }, delayMs);
-  }
-
-  private async restoreRemoteConnectivity(reason: string): Promise<void> {
-    if (this.connectivityRecoveryPromise) {
-      return this.connectivityRecoveryPromise;
-    }
-
-    this.clearConnectivityRecoveryTimer();
-    const recoveryEpoch = this.connectivityRecoveryEpoch;
-    const recoveryPromise: Promise<void> = this.restoreRemoteConnectivityInternal(reason, recoveryEpoch)
-      .finally(() => {
-        if (this.connectivityRecoveryPromise === recoveryPromise) {
-          this.connectivityRecoveryPromise = null;
-        }
-      });
-
-    this.connectivityRecoveryPromise = recoveryPromise;
-
-    return this.connectivityRecoveryPromise;
-  }
-
-  private async restoreRemoteConnectivityInternal(reason: string, recoveryEpoch: number): Promise<void> {
-    let remoteProbeCompleted = false;
-
-    if (this.supabase.isOfflineMode()) {
-      const reachable = await this.probeRemoteReachability(reason, SYNC_CONFIG.CONNECTIVITY_PROBE_TIMEOUT, true);
-      remoteProbeCompleted = true;
-      if (!this.runtimeStarted || recoveryEpoch !== this.connectivityRecoveryEpoch) {
-        return;
-      }
-
-      if (!reachable) {
-        this.scheduleConnectivityRecovery(reason, SYNC_CONFIG.CONNECTIVITY_PROBE_INTERVAL);
-        return;
-      }
-    }
-
-    const sessionReady = await this.ensureConnectivityRecoverySessionReady(reason);
-    if (!this.runtimeStarted || recoveryEpoch !== this.connectivityRecoveryEpoch) {
-      return;
-    }
-
-    if (!sessionReady) {
-      return;
-    }
-
-    if (!remoteProbeCompleted) {
-      const reachable = await this.probeRemoteReachability(reason, SYNC_CONFIG.CONNECTIVITY_PROBE_TIMEOUT, true);
-      if (!this.runtimeStarted || recoveryEpoch !== this.connectivityRecoveryEpoch) {
-        return;
-      }
-
-      if (!reachable) {
-        this.scheduleConnectivityRecovery(reason, SYNC_CONFIG.CONNECTIVITY_PROBE_INTERVAL);
-        return;
-      }
-    }
-
-    await this.realtimePollingService.resumeTransport();
-    if (!this.runtimeStarted || recoveryEpoch !== this.connectivityRecoveryEpoch) {
-      return;
-    }
-
-    this.realtimePollingService.resumeRealtimeUpdates();
-
-    if (this.retryQueueService.length > 0) {
-      this.retryQueueService.processQueue();
-    }
-
-    if (this.realtimePollingService.hasRemoteChangeCallback()) {
-      void this.realtimePollingService.triggerRemoteChange({
-        eventType: 'reconnect',
-        projectId: this.realtimePollingService.getCurrentProjectId() ?? undefined,
-      });
-    }
-
-    void this.blackBoxSync.pullChanges({ reason: 'resume' }).catch((error: unknown) => {
-      this.logger.warn('远端连接恢复后黑匣子补拉失败', {
-        reason,
-        error,
-      });
-    });
-  }
-  
   flushRetryQueueSync(): void {
     this.retryQueueService.flushSync();
   }
@@ -781,7 +587,7 @@ export class SimpleSyncService {
       session = session ?? await this.sessionManager.validateSession();
       if (session.deferred) {
         const delayMs = Math.max(100, getRemainingBrowserNetworkResumeDelayMs() + 50);
-        this.scheduleConnectivityRecovery(`${reason}:session-deferred`, delayMs);
+        this.connectivityRecovery.scheduleConnectivityRecovery(`${reason}:session-deferred`, delayMs);
         this.logger.info('页面恢复时会话校验延后，跳过本轮远端恢复链路', {
           reason,
           mode,
@@ -797,15 +603,13 @@ export class SimpleSyncService {
       }
     }
 
-    this.clearConnectivityRecoveryTimer();
-
-    const remoteReady = await this.probeRemoteReachability(
+    const remoteReady = await this.connectivityRecovery.probeRemoteReachability(
       reason,
       Math.max(SYNC_CONFIG.CONNECTIVITY_PROBE_TIMEOUT, resumeProbeTimeoutMs),
       true
     );
     if (!remoteReady) {
-      this.scheduleConnectivityRecovery(reason);
+      this.connectivityRecovery.scheduleConnectivityRecovery(reason);
       return;
     }
 
