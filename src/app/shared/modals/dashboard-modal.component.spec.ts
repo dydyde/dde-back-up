@@ -144,7 +144,7 @@ describe('DashboardModalComponent conflict resolution', () => {
 
     await component.resolveUseRemote('proj-1');
 
-    expect(projectOpsMock.resolveConflict).toHaveBeenCalledWith('proj-1', 'remote');
+    expect(projectOpsMock.resolveConflict).toHaveBeenCalledWith('proj-1', 'remote', { backgroundPersist: true });
     expect(syncCoordinatorMock.captureConflict).not.toHaveBeenCalled();
     expect(loadConflictsSpy).toHaveBeenCalled();
     expect(toastMock.success).toHaveBeenCalledWith('已采用云端版本', '当前项目已切换到云端结果');
@@ -157,7 +157,7 @@ describe('DashboardModalComponent conflict resolution', () => {
 
     await component.resolveUseLocal('proj-1');
 
-    expect(projectOpsMock.resolveConflict).toHaveBeenCalledWith('proj-1', 'local');
+    expect(projectOpsMock.resolveConflict).toHaveBeenCalledWith('proj-1', 'local', { backgroundPersist: true });
     expect(loadConflictsSpy).toHaveBeenCalled();
     expect(toastMock.success).not.toHaveBeenCalled();
   });
@@ -169,7 +169,7 @@ describe('DashboardModalComponent conflict resolution', () => {
 
     await component.resolveKeepBoth('proj-1');
 
-    expect(projectOpsMock.resolveConflict).toHaveBeenCalledWith('proj-1', 'merge');
+    expect(projectOpsMock.resolveConflict).toHaveBeenCalledWith('proj-1', 'merge', { backgroundPersist: true });
     expect(toastMock.success).not.toHaveBeenCalled();
     expect(loadConflictsSpy).toHaveBeenCalled();
   });
@@ -231,6 +231,7 @@ describe('DashboardModalComponent conflict resolution', () => {
         }),
         appliedBy: 'mixed',
       }),
+      { backgroundPersist: true },
     );
     expect(projectOpsMock.resolveConflict).not.toHaveBeenCalled();
     expect(loadConflictsSpy).toHaveBeenCalled();

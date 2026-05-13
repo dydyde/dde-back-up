@@ -244,7 +244,7 @@ describe('WorkspaceModalCoordinatorService', () => {
 
     await service.resolveConflictLocal();
 
-    expect(mockProjectOps.resolveConflict).toHaveBeenCalledWith('p-1', 'local');
+    expect(mockProjectOps.resolveConflict).toHaveBeenCalledWith('p-1', 'local', { backgroundPersist: true });
     expect(mockModalCloseRef.close).toHaveBeenCalledWith({ choice: 'local' });
     expect(setInputSpy).toHaveBeenCalledWith('isResolving', true);
     expect(setInputSpy).toHaveBeenCalledWith('activeResolution', 'local');
@@ -258,7 +258,7 @@ describe('WorkspaceModalCoordinatorService', () => {
 
     await service.resolveConflictLocal();
 
-    expect(mockProjectOps.resolveConflict).toHaveBeenCalledWith('p-1', 'local');
+    expect(mockProjectOps.resolveConflict).toHaveBeenCalledWith('p-1', 'local', { backgroundPersist: true });
     expect(mockModalCloseRef.close).not.toHaveBeenCalled();
 
     mockProjectOps.resolveConflict.mockResolvedValueOnce(true);
@@ -279,7 +279,7 @@ describe('WorkspaceModalCoordinatorService', () => {
     expect(mockProjectOps.resolveConflictWithPlan).toHaveBeenCalledWith('p-1', {
       taskChoices: { 'task-1': 'remote' },
       appliedBy: 'mixed',
-    });
+    }, { backgroundPersist: true });
     expect(mockModalCloseRef.close).toHaveBeenCalledWith({ choice: 'merge' });
     expect(setInputSpy).toHaveBeenCalledWith('activeResolution', 'plan');
     expect(mockToast.success).toHaveBeenCalledWith('已按系统建议解决冲突');
@@ -304,7 +304,7 @@ describe('WorkspaceModalCoordinatorService', () => {
     expect(mockProjectOps.resolveConflictWithPlan).toHaveBeenCalledWith('p-1', {
       taskChoices: { 'task-1': 'local' },
       appliedBy: 'mixed',
-    });
+    }, { backgroundPersist: true });
     expect(mockModalCloseRef.close).toHaveBeenCalledWith({ choice: 'merge' });
   });
 
@@ -328,7 +328,7 @@ describe('WorkspaceModalCoordinatorService', () => {
     expect(mockProjectOps.resolveConflictWithPlan).toHaveBeenCalledWith('p-1', {
       taskChoices: { 'task-1': 'remote' },
       appliedBy: 'user',
-    });
+    }, { backgroundPersist: true });
     expect(mockModalCloseRef.close).not.toHaveBeenCalled();
     expect(mockToast.success).not.toHaveBeenCalled();
     expect(setInputSpy).toHaveBeenCalledWith('isResolving', false);

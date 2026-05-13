@@ -447,7 +447,7 @@ export class WorkspaceModalCoordinatorService {
       const data = this._pendingConflict;
       let resolved = true;
       if (data) {
-        resolved = await this.projectOps.resolveConflict(data.projectId, strategy);
+        resolved = await this.projectOps.resolveConflict(data.projectId, strategy, { backgroundPersist: true });
       }
       if (!resolved) {
         return;
@@ -482,7 +482,7 @@ export class WorkspaceModalCoordinatorService {
       const data = this._pendingConflict;
       let resolved = true;
       if (data) {
-        resolved = await this.projectOps.resolveConflictWithPlan(data.projectId, plan);
+        resolved = await this.projectOps.resolveConflictWithPlan(data.projectId, plan, { backgroundPersist: true });
       }
       if (!resolved) {
         return;
