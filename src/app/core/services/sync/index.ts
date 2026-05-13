@@ -50,3 +50,6 @@ export type { TombstoneQueryResult } from './task-sync-operations.service';
 
 // 连接同步操作 (技术债务重构)
 export { ConnectionSyncOperationsService } from './connection-sync-operations.service';
+
+// 连接恢复管理 (技术债务重构 2026-05-13)
+export { ConnectivityRecoveryService } from './connectivity-recovery.service';
