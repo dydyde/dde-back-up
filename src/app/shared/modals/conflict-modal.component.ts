@@ -16,8 +16,14 @@ import { type ConflictResolutionPlan, type TaskResolutionChoice } from '../../..
   imports: [CommonModule, ConflictTaskDiffComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
-    <div class="fixed inset-0 bg-black/40 z-50 flex items-center justify-center backdrop-blur-sm animate-fade-in p-4">
-      <div class="bg-white dark:bg-stone-900 rounded-xl shadow-2xl w-full max-w-3xl p-6 animate-scale-in max-h-[90vh] overflow-y-auto" (click)="$event.stopPropagation()">
+    <div
+      data-testid="conflict-modal"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="conflict-modal-title"
+      aria-describedby="conflict-modal-description"
+      class="bg-white dark:bg-stone-900 rounded-xl shadow-2xl w-[min(100vw-2rem,48rem)] p-6 animate-scale-in max-h-[90vh] overflow-y-auto"
+      (click)="$event.stopPropagation()">
         <div class="flex items-center gap-3 mb-4">
           <div class="w-10 h-10 rounded-full bg-amber-100 dark:bg-amber-900/50 flex items-center justify-center flex-shrink-0">
             <svg class="w-5 h-5 text-amber-600 dark:text-amber-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -25,8 +31,8 @@ import { type ConflictResolutionPlan, type TaskResolutionChoice } from '../../..
             </svg>
           </div>
           <div>
-            <h3 class="text-lg font-semibold text-stone-800 dark:text-stone-100">数据冲突</h3>
-            <p class="text-xs text-stone-500 dark:text-stone-400">本地和云端数据存在差异，请选择解决方案</p>
+            <h3 id="conflict-modal-title" class="text-lg font-semibold text-stone-800 dark:text-stone-100">数据冲突</h3>
+            <p id="conflict-modal-description" class="text-xs text-stone-500 dark:text-stone-400">本地和云端数据存在差异，请选择解决方案</p>
           </div>
         </div>
 
@@ -67,6 +73,7 @@ import { type ConflictResolutionPlan, type TaskResolutionChoice } from '../../..
         <!-- 解决模式切换 -->
         <div class="mb-4 flex items-center gap-2">
           <button
+            data-testid="conflict-selective-toggle"
             (click)="selectiveMode.set(!selectiveMode())"
             class="text-[10px] font-medium px-2.5 py-1 rounded-md transition-colors"
             [ngClass]="{
@@ -155,6 +162,7 @@ import { type ConflictResolutionPlan, type TaskResolutionChoice } from '../../..
               <div class="flex flex-wrap gap-2">
                 @if (canApplySuggestedResolution()) {
                   <button
+                    data-testid="conflict-apply-suggested"
                     (click)="applySuggestedResolution()"
                     class="px-3 py-1.5 bg-violet-500 text-white text-xs font-medium rounded-lg hover:bg-violet-600 transition-colors flex items-center gap-1.5">
                     <svg class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -164,6 +172,7 @@ import { type ConflictResolutionPlan, type TaskResolutionChoice } from '../../..
                   </button>
                 }
                 <button
+                  data-testid="conflict-merge"
                   (click)="resolveMerge.emit()"
                   class="px-3 py-1.5 bg-white/70 dark:bg-stone-800/80 text-violet-700 dark:text-violet-300 text-xs font-medium rounded-lg border border-violet-200 dark:border-violet-700 hover:bg-violet-100/60 dark:hover:bg-violet-900/40 transition-colors flex items-center gap-1.5">
                   <svg class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -184,20 +193,20 @@ import { type ConflictResolutionPlan, type TaskResolutionChoice } from '../../..
 
         <div class="flex justify-between items-center">
           <button
+            data-testid="conflict-cancel"
             (click)="cancel.emit()"
             class="px-3 py-1.5 text-stone-500 dark:text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 text-xs transition-colors">
             稍后解决
           </button>
           <div class="flex gap-2">
-            <button (click)="resolveRemote.emit()" class="px-4 py-2 text-stone-600 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-700 rounded-lg transition-colors text-sm font-medium border border-stone-200 dark:border-stone-600">
+            <button data-testid="conflict-resolve-remote" (click)="resolveRemote.emit()" class="px-4 py-2 text-stone-600 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-700 rounded-lg transition-colors text-sm font-medium border border-stone-200 dark:border-stone-600">
               使用云端
             </button>
-            <button (click)="resolveLocal.emit()" class="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors text-sm font-medium">
+            <button data-testid="conflict-resolve-local" (click)="resolveLocal.emit()" class="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors text-sm font-medium">
               使用本地
             </button>
           </div>
         </div>
-      </div>
     </div>
   `
 })
