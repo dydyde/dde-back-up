@@ -2,20 +2,21 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-const migrationPath = 'supabase/migrations/20260509145500_sync_rpc_lww_upsert_semantics.sql';
+const migrationPath = 'supabase/migrations/20260513141838_sync_rpc_lww_restore.sql';
 
 function readMigration(): string {
   return fs.readFileSync(path.join(process.cwd(), migrationPath), 'utf8');
 }
 
 function getFunctionSection(sql: string, functionName: string): string {
-  const start = sql.indexOf(`CREATE OR REPLACE FUNCTION public.${functionName}(payload JSONB)`);
-  expect(start).toBeGreaterThanOrEqual(0);
+  const pattern = new RegExp(
+    String.raw`CREATE OR REPLACE FUNCTION public\.${functionName}\(payload JSONB\)[\s\S]*?\n\$\$;`,
+  );
+  const match = sql.match(pattern);
 
-  const end = sql.indexOf('GRANT EXECUTE ON FUNCTION', start);
-  expect(end).toBeGreaterThan(start);
+  expect(match).not.toBeNull();
 
-  return sql.slice(start, end);
+  return match?.[0] ?? '';
 }
 
 describe('Sync RPC LWW migration contract', () => {
@@ -48,7 +49,9 @@ describe('Sync RPC LWW migration contract', () => {
       expect(normalized).not.toContain('v_local_updated IS NULL OR v_local_updated < v_existing_updated');
       expect(normalized).not.toContain('v_local_updated < v_existing_updated');
       expect(normalized).not.toContain('v_local_updated <> v_existing_updated');
+      expect(normalized).not.toContain('v_base_updated IS NULL OR v_base_updated <> v_existing_updated');
       expect(normalized).not.toContain("'lww_remote_newer'");
+      expect(normalized).not.toContain("'cas_mismatch'");
     }
   });
 
@@ -83,5 +86,20 @@ describe('Sync RPC LWW migration contract', () => {
     expect(connectionSection).toContain('source_task.deleted_at IS NULL');
     expect(connectionSection).toContain('target_task.deleted_at IS NULL');
     expect(blackboxSection).toContain('SELECT 1 FROM public.projects p WHERE p.id = v_project_id AND p.owner_id = v_user');
+  });
+
+  it('non-task restore paths must keep server NOW stamps and tombstone guards', () => {
+    const sql = readMigration();
+    const connectionSection = getFunctionSection(sql, 'sync_upsert_connection');
+    const blackboxSection = getFunctionSection(sql, 'sync_upsert_blackbox_entry');
+    const projectSection = getFunctionSection(sql, 'sync_upsert_project');
+
+    expect(connectionSection).toContain('updated_at = NOW()');
+    expect(connectionSection).toContain('connection_tombstone');
+    expect(connectionSection).toContain('endpoint_tombstone');
+    expect(connectionSection).toContain('legacy_endpointless_tombstone');
+    expect(blackboxSection).toContain('updated_at = NOW()');
+    expect(projectSection).toContain('updated_at = NOW()');
+    expect(projectSection).toContain('remote_project_tombstone');
   });
 });
