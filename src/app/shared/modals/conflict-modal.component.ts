@@ -5,6 +5,8 @@ import { ConflictTaskDiffComponent, TaskResolutionMap } from '../components/conf
 import { ConflictAutoResolverService } from '../../../services/conflict-auto-resolver.service';
 import { type ConflictResolutionPlan, type TaskResolutionChoice } from '../../../services/conflict-resolution.types';
 
+type ConflictAction = 'local' | 'remote' | 'merge' | 'plan';
+
 /**
  * 冲突解决模态框组件
  * 提供本地/远程版本选择及智能合并功能
@@ -32,9 +34,25 @@ import { type ConflictResolutionPlan, type TaskResolutionChoice } from '../../..
           </div>
           <div>
             <h3 id="conflict-modal-title" class="text-lg font-semibold text-stone-800 dark:text-stone-100">数据冲突</h3>
-            <p id="conflict-modal-description" class="text-xs text-stone-500 dark:text-stone-400">本地和云端数据存在差异，请选择解决方案</p>
+            <p id="conflict-modal-description" class="text-xs text-stone-500 dark:text-stone-400">请明确选择由哪一边作为最终结果，或让系统按逐任务方案处理</p>
           </div>
         </div>
+
+        @if (isResolving()) {
+          <div
+            class="mb-4 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5 text-xs text-amber-700 dark:border-amber-700 dark:bg-amber-900/30 dark:text-amber-200"
+            aria-live="polite"
+            aria-busy="true">
+            <svg class="mt-0.5 h-4 w-4 animate-spin flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="9" class="opacity-30" />
+              <path d="M21 12a9 9 0 00-9-9" />
+            </svg>
+            <div>
+              <div class="font-medium">{{ activeResolutionLabel() }}</div>
+              <div class="mt-0.5 text-[10px] text-amber-600 dark:text-amber-300">处理中时按钮会暂时锁定，成功后当前窗口会自动关闭。</div>
+            </div>
+          </div>
+        }
 
         <!-- 差异概览 -->
         <div class="mb-4 p-3 bg-stone-50 dark:bg-stone-800 rounded-lg border border-stone-200 dark:border-stone-700">
@@ -75,7 +93,8 @@ import { type ConflictResolutionPlan, type TaskResolutionChoice } from '../../..
           <button
             data-testid="conflict-selective-toggle"
             (click)="selectiveMode.set(!selectiveMode())"
-            class="text-[10px] font-medium px-2.5 py-1 rounded-md transition-colors"
+            [disabled]="isResolving()"
+            class="text-[10px] font-medium px-2.5 py-1 rounded-md transition-colors disabled:cursor-not-allowed disabled:opacity-60"
             [ngClass]="{
               'bg-violet-100 dark:bg-violet-900/40 text-violet-700 dark:text-violet-300 border border-violet-300 dark:border-violet-600': selectiveMode(),
               'bg-stone-100 dark:bg-stone-800 text-stone-500 dark:text-stone-400 border border-stone-200 dark:border-stone-600 hover:bg-stone-200 dark:hover:bg-stone-700': !selectiveMode()
@@ -88,16 +107,31 @@ import { type ConflictResolutionPlan, type TaskResolutionChoice } from '../../..
         </div>
 
         <!-- 解决方案选项 -->
-        <div class="grid grid-cols-2 gap-3 mb-4">
+        <div class="grid grid-cols-1 gap-3 mb-4 md:grid-cols-2">
           <!-- 本地版本 -->
-          <div class="p-3 rounded-lg border-2 border-stone-200 dark:border-stone-600 hover:border-indigo-400 dark:hover:border-indigo-500 transition-colors cursor-pointer group"
-               (click)="resolveLocal.emit()">
+          <button
+            type="button"
+            data-testid="conflict-resolve-local"
+            (click)="resolveLocal.emit()"
+            [disabled]="isResolving()"
+            [attr.aria-busy]="isResolving() && activeResolution() === 'local'"
+            class="group rounded-lg border-2 border-stone-200 p-3 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-60 dark:border-stone-600 hover:border-indigo-400 dark:hover:border-indigo-500">
             <div class="flex items-center gap-2 mb-2">
               <svg class="w-4 h-4 text-indigo-500 dark:text-indigo-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 8h10M7 12h6"/>
               </svg>
-              <span class="text-sm font-medium text-stone-700 dark:text-stone-200 group-hover:text-indigo-700 dark:group-hover:text-indigo-400">本地版本</span>
+              <span class="text-sm font-medium text-stone-700 dark:text-stone-200 group-hover:text-indigo-700 dark:group-hover:text-indigo-400">保留本地修改</span>
+              @if (isResolving() && activeResolution() === 'local') {
+                <span class="inline-flex items-center gap-1 rounded-full bg-indigo-100 px-2 py-0.5 text-[9px] font-medium text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300">
+                  <svg class="h-3 w-3 animate-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="9" class="opacity-30" />
+                    <path d="M21 12a9 9 0 00-9-9" />
+                  </svg>
+                  处理中
+                </span>
+              }
             </div>
+            <p class="mb-2 text-[11px] text-stone-500 dark:text-stone-400">使用当前设备上的版本作为最终结果，云端内容会被本地内容覆盖。</p>
             <div class="text-xs text-stone-500 dark:text-stone-400 space-y-1">
               <p class="flex items-center gap-1.5">
                 <span class="w-1.5 h-1.5 rounded-full bg-indigo-400"></span>
@@ -108,20 +142,35 @@ import { type ConflictResolutionPlan, type TaskResolutionChoice } from '../../..
                 修改：{{ conflictData()?.localProject?.updatedAt | date:'yyyy-MM-dd HH:mm' }}
               </p>
             </div>
-            <div class="mt-2 text-[10px] text-indigo-600 dark:text-indigo-300 bg-indigo-50 dark:bg-indigo-900/50 px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity">
-              点击选择本地版本
+            <div class="mt-2 rounded bg-indigo-50 px-2 py-1 text-[10px] text-indigo-600 transition-opacity dark:bg-indigo-900/50 dark:text-indigo-300 md:opacity-0 md:group-hover:opacity-100">
+              适合你确认“我这边才是最新修改”的情况
             </div>
-          </div>
+          </button>
 
           <!-- 云端版本 -->
-          <div class="p-3 rounded-lg border-2 border-stone-200 dark:border-stone-600 hover:border-teal-400 dark:hover:border-teal-500 transition-colors cursor-pointer group"
-               (click)="resolveRemote.emit()">
+          <button
+            type="button"
+            data-testid="conflict-resolve-remote"
+            (click)="resolveRemote.emit()"
+            [disabled]="isResolving()"
+            [attr.aria-busy]="isResolving() && activeResolution() === 'remote'"
+            class="group rounded-lg border-2 border-stone-200 p-3 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-60 dark:border-stone-600 hover:border-teal-400 dark:hover:border-teal-500">
             <div class="flex items-center gap-2 mb-2">
               <svg class="w-4 h-4 text-teal-500 dark:text-teal-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M18 10h-1.26A8 8 0 109 20h9a5 5 0 000-10z"/>
               </svg>
-              <span class="text-sm font-medium text-stone-700 dark:text-stone-200 group-hover:text-teal-700 dark:group-hover:text-teal-400">云端版本</span>
+              <span class="text-sm font-medium text-stone-700 dark:text-stone-200 group-hover:text-teal-700 dark:group-hover:text-teal-400">采用云端版本</span>
+              @if (isResolving() && activeResolution() === 'remote') {
+                <span class="inline-flex items-center gap-1 rounded-full bg-teal-100 px-2 py-0.5 text-[9px] font-medium text-teal-700 dark:bg-teal-900/40 dark:text-teal-300">
+                  <svg class="h-3 w-3 animate-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="9" class="opacity-30" />
+                    <path d="M21 12a9 9 0 00-9-9" />
+                  </svg>
+                  处理中
+                </span>
+              }
             </div>
+            <p class="mb-2 text-[11px] text-stone-500 dark:text-stone-400">放弃本地尚未同步的修改，直接采用云端已经存在的版本。</p>
             <div class="text-xs text-stone-500 dark:text-stone-400 space-y-1">
               <p class="flex items-center gap-1.5">
                 <span class="w-1.5 h-1.5 rounded-full bg-teal-400"></span>
@@ -132,10 +181,10 @@ import { type ConflictResolutionPlan, type TaskResolutionChoice } from '../../..
                 修改：{{ conflictData()?.remoteProject?.updatedAt | date:'yyyy-MM-dd HH:mm' }}
               </p>
             </div>
-            <div class="mt-2 text-[10px] text-teal-600 dark:text-teal-300 bg-teal-50 dark:bg-teal-900/50 px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity">
-              点击选择云端版本
+            <div class="mt-2 rounded bg-teal-50 px-2 py-1 text-[10px] text-teal-600 transition-opacity dark:bg-teal-900/50 dark:text-teal-300 md:opacity-0 md:group-hover:opacity-100">
+              适合你确认“云端那份才是最新正确结果”的情况
             </div>
-          </div>
+          </button>
         </div>
 
         <!-- 系统建议 -->
@@ -164,21 +213,37 @@ import { type ConflictResolutionPlan, type TaskResolutionChoice } from '../../..
                   <button
                     data-testid="conflict-apply-suggested"
                     (click)="applySuggestedResolution()"
-                    class="px-3 py-1.5 bg-violet-500 text-white text-xs font-medium rounded-lg hover:bg-violet-600 transition-colors flex items-center gap-1.5">
-                    <svg class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                      <path d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/>
-                    </svg>
-                    {{ suggestedResolutionLabel() }}
+                    [disabled]="isResolving()"
+                    class="px-3 py-1.5 bg-violet-500 text-white text-xs font-medium rounded-lg hover:bg-violet-600 transition-colors flex items-center gap-1.5 disabled:cursor-not-allowed disabled:opacity-60">
+                    @if (isResolving() && activeResolution() === 'plan') {
+                      <svg class="h-3 w-3 animate-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="9" class="opacity-30" />
+                        <path d="M21 12a9 9 0 00-9-9" />
+                      </svg>
+                    } @else {
+                      <svg class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/>
+                      </svg>
+                    }
+                    {{ isResolving() && activeResolution() === 'plan' ? '正在应用系统建议' : suggestedResolutionLabel() }}
                   </button>
                 }
                 <button
                   data-testid="conflict-merge"
                   (click)="resolveMerge.emit()"
-                  class="px-3 py-1.5 bg-white/70 dark:bg-stone-800/80 text-violet-700 dark:text-violet-300 text-xs font-medium rounded-lg border border-violet-200 dark:border-violet-700 hover:bg-violet-100/60 dark:hover:bg-violet-900/40 transition-colors flex items-center gap-1.5">
-                  <svg class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <path d="M8 3v3a2 2 0 01-2 2H3m18 0h-3a2 2 0 01-2-2V3m0 18v-3a2 2 0 012-2h3M3 16h3a2 2 0 012 2v3"/>
-                  </svg>
-                  保留两者
+                  [disabled]="isResolving()"
+                  class="px-3 py-1.5 bg-white/70 dark:bg-stone-800/80 text-violet-700 dark:text-violet-300 text-xs font-medium rounded-lg border border-violet-200 dark:border-violet-700 hover:bg-violet-100/60 dark:hover:bg-violet-900/40 transition-colors flex items-center gap-1.5 disabled:cursor-not-allowed disabled:opacity-60">
+                  @if (isResolving() && activeResolution() === 'merge') {
+                    <svg class="h-3 w-3 animate-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <circle cx="12" cy="12" r="9" class="opacity-30" />
+                      <path d="M21 12a9 9 0 00-9-9" />
+                    </svg>
+                  } @else {
+                    <svg class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M8 3v3a2 2 0 01-2 2H3m18 0h-3a2 2 0 01-2-2V3m0 18v-3a2 2 0 012-2h3M3 16h3a2 2 0 012 2v3"/>
+                    </svg>
+                  }
+                  {{ isResolving() && activeResolution() === 'merge' ? '正在合并两边修改' : '合并并保留两边修改' }}
                 </button>
               </div>
             </div>
@@ -186,26 +251,19 @@ import { type ConflictResolutionPlan, type TaskResolutionChoice } from '../../..
         </div>
 
         <div class="text-xs text-stone-400 dark:text-stone-500 mb-4 p-2 bg-stone-50 dark:bg-stone-800 rounded-lg">
-          💡 <span class="font-medium">提示：</span>展开任务可查看具体字段的变更详情。
-          选择「本地版本」将覆盖云端数据；选择「云端版本」将丢弃本地未同步的更改；
-          「智能合并」会尝试保留双方的修改。
+          <span class="font-medium">提示：</span>展开任务可查看具体字段变更。
+          「保留本地修改」= 本地覆盖云端；「采用云端版本」= 云端覆盖本地；「合并并保留两边修改」= 尽量把双方修改都保留下来。
         </div>
 
-        <div class="flex justify-between items-center">
+        <div class="flex items-center justify-between gap-3">
           <button
             data-testid="conflict-cancel"
             (click)="cancel.emit()"
-            class="px-3 py-1.5 text-stone-500 dark:text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 text-xs transition-colors">
+            [disabled]="isResolving()"
+            class="px-3 py-1.5 text-stone-500 dark:text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-60">
             稍后解决
           </button>
-          <div class="flex gap-2">
-            <button data-testid="conflict-resolve-remote" (click)="resolveRemote.emit()" class="px-4 py-2 text-stone-600 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-700 rounded-lg transition-colors text-sm font-medium border border-stone-200 dark:border-stone-600">
-              使用云端
-            </button>
-            <button data-testid="conflict-resolve-local" (click)="resolveLocal.emit()" class="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors text-sm font-medium">
-              使用本地
-            </button>
-          </div>
+          <p class="text-right text-[10px] text-stone-400 dark:text-stone-500">选择上方任一方案后会立即执行，并在完成后自动关闭当前窗口。</p>
         </div>
     </div>
   `
@@ -219,6 +277,9 @@ export class ConflictModalComponent {
     remoteProject: Project;
     projectId: string;
   } | null>(null);
+
+  readonly isResolving = input(false);
+  readonly activeResolution = input<ConflictAction | null>(null);
 
   @Output() resolveLocal = new EventEmitter<void>();
   @Output() resolveRemote = new EventEmitter<void>();
@@ -258,6 +319,20 @@ export class ConflictModalComponent {
 
   recommendations = computed(() => this.autoReport()?.recommendations || []);
   overallSuggestion = computed(() => this.autoReport()?.overallSuggestion || '系统已完成冲突诊断');
+  activeResolutionLabel = computed(() => {
+    switch (this.activeResolution()) {
+      case 'local':
+        return '正在保留本地修改并覆盖云端…';
+      case 'remote':
+        return '正在采用云端版本并放弃本地未同步修改…';
+      case 'merge':
+        return '正在合并并保留两边修改…';
+      case 'plan':
+        return '正在按系统建议逐任务处理冲突…';
+      default:
+        return '正在处理冲突…';
+    }
+  });
 
   onSelectionChange(selections: TaskResolutionMap): void {
     this.taskResolutions.set(selections);

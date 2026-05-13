@@ -25,6 +25,8 @@ import { type ConflictResolutionPlan } from './conflict-resolution.types';
 import type { StorageEscapeData } from '../app/shared/modals';
 import { ThemeType, Project } from '../models';
 
+type ConflictResolutionAction = 'local' | 'remote' | 'merge' | 'plan';
+
 @Injectable({ providedIn: 'root' })
 export class WorkspaceModalCoordinatorService {
   private readonly toast = inject(ToastService);
@@ -388,7 +390,11 @@ export class WorkspaceModalCoordinatorService {
     try {
       const component = await this.modalLoader.loadConflictModal();
       this._conflictModalRef = this.dynamicModal.open(component, {
-        inputs: { conflictData: data },
+        inputs: {
+          conflictData: data,
+          isResolving: false,
+          activeResolution: null,
+        },
         outputs: {
           resolveLocal: () => this.resolveConflictLocal(),
           resolveRemote: () => this.resolveConflictRemote(),
@@ -408,9 +414,35 @@ export class WorkspaceModalCoordinatorService {
     this._pendingConflict = data;
   }
 
+  private setConflictModalResolutionState(
+    isResolving: boolean,
+    activeResolution: ConflictResolutionAction | null,
+  ): void {
+    this._conflictModalRef?.componentRef.setInput('isResolving', isResolving);
+    this._conflictModalRef?.componentRef.setInput('activeResolution', activeResolution);
+  }
+
+  private notifyConflictResolutionSuccess(action: ConflictResolutionAction): void {
+    switch (action) {
+      case 'local':
+        this.toast.success('已保留本地修改', '当前项目已按本地版本解决冲突');
+        return;
+      case 'remote':
+        this.toast.success('已采用云端版本', '当前项目已切换到云端结果');
+        return;
+      case 'merge':
+        this.toast.success('已合并两边修改', '当前项目已保留本地与云端的有效内容');
+        return;
+      case 'plan':
+        this.toast.success('已按系统建议解决冲突');
+        return;
+    }
+  }
+
   private async resolveConflictWith(strategy: 'local' | 'remote' | 'merge'): Promise<void> {
     if (this._isResolvingConflict) return;
     this._isResolvingConflict = true;
+    this.setConflictModalResolutionState(true, strategy);
     try {
       const data = this._pendingConflict;
       let resolved = true;
@@ -423,7 +455,9 @@ export class WorkspaceModalCoordinatorService {
       this._conflictModalRef?.close({ choice: strategy });
       this._pendingConflict = null;
       this._conflictModalRef = null;
+      this.notifyConflictResolutionSuccess(strategy);
     } finally {
+      this.setConflictModalResolutionState(false, null);
       this._isResolvingConflict = false;
     }
   }
@@ -443,6 +477,7 @@ export class WorkspaceModalCoordinatorService {
   async applyConflictResolutionPlan(plan: ConflictResolutionPlan): Promise<void> {
     if (this._isResolvingConflict) return;
     this._isResolvingConflict = true;
+    this.setConflictModalResolutionState(true, 'plan');
     try {
       const data = this._pendingConflict;
       let resolved = true;
@@ -455,13 +490,17 @@ export class WorkspaceModalCoordinatorService {
       this._conflictModalRef?.close({ choice: 'merge' });
       this._pendingConflict = null;
       this._conflictModalRef = null;
-      this.toast.success('冲突已解决');
+      this.notifyConflictResolutionSuccess('plan');
     } finally {
+      this.setConflictModalResolutionState(false, null);
       this._isResolvingConflict = false;
     }
   }
 
   cancelConflictResolution(): void {
+    if (this._isResolvingConflict) {
+      return;
+    }
     this._conflictModalRef?.close({ choice: 'cancel' });
     this._pendingConflict = null;
     this._conflictModalRef = null;

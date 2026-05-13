@@ -182,4 +182,17 @@ describe('ConflictModalComponent', () => {
       appliedBy: 'system',
     });
   });
+
+  it('should show a busy hint and disable actions while resolving', () => {
+    Object.assign(modalComponent, {
+      isResolving: () => true,
+      activeResolution: () => 'local',
+    });
+    fixture.detectChanges();
+
+    expect(getByTestId<HTMLButtonElement>(fixture, 'conflict-resolve-local').disabled).toBe(true);
+    expect(getByTestId<HTMLButtonElement>(fixture, 'conflict-resolve-remote').disabled).toBe(true);
+    expect(getByTestId<HTMLButtonElement>(fixture, 'conflict-cancel').disabled).toBe(true);
+    expect(fixture.nativeElement.textContent).toContain('正在保留本地修改并覆盖云端');
+  });
 });

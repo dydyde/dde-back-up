@@ -14,6 +14,7 @@ import { Task } from '../../../models';
 import { ConflictTaskDiffComponent, TaskResolutionMap } from '../components/conflict-task-diff.component';
 
 type TabKey = 'status' | 'conflicts' | 'queue';
+type ConflictAction = 'local' | 'remote' | 'merge' | 'plan';
 
 interface ConflictItem {
   projectId: string; projectName: string; reason: string; reasonLabel: string;
@@ -31,6 +32,8 @@ interface ConflictItem {
   taskResolutions?: TaskResolutionMap;
   /** 是否启用了逐任务选择模式 */
   selectiveMode?: boolean;
+  /** 当前正在执行的冲突处理动作 */
+  activeResolution?: ConflictAction | null;
 }
 
 /** 仪表盘模态框 - 展示数据冲突、同步状态，支持内联冲突解决 */
@@ -251,14 +254,32 @@ interface ConflictItem {
                         </div>
                       }
 
+                      @if (conflict.isResolving) {
+                        <div class="mb-2 rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-2 text-[10px] text-amber-700 dark:border-amber-700 dark:bg-amber-900/30 dark:text-amber-200">
+                          <div class="flex items-center gap-1.5 font-medium">
+                            <svg class="h-3.5 w-3.5 animate-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                              <circle cx="12" cy="12" r="9" class="opacity-30" />
+                              <path d="M21 12a9 9 0 00-9-9" />
+                            </svg>
+                            {{ getActiveResolutionLabel(conflict) }}
+                          </div>
+                          <p class="mt-1 text-[10px] text-amber-600 dark:text-amber-300">处理完成前会暂时锁定本项目的冲突按钮，避免重复提交。</p>
+                        </div>
+                      }
+
+                      <p class="mb-2 text-[10px] text-stone-500 dark:text-stone-400">操作语义：本地覆盖云端 / 云端覆盖本地 / 合并保留两边。选择后会立即执行。</p>
+
                       <!-- 操作按钮 -->
                       <div class="flex flex-wrap gap-2">
                         @if (canApplySuggestedResolution(conflict)) {
                           <button (click)="applyAutoResolution(conflict)" [disabled]="conflict.isResolving"
                             class="flex-1 min-w-[100px] px-3 py-2 text-xs font-medium bg-violet-500 hover:bg-violet-600 text-white rounded-lg transition-colors disabled:opacity-50 flex items-center justify-center gap-1.5">
-                            @if (conflict.isResolving) { <svg class="animate-spin h-3 w-3" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg> }
-                            <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" /></svg>
-                            {{ getSuggestedResolutionLabel(conflict) }}
+                            @if (conflict.isResolving && conflict.activeResolution === 'plan') {
+                              <svg class="animate-spin h-3 w-3" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
+                            } @else {
+                              <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" /></svg>
+                            }
+                            {{ conflict.isResolving && conflict.activeResolution === 'plan' ? '正在按系统建议处理' : getSuggestedResolutionLabel(conflict) }}
                           </button>
                         }
                         <button (click)="toggleSelectiveMode(conflict.projectId)" [disabled]="conflict.isResolving"
@@ -271,15 +292,24 @@ interface ConflictItem {
                         </button>
                         <button (click)="resolveUseLocal(conflict.projectId)" [disabled]="conflict.isResolving"
                           class="px-3 py-2 text-xs font-medium bg-indigo-500 hover:bg-indigo-600 text-white rounded-lg transition-colors disabled:opacity-50 flex items-center justify-center gap-1.5">
-                          全部用本地
+                          @if (conflict.isResolving && conflict.activeResolution === 'local') {
+                            <svg class="animate-spin h-3 w-3" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
+                          }
+                          {{ conflict.isResolving && conflict.activeResolution === 'local' ? '正在本地覆盖云端' : '本地覆盖云端' }}
                         </button>
                         <button (click)="resolveUseRemote(conflict.projectId)" [disabled]="conflict.isResolving"
                           class="px-3 py-2 text-xs font-medium bg-teal-500 hover:bg-teal-600 text-white rounded-lg transition-colors disabled:opacity-50 flex items-center justify-center gap-1.5">
-                          全部用云端
+                          @if (conflict.isResolving && conflict.activeResolution === 'remote') {
+                            <svg class="animate-spin h-3 w-3" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
+                          }
+                          {{ conflict.isResolving && conflict.activeResolution === 'remote' ? '正在云端覆盖本地' : '云端覆盖本地' }}
                         </button>
                         <button (click)="resolveKeepBoth(conflict.projectId)" [disabled]="conflict.isResolving"
                           class="px-3 py-2 text-xs font-medium bg-stone-500 hover:bg-stone-600 text-white rounded-lg transition-colors disabled:opacity-50 flex items-center justify-center gap-1.5">
-                          保留两者
+                          @if (conflict.isResolving && conflict.activeResolution === 'merge') {
+                            <svg class="animate-spin h-3 w-3" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
+                          }
+                          {{ conflict.isResolving && conflict.activeResolution === 'merge' ? '正在合并两边修改' : '合并保留两边' }}
                         </button>
                       </div>
                     </div>
@@ -530,6 +560,7 @@ export class DashboardModalComponent implements OnInit {
       localTasks,
       remoteTasks,
       isResolving: false,
+      activeResolution: null,
       autoReport,
       remoteSnapshotFresh: record.remoteSnapshotFresh === true,
       selectiveMode: false,
@@ -578,7 +609,7 @@ export class DashboardModalComponent implements OnInit {
       return;
     }
 
-    this.setResolving(conflict.projectId, true);
+    this.setResolving(conflict.projectId, true, 'plan');
     try {
       const plan = this.buildResolutionPlan(conflict);
       const counts = this.countResolutionChoices(plan);
@@ -603,7 +634,7 @@ export class DashboardModalComponent implements OnInit {
   }
 
   async resolveKeepBoth(projectId: string): Promise<void> {
-    this.setResolving(projectId, true);
+    this.setResolving(projectId, true, 'merge');
     try {
       const conflict = await this.conflictStorage.getConflict(projectId);
       if (!conflict) { this.toastService.error('错误', '未找到冲突数据'); return; }
@@ -618,12 +649,21 @@ export class DashboardModalComponent implements OnInit {
   }
 
   private async resolveConflictWithStrategy(projectId: string, strategy: 'local' | 'remote'): Promise<void> {
-    this.setResolving(projectId, true);
+    this.setResolving(projectId, true, strategy);
     try {
       const conflict = await this.conflictStorage.getConflict(projectId);
       if (!conflict) { this.toastService.error('错误', '未找到冲突数据'); return; }
-      await this.projectOps.resolveConflict(projectId, strategy);
+      const resolved = await this.projectOps.resolveConflict(projectId, strategy);
       await this.loadConflicts();
+      if (!resolved) {
+        return;
+      }
+
+      if (strategy === 'local') {
+        this.toastService.success('已保留本地修改', '当前项目已按本地版本解决冲突');
+      } else {
+        this.toastService.success('已采用云端版本', '当前项目已切换到云端结果');
+      }
     } catch {
       this.toastService.error('错误', '解决冲突时发生意外错误');
     } finally {
@@ -631,10 +671,25 @@ export class DashboardModalComponent implements OnInit {
     }
   }
 
-  private setResolving(projectId: string, isResolving: boolean): void {
+  private setResolving(projectId: string, isResolving: boolean, activeResolution: ConflictAction | null = null): void {
     this.conflictItems.update(items =>
-      items.map(item => item.projectId === projectId ? { ...item, isResolving } : item)
+      items.map(item => item.projectId === projectId ? { ...item, isResolving, activeResolution } : item)
     );
+  }
+
+  getActiveResolutionLabel(conflict: ConflictItem): string {
+    switch (conflict.activeResolution) {
+      case 'local':
+        return '正在使用本地结果覆盖云端…';
+      case 'remote':
+        return '正在使用云端结果覆盖本地…';
+      case 'merge':
+        return '正在合并两边修改…';
+      case 'plan':
+        return '正在按系统建议逐任务处理…';
+      default:
+        return '正在处理冲突…';
+    }
   }
 
   canApplySuggestedResolution(conflict: ConflictItem): boolean {

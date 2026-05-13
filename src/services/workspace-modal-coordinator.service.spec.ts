@@ -26,12 +26,13 @@ const mockRouter = { navigateByUrl: vi.fn() };
 const mockErrorHandler = { dismissRecoveryDialog: vi.fn() };
 
 let resolveModalResult: ((value?: unknown) => void) | null = null;
+let setInputSpy = vi.fn();
 const mockModalCloseRef = {
   close: vi.fn((value?: unknown) => {
     resolveModalResult?.(value);
   }),
   result: Promise.resolve(undefined),
-  componentRef: {} as never,
+  componentRef: { setInput: (...args: unknown[]) => setInputSpy(...args) } as never,
 };
 const mockDynamicModal = {
   open: vi.fn(() => mockModalCloseRef),
@@ -71,6 +72,8 @@ describe('WorkspaceModalCoordinatorService', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    setInputSpy = vi.fn();
+    mockModalCloseRef.componentRef = { setInput: (...args: unknown[]) => setInputSpy(...args) } as never;
     mockProjectOps.resolveConflict.mockResolvedValue(true);
     mockProjectOps.resolveConflictWithPlan.mockResolvedValue(true);
     mockModalCloseRef.result = new Promise(resolve => {
@@ -243,6 +246,9 @@ describe('WorkspaceModalCoordinatorService', () => {
 
     expect(mockProjectOps.resolveConflict).toHaveBeenCalledWith('p-1', 'local');
     expect(mockModalCloseRef.close).toHaveBeenCalledWith({ choice: 'local' });
+    expect(setInputSpy).toHaveBeenCalledWith('isResolving', true);
+    expect(setInputSpy).toHaveBeenCalledWith('activeResolution', 'local');
+    expect(mockToast.success).toHaveBeenCalledWith('已保留本地修改', '当前项目已按本地版本解决冲突');
   });
 
   it('should keep conflict modal open when resolveConflict returns false', async () => {
@@ -275,7 +281,8 @@ describe('WorkspaceModalCoordinatorService', () => {
       appliedBy: 'mixed',
     });
     expect(mockModalCloseRef.close).toHaveBeenCalledWith({ choice: 'merge' });
-    expect(mockToast.success).toHaveBeenCalled();
+    expect(setInputSpy).toHaveBeenCalledWith('activeResolution', 'plan');
+    expect(mockToast.success).toHaveBeenCalledWith('已按系统建议解决冲突');
   });
 
   it('should wire conflict modal applyPlan output to the plan resolver', async () => {
@@ -324,6 +331,7 @@ describe('WorkspaceModalCoordinatorService', () => {
     });
     expect(mockModalCloseRef.close).not.toHaveBeenCalled();
     expect(mockToast.success).not.toHaveBeenCalled();
+    expect(setInputSpy).toHaveBeenCalledWith('isResolving', false);
   });
 
   // ── cancelConflictResolution ───────────────────────────────

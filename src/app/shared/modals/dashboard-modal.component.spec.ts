@@ -147,6 +147,19 @@ describe('DashboardModalComponent conflict resolution', () => {
     expect(projectOpsMock.resolveConflict).toHaveBeenCalledWith('proj-1', 'remote');
     expect(syncCoordinatorMock.captureConflict).not.toHaveBeenCalled();
     expect(loadConflictsSpy).toHaveBeenCalled();
+    expect(toastMock.success).toHaveBeenCalledWith('已采用云端版本', '当前项目已切换到云端结果');
+  });
+
+  it('resolveUseLocal 失败时不应误报成功', async () => {
+    conflictStorageMock.getConflict.mockResolvedValueOnce(createConflictRecord(true));
+    projectOpsMock.resolveConflict.mockResolvedValueOnce(false);
+    const loadConflictsSpy = vi.spyOn(component, 'loadConflicts').mockResolvedValue(undefined);
+
+    await component.resolveUseLocal('proj-1');
+
+    expect(projectOpsMock.resolveConflict).toHaveBeenCalledWith('proj-1', 'local');
+    expect(loadConflictsSpy).toHaveBeenCalled();
+    expect(toastMock.success).not.toHaveBeenCalled();
   });
 
   it('resolveKeepBoth 失败时不应提示成功', async () => {
