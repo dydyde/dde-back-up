@@ -660,7 +660,7 @@ export class DashboardModalComponent implements OnInit {
       }
 
       if (strategy === 'local') {
-        this.toastService.success('已保留本地修改', '当前项目已按本地版本解决冲突');
+        this.toastService.success('已保留本地修改', '冲突已在本地解决，后台会自动同步到云端');
       } else {
         this.toastService.success('已采用云端版本', '当前项目已切换到云端结果');
       }

@@ -1,6 +1,5 @@
 import { Component, EventEmitter, Input, Output } from '@angular/core';
 import { TestBed, type ComponentFixture } from '@angular/core/testing';
-import { By } from '@angular/platform-browser';
 import { describe, expect, it, beforeEach, vi } from 'vitest';
 import type { Project, Task } from '../../../models';
 import {
@@ -22,14 +21,6 @@ class ConflictTaskDiffStubComponent {
   @Input() recommendations = [];
   @Output() selectionChange = new EventEmitter<Map<string, 'local' | 'remote'>>();
 }
-
-@Component({
-  selector: 'app-conflict-modal-host',
-  standalone: true,
-  imports: [ConflictModalComponent],
-  template: `<app-conflict-modal />`,
-})
-class ConflictModalHostComponent {}
 
 function createTask(overrides: Partial<Task> = {}): Task {
   return {
@@ -88,14 +79,14 @@ function createAutoReport(): AutoResolutionReport {
   };
 }
 
-function getByTestId<T extends HTMLElement>(fixture: ComponentFixture<ConflictModalHostComponent>, testId: string): T {
+function getByTestId<T extends HTMLElement>(fixture: ComponentFixture<ConflictModalComponent>, testId: string): T {
   const element = fixture.nativeElement.querySelector(`[data-testid="${testId}"]`) as T | null;
   expect(element).not.toBeNull();
   return element as T;
 }
 
 describe('ConflictModalComponent', () => {
-  let fixture: ComponentFixture<ConflictModalHostComponent>;
+  let fixture: ComponentFixture<ConflictModalComponent>;
   let modalComponent: ConflictModalComponent;
   const mockAutoResolver = {
     analyze: vi.fn(() => createAutoReport()),
@@ -110,13 +101,13 @@ describe('ConflictModalComponent', () => {
     });
 
     await TestBed.configureTestingModule({
-      imports: [ConflictModalHostComponent],
+      imports: [ConflictModalComponent],
       providers: [
         { provide: ConflictAutoResolverService, useValue: mockAutoResolver },
       ],
     }).compileComponents();
 
-    fixture = TestBed.createComponent(ConflictModalHostComponent);
+    fixture = TestBed.createComponent(ConflictModalComponent);
 
     const localTask = createTask({
       id: 'task-1',
@@ -131,14 +122,11 @@ describe('ConflictModalComponent', () => {
       updatedAt: '2026-05-12T20:20:00.000Z',
     });
 
-    modalComponent = fixture.debugElement.query(By.directive(ConflictModalComponent)).componentInstance as ConflictModalComponent;
-
-    Object.assign(modalComponent, {
-      conflictData: () => ({
+    modalComponent = fixture.componentInstance;
+    fixture.componentRef.setInput('conflictData', {
       projectId: 'project-1',
       localProject: createProject('project-1', '蚯蚓养殖', '2026-05-13T10:22:00.000Z', [localTask]),
       remoteProject: createProject('project-1', '蚯蚓养殖', '2026-05-12T20:20:00.000Z', [remoteTask]),
-      }),
     });
     fixture.detectChanges();
   });
@@ -184,10 +172,8 @@ describe('ConflictModalComponent', () => {
   });
 
   it('should show a busy hint and disable actions while resolving', () => {
-    Object.assign(modalComponent, {
-      isResolving: () => true,
-      activeResolution: () => 'local',
-    });
+    fixture.componentRef.setInput('isResolving', true);
+    fixture.componentRef.setInput('activeResolution', 'local');
     fixture.detectChanges();
 
     expect(getByTestId<HTMLButtonElement>(fixture, 'conflict-resolve-local').disabled).toBe(true);

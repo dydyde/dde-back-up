@@ -248,7 +248,7 @@ describe('WorkspaceModalCoordinatorService', () => {
     expect(mockModalCloseRef.close).toHaveBeenCalledWith({ choice: 'local' });
     expect(setInputSpy).toHaveBeenCalledWith('isResolving', true);
     expect(setInputSpy).toHaveBeenCalledWith('activeResolution', 'local');
-    expect(mockToast.success).toHaveBeenCalledWith('已保留本地修改', '当前项目已按本地版本解决冲突');
+    expect(mockToast.success).toHaveBeenCalledWith('已保留本地修改', '冲突已在本地解决，后台会自动同步到云端');
   });
 
   it('should keep conflict modal open when resolveConflict returns false', async () => {
@@ -282,7 +282,7 @@ describe('WorkspaceModalCoordinatorService', () => {
     }, { backgroundPersist: true });
     expect(mockModalCloseRef.close).toHaveBeenCalledWith({ choice: 'merge' });
     expect(setInputSpy).toHaveBeenCalledWith('activeResolution', 'plan');
-    expect(mockToast.success).toHaveBeenCalledWith('已按系统建议解决冲突');
+    expect(mockToast.success).toHaveBeenCalledWith('已按系统建议解决冲突', '冲突已在本地解决，后台会自动同步到云端');
   });
 
   it('should wire conflict modal applyPlan output to the plan resolver', async () => {

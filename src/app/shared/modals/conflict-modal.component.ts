@@ -78,33 +78,55 @@ type ConflictAction = 'local' | 'remote' | 'merge' | 'plan';
           </div>
         </div>
 
-        <!-- 字段级差异对比（使用新的差异组件，支持逐任务展开和选择性保留） -->
-        <div class="mb-4">
-          <app-conflict-task-diff
-            [localTasks]="localTasks()"
-            [remoteTasks]="remoteTasks()"
-            [selectable]="selectiveMode()"
-            [recommendations]="recommendations()"
-            (selectionChange)="onSelectionChange($event)" />
+        <!-- 差异详情开关 + 逐任务选择 -->
+        <div class="mb-4 flex flex-wrap items-center justify-between gap-2">
+          <button
+            type="button"
+            data-testid="conflict-toggle-details"
+            (click)="detailsOpen.set(!detailsOpen())"
+            [disabled]="isResolving()"
+            class="text-[10px] font-medium px-2.5 py-1 rounded-md border transition-colors disabled:cursor-not-allowed disabled:opacity-60"
+            [ngClass]="{
+              'bg-white/80 dark:bg-stone-800/80 border-stone-200 dark:border-stone-600 text-stone-600 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-700': !detailsOpen(),
+              'bg-stone-100 dark:bg-stone-800 border-stone-300 dark:border-stone-500 text-stone-700 dark:text-stone-200': detailsOpen()
+            }">
+            {{ detailsOpen() ? '隐藏差异详情' : '查看差异详情' }}
+          </button>
+          <div class="flex items-center gap-2">
+            <button
+              type="button"
+              data-testid="conflict-selective-toggle"
+              (click)="toggleSelectiveMode()"
+              [disabled]="isResolving()"
+              class="text-[10px] font-medium px-2.5 py-1 rounded-md transition-colors disabled:cursor-not-allowed disabled:opacity-60 border"
+              [ngClass]="{
+                'bg-violet-100 dark:bg-violet-900/40 text-violet-700 dark:text-violet-300 border-violet-300 dark:border-violet-600': selectiveMode(),
+                'bg-white/80 dark:bg-stone-800/80 text-stone-600 dark:text-stone-300 border-stone-200 dark:border-stone-600 hover:bg-stone-100 dark:hover:bg-stone-700': !selectiveMode()
+              }">
+              {{ selectiveMode() ? '✓ 逐任务选择模式' : '逐任务选择模式' }}
+            </button>
+            @if (selectiveMode()) {
+              <span class="text-[9px] text-stone-400 dark:text-stone-500">对冲突任务逐个指定保留本地或云端版本</span>
+            }
+          </div>
         </div>
 
-        <!-- 解决模式切换 -->
-        <div class="mb-4 flex items-center gap-2">
-          <button
-            data-testid="conflict-selective-toggle"
-            (click)="selectiveMode.set(!selectiveMode())"
-            [disabled]="isResolving()"
-            class="text-[10px] font-medium px-2.5 py-1 rounded-md transition-colors disabled:cursor-not-allowed disabled:opacity-60"
-            [ngClass]="{
-              'bg-violet-100 dark:bg-violet-900/40 text-violet-700 dark:text-violet-300 border border-violet-300 dark:border-violet-600': selectiveMode(),
-              'bg-stone-100 dark:bg-stone-800 text-stone-500 dark:text-stone-400 border border-stone-200 dark:border-stone-600 hover:bg-stone-200 dark:hover:bg-stone-700': !selectiveMode()
-            }">
-            {{ selectiveMode() ? '✓ 逐任务选择模式' : '开启逐任务选择' }}
-          </button>
-          @if (selectiveMode()) {
-            <span class="text-[9px] text-stone-400 dark:text-stone-500">对冲突任务逐个指定保留本地或云端版本</span>
-          }
-        </div>
+        @if (!detailsOpen() && !selectiveMode()) {
+          <div class="mb-4 rounded-lg border border-stone-200 dark:border-stone-700 bg-white/60 dark:bg-stone-800/40 px-3 py-2 text-[10px] text-stone-500 dark:text-stone-400">
+            <div class="font-medium text-stone-600 dark:text-stone-300">无需逐项查看也能处理</div>
+            <div class="mt-0.5">直接选择下方任一方案即可；如需逐任务确认，再展开差异详情。</div>
+          </div>
+        } @else {
+          <!-- 字段级差异对比（支持逐任务展开和选择性保留） -->
+          <div class="mb-4">
+            <app-conflict-task-diff
+              [localTasks]="localTasks()"
+              [remoteTasks]="remoteTasks()"
+              [selectable]="selectiveMode()"
+              [recommendations]="recommendations()"
+              (selectionChange)="onSelectionChange($event)" />
+          </div>
+        }
 
         <!-- 解决方案选项 -->
         <div class="grid grid-cols-1 gap-3 mb-4 md:grid-cols-2">
@@ -289,6 +311,8 @@ export class ConflictModalComponent {
 
   /** 是否启用逐任务选择模式 */
   selectiveMode = signal(false);
+  /** 是否展开差异详情（默认收起，减少噪音） */
+  detailsOpen = signal(false);
   /** 用户逐任务选择结果 */
   taskResolutions = signal<TaskResolutionMap>(new Map());
 
@@ -336,6 +360,11 @@ export class ConflictModalComponent {
 
   onSelectionChange(selections: TaskResolutionMap): void {
     this.taskResolutions.set(selections);
+  }
+
+  toggleSelectiveMode(): void {
+    this.detailsOpen.set(true);
+    this.selectiveMode.set(!this.selectiveMode());
   }
 
   canApplySuggestedResolution(): boolean {

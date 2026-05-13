@@ -425,16 +425,16 @@ export class WorkspaceModalCoordinatorService {
   private notifyConflictResolutionSuccess(action: ConflictResolutionAction): void {
     switch (action) {
       case 'local':
-        this.toast.success('已保留本地修改', '当前项目已按本地版本解决冲突');
+        this.toast.success('已保留本地修改', '冲突已在本地解决，后台会自动同步到云端');
         return;
       case 'remote':
         this.toast.success('已采用云端版本', '当前项目已切换到云端结果');
         return;
       case 'merge':
-        this.toast.success('已合并两边修改', '当前项目已保留本地与云端的有效内容');
+        this.toast.success('已合并两边修改', '冲突已在本地解决，后台会自动同步到云端');
         return;
       case 'plan':
-        this.toast.success('已按系统建议解决冲突');
+        this.toast.success('已按系统建议解决冲突', '冲突已在本地解决，后台会自动同步到云端');
         return;
     }
   }
