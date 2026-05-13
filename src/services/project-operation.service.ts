@@ -1230,7 +1230,7 @@ export class ProjectOperationService {
   }
 
   private discardStaleProjectMutations(projectId: string, ownerUserId?: string | null): void {
-    this.actionQueue.discardActions(action => {
+    const discardedCount = this.actionQueue.discardActions(action => {
       if (action.entityType === 'project' && action.entityId === projectId) {
         return true;
       }
@@ -1242,6 +1242,9 @@ export class ProjectOperationService {
 
       return false;
     });
+    if (discardedCount > 0) {
+      this.actionQueue.invalidateProjectMutationView(projectId, ownerUserId);
+    }
     if (ownerUserId) {
       this.retryQueue.removeByProjectIdForOwner(projectId, ownerUserId);
       return;

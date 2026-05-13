@@ -42,6 +42,7 @@ const mockActionQueueService = {
   settleProjectDeleteSuccessForOwner: vi.fn().mockResolvedValue(1),
   enqueueForOwner: vi.fn().mockResolvedValue('queued-owner-action'),
   getCurrentQueueViewGeneration: vi.fn(() => 1),
+  getProjectMutationViewGeneration: vi.fn(() => 0),
   isQueueViewCurrent: vi.fn(() => true),
 };
 
@@ -108,6 +109,8 @@ describe('ActionQueueProcessorsService', () => {
     mockSyncService.markSyncRecoveredIfIdle.mockReset();
     mockConflictStorageService.saveConflict.mockResolvedValue(true);
     mockActionQueueService.getCurrentQueueViewGeneration.mockReturnValue(1);
+    mockActionQueueService.getProjectMutationViewGeneration.mockReset();
+    mockActionQueueService.getProjectMutationViewGeneration.mockReturnValue(0);
     mockActionQueueService.isQueueViewCurrent.mockReturnValue(true);
     mockActionQueueService.settleProjectDeleteSuccessForOwner.mockResolvedValue(1);
 
@@ -407,6 +410,31 @@ describe('ActionQueueProcessorsService', () => {
     }));
   });
 
+  it('project:update should drop remaining task deletes when only this project mutation view becomes stale', async () => {
+    const handler = getProcessor('project:update');
+    const project = { id: 'p-project-view-stale', name: 'Test' };
+    mockActionQueueService.getProjectMutationViewGeneration
+      .mockReturnValueOnce(0)
+      .mockReturnValueOnce(0)
+      .mockReturnValueOnce(1)
+      .mockReturnValueOnce(1);
+
+    const result = await handler({
+      id: 'action-project-view-stale',
+      payload: {
+        project,
+        sourceUserId: 'test-user',
+        taskIdsToDelete: ['task-a', 'task-b'],
+      },
+    } as QueuedAction);
+
+    expect(result).toBe(true);
+    expect(mockSyncService.deleteTask).toHaveBeenCalledTimes(1);
+    expect(mockSyncService.deleteTask).toHaveBeenCalledWith('task-a', 'p-project-view-stale', 'test-user');
+    expect(mockActionQueueService.enqueueForOwner).not.toHaveBeenCalled();
+    expect(mockActionQueueService.markActionResolvedWithoutRemote).toHaveBeenCalledWith('action-project-view-stale');
+  });
+
   it('project:update should return false when userId is missing', async () => {
     mockAuthService.currentUserId.mockReturnValueOnce(null);
     const handler = getProcessor('project:update');
@@ -664,6 +692,58 @@ describe('ActionQueueProcessorsService', () => {
     } as QueuedAction);
 
     expect(result).toBe(true);
+  });
+
+  it('project:update should quietly discard stale terminal task-conflict results', async () => {
+    mockSyncService.saveProjectSmart.mockResolvedValueOnce({
+      success: false,
+      projectPushed: true,
+      failedTaskIds: ['task-stale-a'],
+      retryEnqueued: [],
+      failureReason: 'project batch sync finished with terminal conflicts',
+    });
+    mockActionQueueService.getProjectMutationViewGeneration
+      .mockReturnValueOnce(0)
+      .mockReturnValueOnce(1);
+    const handler = getProcessor('project:update');
+
+    const result = await handler({
+      id: 'action-stale-terminal',
+      payload: {
+        project: { id: 'p-stale-terminal', syncSource: 'synced' },
+        sourceUserId: 'test-user',
+      },
+    } as QueuedAction);
+
+    expect(result).toBe(true);
+    expect(mockActionQueueService.markActionResolvedWithoutRemote).toHaveBeenCalledWith('action-stale-terminal');
+    expect(mockLoggerCategory.error).not.toHaveBeenCalledWith(
+      'project:update 异常',
+      expect.objectContaining({ projectId: 'p-stale-terminal' }),
+    );
+  });
+
+  it('project:update should keep stale owner-handoff failures retryable', async () => {
+    mockSyncService.saveProjectSmart.mockResolvedValueOnce({
+      success: false,
+      projectPushed: true,
+      failedTaskIds: ['task-owner-handoff'],
+      retryEnqueued: [],
+      failureReason: 'transient network failure',
+    });
+    mockActionQueueService.isQueueViewCurrent.mockReturnValueOnce(false);
+    const handler = getProcessor('project:update');
+
+    const result = await handler({
+      id: 'action-owner-handoff-failure',
+      payload: {
+        project: { id: 'p-owner-handoff', syncSource: 'synced' },
+        sourceUserId: 'test-user',
+      },
+    } as QueuedAction);
+
+    expect(result).toBe(false);
+    expect(mockActionQueueService.markActionResolvedWithoutRemote).not.toHaveBeenCalledWith('action-owner-handoff-failure');
   });
 
   it('project:update should acknowledge RetryQueue handoff when the retry item is hidden under the source owner', async () => {

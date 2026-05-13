@@ -368,6 +368,18 @@ describe('ActionQueueService', () => {
       expect(service.queueSize()).toBe(0);
     });
 
+          it('项目冲突收口应只失效对应 project mutation 视图，不影响全局队列视图', () => {
+            setNetworkStatus(false);
+            const beforeQueueGeneration = service.getCurrentQueueViewGeneration();
+            const beforeProjectGeneration = service.getProjectMutationViewGeneration('proj-stale', 'test-user');
+
+            const nextProjectGeneration = service.invalidateProjectMutationView('proj-stale', 'test-user');
+
+            expect(nextProjectGeneration).toBe(beforeProjectGeneration + 1);
+            expect(service.getProjectMutationViewGeneration('proj-stale', 'test-user')).toBe(nextProjectGeneration);
+            expect(service.getCurrentQueueViewGeneration()).toBe(beforeQueueGeneration);
+          });
+
     it('切账号时清空当前视图不应覆盖已持久化的队列和死信', () => {
       setNetworkStatus(false);
       service.enqueue(createTestProjectAction());

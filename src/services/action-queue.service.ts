@@ -114,6 +114,9 @@ export class ActionQueueService {
   private actionProcessTokenById = new Map<string, number>();
   /** 当前可见队列/死信视图的代次；切账号或强制清空时递增，使旧处理循环失效 */
   private queueViewGeneration = 0;
+  /** project mutation 级别的局部失效代次；仅用于截断同项目的旧 project processor 收尾 */
+  private projectMutationViewGeneration = 0;
+  private projectMutationViewByKey = new Map<string, number>();
   /** 记录每次视图失效的 stale 处理策略，供旧循环返回后决定如何收口 */
   private queueInvalidations: Array<{ generation: number; stalePolicy: 'discard' | 'settle-owner' }> = [];
   /** 真实 in-flight 处理循环 token，用于切账号时立即释放旧生命周期 */
@@ -686,6 +689,35 @@ export class ActionQueueService {
     }
 
     return true;
+  }
+
+  getProjectMutationViewGeneration(projectId: string, ownerUserId?: string | null): number {
+    const key = this.getProjectMutationViewKey(projectId, ownerUserId);
+    return this.projectMutationViewByKey.get(key) ?? 0;
+  }
+
+  invalidateProjectMutationView(projectId: string, ownerUserId?: string | null): number {
+    const resolvedOwnerUserId = ownerUserId ?? this.getCurrentOwnerUserId();
+    const key = this.getProjectMutationViewKey(projectId, resolvedOwnerUserId);
+    const generation = ++this.projectMutationViewGeneration;
+    this.projectMutationViewByKey.set(key, generation);
+    if (this.projectMutationViewByKey.size > 128) {
+      const oldestKey = this.projectMutationViewByKey.keys().next().value as string | undefined;
+      if (oldestKey) {
+        this.projectMutationViewByKey.delete(oldestKey);
+      }
+    }
+
+    this.logger.debug('项目 mutation 视图已失效，旧 project processor 将停止收尾', {
+      projectId,
+      ownerUserId: resolvedOwnerUserId,
+      generation,
+    });
+    return generation;
+  }
+
+  private getProjectMutationViewKey(projectId: string, ownerUserId?: string | null): string {
+    return `${ownerUserId ?? this.getCurrentOwnerUserId()}::${projectId}`;
   }
 
   private getStaleProcessPolicy(processGeneration: number): 'discard' | 'settle-owner' {

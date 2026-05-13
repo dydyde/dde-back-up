@@ -52,6 +52,16 @@ type ProjectSyncResult = {
   terminal?: boolean;
 };
 
+type ProjectMutationContext = {
+  actionType: 'project:create' | 'project:update';
+  ownerUserId: string;
+  projectId: string;
+  queueViewGeneration: number;
+  projectMutationViewGeneration: number;
+};
+
+type ProjectMutationStaleness = 'current' | 'queue-view-stale' | 'project-view-stale';
+
 @Injectable({
   providedIn: 'root'
 })
@@ -207,7 +217,7 @@ export class ActionQueueProcessorsService {
     project: Project,
     taskIdsToDelete: string[] | undefined,
     sourceUserId: string | undefined,
-    mutationContext?: { ownerUserId: string; queueViewGeneration: number },
+    mutationContext?: ProjectMutationContext,
   ): Promise<void> {
     if (!taskIdsToDelete || taskIdsToDelete.length === 0) {
       return;
@@ -218,9 +228,15 @@ export class ActionQueueProcessorsService {
 
     for (let index = 0; index < uniqueTaskIds.length; index++) {
       const remainingTaskIds = uniqueTaskIds.slice(index);
-      if (mutationContext && !this.actionQueue.isQueueViewCurrent(mutationContext.queueViewGeneration, mutationContext.ownerUserId)) {
-        await this.handoffDeferredTaskDeletes(replayOwnerUserId, project, remainingTaskIds);
-        return;
+      if (mutationContext) {
+        const staleness = this.getProjectMutationStaleness(mutationContext);
+        if (staleness === 'queue-view-stale') {
+          await this.handoffDeferredTaskDeletes(replayOwnerUserId, project, remainingTaskIds);
+          return;
+        }
+        if (staleness === 'project-view-stale') {
+          return;
+        }
       }
 
       const currentUserId = this.authService.currentUserId();
@@ -305,31 +321,47 @@ export class ActionQueueProcessorsService {
     return false;
   }
 
-  private captureProjectMutationContext(ownerUserId: string): {
-    ownerUserId: string;
-    queueViewGeneration: number;
-  } {
+  private captureProjectMutationContext(
+    ownerUserId: string,
+    projectId: string,
+    actionType: 'project:create' | 'project:update',
+  ): ProjectMutationContext {
     return {
+      actionType,
       ownerUserId,
+      projectId,
       queueViewGeneration: this.actionQueue.getCurrentQueueViewGeneration(),
+      projectMutationViewGeneration: this.actionQueue.getProjectMutationViewGeneration(projectId, ownerUserId),
     };
   }
 
-  private isProjectMutationContextCurrent(
-    context: { ownerUserId: string; queueViewGeneration: number },
-    actionType: 'project:create' | 'project:update',
-    projectId: string
-  ): boolean {
-    if (this.actionQueue.isQueueViewCurrent(context.queueViewGeneration, context.ownerUserId)) {
-      return true;
+  private getProjectMutationStaleness(context: ProjectMutationContext): ProjectMutationStaleness {
+    if (!this.actionQueue.isQueueViewCurrent(context.queueViewGeneration, context.ownerUserId)) {
+      this.logger.debug(`${context.actionType} 结果已过期，跳过本地副作用`, {
+        projectId: context.projectId,
+        ownerUserId: context.ownerUserId,
+        queueViewGeneration: context.queueViewGeneration,
+        staleReason: 'queue-view-stale',
+      });
+      return 'queue-view-stale';
     }
 
-    this.logger.debug(`${actionType} 结果已过期，跳过本地副作用`, {
-      projectId,
-      ownerUserId: context.ownerUserId,
-      queueViewGeneration: context.queueViewGeneration,
-    });
-    return false;
+    const currentProjectMutationViewGeneration = this.actionQueue.getProjectMutationViewGeneration(
+      context.projectId,
+      context.ownerUserId,
+    );
+    if (currentProjectMutationViewGeneration !== context.projectMutationViewGeneration) {
+      this.logger.debug(`${context.actionType} 结果已过期，跳过本地副作用`, {
+        projectId: context.projectId,
+        ownerUserId: context.ownerUserId,
+        projectMutationViewGeneration: context.projectMutationViewGeneration,
+        currentProjectMutationViewGeneration,
+        staleReason: 'project-view-stale',
+      });
+      return 'project-view-stale';
+    }
+
+    return 'current';
   }
 
   private setupQueueSyncCoordination(): void {
@@ -361,7 +393,7 @@ export class ActionQueueProcessorsService {
       if (!userId) { this.logger.warn('project:update 失败：用户未登录'); return false; }
       
       const payload = action.payload as ProjectPayload;
-      const mutationContext = this.captureProjectMutationContext(userId);
+      const mutationContext = this.captureProjectMutationContext(userId, payload.project.id, 'project:update');
       if (this.shouldStopProjectMutation(action, userId, payload, 'update')) {
         return true;
       }
@@ -374,7 +406,12 @@ export class ActionQueueProcessorsService {
         if (result.success) {
           await this.replayDeferredTaskDeletes(persistedProject, payload.taskIdsToDelete, payload.sourceUserId, mutationContext);
         }
-        if (!this.isProjectMutationContextCurrent(mutationContext, 'project:update', payload.project.id)) {
+        const staleness = this.getProjectMutationStaleness(mutationContext);
+        if (staleness === 'project-view-stale') {
+          this.actionQueue.markActionResolvedWithoutRemote(action.id);
+          return true;
+        }
+        if (staleness === 'queue-view-stale') {
           return result.success || result.conflict === true || failureTransferred || result.terminal === true;
         }
         if (result.success && result.newVersion !== undefined) {
@@ -423,6 +460,14 @@ export class ActionQueueProcessorsService {
         }
         throw new Error(result.failureReason ?? 'project:update 未提供失败原因');
       } catch (error) {
+        const staleness = this.getProjectMutationStaleness(mutationContext);
+        if (staleness === 'project-view-stale') {
+          this.actionQueue.markActionResolvedWithoutRemote(action.id);
+          return true;
+        }
+        if (staleness === 'queue-view-stale') {
+          return false;
+        }
         this.logger.error('project:update 异常', { error, projectId: payload.project.id });
         return false;
       }
@@ -463,7 +508,7 @@ export class ActionQueueProcessorsService {
       if (!userId) { this.logger.warn('project:create 失败：用户未登录'); return false; }
       
       const payload = action.payload as ProjectPayload;
-      const mutationContext = this.captureProjectMutationContext(userId);
+      const mutationContext = this.captureProjectMutationContext(userId, payload.project.id, 'project:create');
       if (this.shouldStopProjectMutation(action, userId, payload, 'create')) {
         return true;
       }
@@ -476,7 +521,12 @@ export class ActionQueueProcessorsService {
         if (result.success) {
           await this.replayDeferredTaskDeletes(persistedProject, payload.taskIdsToDelete, payload.sourceUserId, mutationContext);
         }
-        if (!this.isProjectMutationContextCurrent(mutationContext, 'project:create', payload.project.id)) {
+        const staleness = this.getProjectMutationStaleness(mutationContext);
+        if (staleness === 'project-view-stale') {
+          this.actionQueue.markActionResolvedWithoutRemote(action.id);
+          return true;
+        }
+        if (staleness === 'queue-view-stale') {
           return result.success || result.conflict === true || failureTransferred || result.terminal === true;
         }
         if (result.success && result.newVersion !== undefined) {
@@ -525,6 +575,14 @@ export class ActionQueueProcessorsService {
         }
         throw new Error(result.failureReason ?? 'project:create 未提供失败原因');
       } catch (error) {
+        const staleness = this.getProjectMutationStaleness(mutationContext);
+        if (staleness === 'project-view-stale') {
+          this.actionQueue.markActionResolvedWithoutRemote(action.id);
+          return true;
+        }
+        if (staleness === 'queue-view-stale') {
+          return false;
+        }
         this.logger.error('project:create 异常', { error, projectId: payload.project.id });
         return false;
       }
@@ -656,12 +714,12 @@ export class ActionQueueProcessorsService {
 
   private async persistConflictWithoutRemote(
     localProject: Project,
-    mutationContext: { ownerUserId: string; queueViewGeneration: number },
+    mutationContext: ProjectMutationContext,
     actionType: 'project:create' | 'project:update',
     pendingTaskDeleteIds?: string[],
   ): Promise<boolean> {
     const remoteProject = await this.syncService.loadFullProjectOptimized(localProject.id).catch(() => null);
-    if (!this.isProjectMutationContextCurrent(mutationContext, actionType, localProject.id)) {
+    if (this.getProjectMutationStaleness(mutationContext) !== 'current') {
       return true;
     }
 
