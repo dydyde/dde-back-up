@@ -697,7 +697,10 @@ describe('SimpleSyncService', () => {
       startRuntime: vi.fn() as MockFn,
       stopRuntime: vi.fn() as MockFn,
       handleSupabaseConnectivityChange: vi.fn() as MockFn,
-      probeRemoteReachability: vi.fn().mockResolvedValue(true) as MockFn,
+      // 委托给 mockSupabase.probeReachability 以保持测试兼容性
+      probeRemoteReachability: vi.fn(async (reason: string, timeoutMs?: number, force?: boolean) => {
+        return await mockSupabase.probeReachability({ timeoutMs, force });
+      }) as MockFn,
       scheduleConnectivityRecovery: vi.fn() as MockFn,
       restoreRemoteConnectivity: vi.fn().mockResolvedValue(undefined) as MockFn,
     };
