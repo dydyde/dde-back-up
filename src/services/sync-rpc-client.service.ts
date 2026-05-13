@@ -19,6 +19,7 @@
  *
  * Feature flag：`NG_APP_SYNC_RPC_ENABLED` (`environment.syncRpcEnabled`)。默认 false。
  * task / connection / blackbox push 路径在 flag 开启后通过本服务写入；默认 false 保持现有 PostgREST 路径。
+ * 对已迁移环境，调用方可先执行 `checkProtocol()` 做能力探测，探测成功后会自动开启 RPC 写入。
  */
 
 import { Injectable, inject, computed, signal } from '@angular/core';
@@ -75,8 +76,17 @@ export class SyncRpcClientService {
   /** 当前客户端 protocol 版本（来自 environment，未配置时默认 1）。 */
   private readonly clientProtocolVersion = signal<number>(this.readClientProtocolVersion());
 
+  /** 当前客户端 deployment epoch（来自 environment，未配置时默认 0）。 */
+  private readonly clientDeploymentEpoch = signal<number>(this.readDeploymentEpoch());
+
   /** Feature flag（环境标志）。 */
   private readonly featureEnabled = signal<boolean>(this.readFeatureFlag());
+
+  /** protocol 探测结果缓存；undefined 表示尚未探测。 */
+  private protocolProbeResult: SyncProtocolInfo | null | undefined;
+
+  /** in-flight protocol 探测去重。 */
+  private protocolProbePromise: Promise<SyncProtocolInfo | null> | null = null;
 
   /** 上次拉到的服务端 protocol 信息（启动时探测一次）。 */
   private readonly serverProtocol = signal<SyncProtocolInfo | null>(null);
@@ -85,7 +95,8 @@ export class SyncRpcClientService {
   readonly isClientRejected = computed<boolean>(() => {
     const server = this.serverProtocol();
     if (server == null) return false;
-    return server.minProtocolVersion > this.clientProtocolVersion();
+    return server.minProtocolVersion > this.clientProtocolVersion()
+      || server.deploymentEpoch > this.clientDeploymentEpoch();
   });
 
   readonly isFeatureEnabled = computed<boolean>(() => this.featureEnabled());
@@ -97,28 +108,58 @@ export class SyncRpcClientService {
    * - 服务端拒绝时调用方应停止 cloud push 并显示更新提示。
    */
   async checkProtocol(): Promise<SyncProtocolInfo | null> {
-    if (!this.featureEnabled()) return null;
+    if (this.protocolProbeResult !== undefined) {
+      return this.protocolProbeResult;
+    }
+
+    if (this.protocolProbePromise) {
+      return this.protocolProbePromise;
+    }
+
+    this.protocolProbePromise = this.checkProtocolInternal();
+    return this.protocolProbePromise;
+  }
+
+  private async checkProtocolInternal(): Promise<SyncProtocolInfo | null> {
     try {
       const client = await this.supabase.clientAsync();
-      if (client == null) return null;
+      if (client == null) {
+        this.protocolProbeResult = null;
+        return null;
+      }
       const { data, error } = await client.rpc('sync_check_protocol' as never);
       if (error) {
         this.logger.warn(`sync_check_protocol_failed: ${error.message}`);
+        this.protocolProbeResult = null;
         return null;
       }
       const parsed = this.parseProtocolInfo(data);
       if (parsed) {
         this.serverProtocol.set(parsed);
-        if (parsed.minProtocolVersion > this.clientProtocolVersion()) {
-          this.logger.info(`sync_protocol_rejected: server_min=${parsed.minProtocolVersion}, client=${this.clientProtocolVersion()}`);
+        const accepted = parsed.minProtocolVersion <= this.clientProtocolVersion()
+          && parsed.deploymentEpoch <= this.clientDeploymentEpoch();
+        if (!this.featureEnabled() && accepted) {
+          this.featureEnabled.set(true);
+          this.logger.info(
+            `sync_rpc_auto_enabled: server_min=${parsed.minProtocolVersion}, client=${this.clientProtocolVersion()}, server_epoch=${parsed.deploymentEpoch}, client_epoch=${this.clientDeploymentEpoch()}`,
+          );
+        }
+        if (!accepted) {
+          this.logger.info(
+            `sync_protocol_rejected: server_min=${parsed.minProtocolVersion}, client=${this.clientProtocolVersion()}, server_epoch=${parsed.deploymentEpoch}, client_epoch=${this.clientDeploymentEpoch()}`,
+          );
         }
       }
+      this.protocolProbeResult = parsed;
       return parsed;
     } catch (err) {
       this.logger.warn(`sync_check_protocol_threw: ${(err as Error)?.message ?? err}`);
+      this.protocolProbeResult = null;
       // 启动探测失败不应阻塞应用启动；返回 null 让调用方按未探测处理。
       // eslint-disable-next-line no-restricted-syntax
       return null;
+    } finally {
+      this.protocolProbePromise = null;
     }
   }
 
@@ -402,5 +443,12 @@ export class SyncRpcClientService {
     const v = env.syncProtocolVersion;
     if (typeof v === 'number' && v > 0) return v;
     return 1;
+  }
+
+  private readDeploymentEpoch(): number {
+    const env = environment as unknown as SyncRpcEnvironmentSlice;
+    const value = env.deploymentEpoch;
+    if (typeof value === 'number' && value >= 0) return value;
+    return 0;
   }
 }

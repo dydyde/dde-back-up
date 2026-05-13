@@ -1475,6 +1475,56 @@ export class SimpleSyncService {
     return this.syncRpcClient?.isFeatureEnabled() === true && this.syncRpcClient.isClientRejected() === false;
   }
 
+  private async primeProjectSyncRpcCapability(): Promise<void> {
+    if (!this.syncRpcClient) {
+      return;
+    }
+
+    if (this.shouldUseSyncRpc() || this.syncRpcClient.isClientRejected() === true) {
+      return;
+    }
+
+    await this.syncRpcClient.checkProtocol();
+  }
+
+  private throwProjectSyncRpcClientRejected(projectId: string): never {
+    const message = '当前客户端同步协议已过期，请刷新后重试';
+    const result: SyncRpcResult = {
+      status: 'client-version-rejected',
+      raw: null,
+    };
+
+    this.syncStateService.setSyncError(message);
+    this.sentryLazyLoader.captureMessage('sync_rpc_project_rejected', {
+      level: 'warning',
+      tags: { operation: 'pushProject', entityType: 'project', status: result.status },
+      extra: { projectId },
+    });
+
+    throw this.createProjectRpcTerminalError(projectId, result, message);
+  }
+
+  private buildProjectDeleteClientRejectedFailure(
+    projectId: string,
+    userId: string,
+  ): Result<void, OperationError> {
+    const message = '当前客户端同步协议已过期，请刷新后重试';
+
+    this.syncStateService.setSyncError(message);
+    this.sentryLazyLoader.captureMessage('sync_rpc_project_delete_rejected', {
+      level: 'warning',
+      tags: { operation: 'deleteProjectFromCloud', entityType: 'project', status: 'client-version-rejected' },
+      extra: { projectId },
+    });
+
+    return failure(ErrorCodes.OPERATION_FAILED, message, {
+      projectId,
+      userId,
+      retryable: false,
+      reason: 'client_version_rejected',
+    });
+  }
+
   private createSyncRpcOperationId(): string {
     return globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
   }
@@ -1744,6 +1794,12 @@ export class SimpleSyncService {
     sourceUserId?: string,
     taskIdsToDelete?: string[],
   ): Promise<boolean> {
+    await this.primeProjectSyncRpcCapability();
+
+    if (this.syncRpcClient?.isClientRejected() === true) {
+      this.throwProjectSyncRpcClientRejected(project.id);
+    }
+
     if (this.shouldUseSyncRpc()) {
       const result = await this.syncRpcClient!.upsertProject({
         operationId: this.createSyncRpcOperationId(),
@@ -2820,6 +2876,12 @@ export class SimpleSyncService {
       });
     }
 
+    await this.primeProjectSyncRpcCapability();
+
+    if (this.syncRpcClient?.isClientRejected() === true) {
+      return this.buildProjectDeleteClientRejectedFailure(projectId, userId);
+    }
+
     if (this.shouldUseSyncRpc()) {
       const result = await this.syncRpcClient!.deleteProject({
         operationId: this.createSyncRpcOperationId(),
@@ -2867,7 +2929,7 @@ export class SimpleSyncService {
       return failure(isConflict ? ErrorCodes.SYNC_CONFLICT : ErrorCodes.OPERATION_FAILED, message, {
         projectId,
         userId,
-        retryable: result.status === 'client-version-rejected',
+        retryable: false,
         reason: result.reason,
       });
     }

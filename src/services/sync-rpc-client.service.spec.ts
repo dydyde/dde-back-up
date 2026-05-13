@@ -70,15 +70,56 @@ describe('SyncRpcClientService', () => {
     env.canonicalOrigin = originalEnv.canonicalOrigin;
   });
 
-  it('checkProtocol 在 feature 关闭时直接返回 null（不发起 RPC）', async () => {
+  it('checkProtocol 在 feature 关闭但服务端支持时应自动开启 RPC', async () => {
     const env = environment as unknown as MutableEnv;
     env.syncRpcEnabled = false;
 
-    const rpc = vi.fn(async () => ({ data: { minProtocolVersion: 2 }, error: null }));
+    const rpc = vi.fn(async () => ({ data: { minProtocolVersion: 1 }, error: null }));
+    const service = buildService(rpc as never);
+    const result = await service.checkProtocol();
+    expect(result).toEqual({ minProtocolVersion: 1, deploymentEpoch: 0 });
+    expect(rpc).toHaveBeenCalledTimes(1);
+    expect(service.isFeatureEnabled()).toBe(true);
+  });
+
+  it('checkProtocol 在 feature 关闭且探测失败时保持关闭', async () => {
+    const env = environment as unknown as MutableEnv;
+    env.syncRpcEnabled = false;
+
+    const rpc = vi.fn(async () => ({ data: null, error: { message: 'pgrst-404' } }));
     const service = buildService(rpc as never);
     const result = await service.checkProtocol();
     expect(result).toBeNull();
-    expect(rpc).not.toHaveBeenCalled();
+    expect(rpc).toHaveBeenCalledTimes(1);
+    expect(service.isFeatureEnabled()).toBe(false);
+  });
+
+  it('checkProtocol 在 deploymentEpoch 落后时不应自动开启 RPC', async () => {
+    const env = environment as unknown as MutableEnv;
+    env.syncRpcEnabled = false;
+    env.syncProtocolVersion = 1;
+    env.deploymentEpoch = 0;
+
+    const rpc = vi.fn(async () => ({ data: { minProtocolVersion: 1, deploymentEpoch: 3 }, error: null }));
+    const service = buildService(rpc as never);
+    const result = await service.checkProtocol();
+
+    expect(result).toEqual({ minProtocolVersion: 1, deploymentEpoch: 3 });
+    expect(service.isFeatureEnabled()).toBe(false);
+    expect(service.isClientRejected()).toBe(true);
+  });
+
+  it('checkProtocol 对失败探测结果应做缓存，避免重复阻塞写入路径', async () => {
+    const env = environment as unknown as MutableEnv;
+    env.syncRpcEnabled = false;
+
+    const rpc = vi.fn(async () => ({ data: null, error: { message: 'pgrst-404' } }));
+    const service = buildService(rpc as never);
+
+    await expect(service.checkProtocol()).resolves.toBeNull();
+    await expect(service.checkProtocol()).resolves.toBeNull();
+
+    expect(rpc).toHaveBeenCalledTimes(1);
   });
 
   it('checkProtocol 解析 minProtocolVersion + deploymentEpoch', async () => {

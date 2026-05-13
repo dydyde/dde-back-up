@@ -506,6 +506,7 @@ describe('SimpleSyncService', () => {
     mockSyncRpcClient = {
       isFeatureEnabled: vi.fn(() => false),
       isClientRejected: vi.fn(() => false),
+      checkProtocol: vi.fn().mockResolvedValue(null),
       upsertProject: vi.fn().mockResolvedValue({
         status: 'applied',
         entityId: 'project-1',
@@ -1053,6 +1054,30 @@ describe('SimpleSyncService', () => {
       expect(project.updatedAt).toBe('2026-04-30T06:00:00.000Z');
     });
 
+    it('pushProject 在 feature 默认关闭但探测到 RPC 可用时仍应走 sync_upsert_project', async () => {
+      const project = createMockProject({
+        id: 'project-rpc-probed',
+        updatedAt: '2026-04-30T05:30:00.000Z',
+      });
+
+      mockSyncRpcClient.isFeatureEnabled.mockReturnValueOnce(false);
+      mockSyncRpcClient.checkProtocol.mockImplementationOnce(async () => {
+        mockSyncRpcClient.isFeatureEnabled.mockReturnValue(true);
+        return { minProtocolVersion: 1, deploymentEpoch: 0 };
+      });
+
+      const result = await service.pushProject(project);
+
+      expect(result).toBe(true);
+      expect(mockSyncRpcClient.checkProtocol).toHaveBeenCalledTimes(1);
+      expect(mockSyncRpcClient.upsertProject).toHaveBeenCalledWith(expect.objectContaining({
+        project,
+        ownerId: 'test-user-id',
+        baseUpdatedAt: '2026-04-30T05:30:00.000Z',
+      }));
+      expect(mockClient.from).not.toHaveBeenCalledWith('projects');
+    });
+
     it('pushProject 直接 upsert 成功后应把服务端 canonical updated_at 写回本地项目', async () => {
       const serverUpdatedAt = '2026-04-30T06:15:00.000Z';
       mockSyncRpcClient.isFeatureEnabled.mockReturnValue(false);
@@ -1284,6 +1309,33 @@ describe('SimpleSyncService', () => {
       });
       expect(mockRetryQueueService.addDurably).not.toHaveBeenCalled();
       expect(service.state().syncError).toBe('当前客户端同步协议已过期，请刷新后重试');
+    });
+
+    it('pushProjectWithResult 在 feature 默认关闭但 probe 拒绝客户端时不应回退旧项目写入路径', async () => {
+      const project = createMockProject({
+        id: 'project-rpc-probe-rejected',
+        updatedAt: '2026-04-30T05:20:00.000Z',
+      });
+
+      mockSyncRpcClient.isFeatureEnabled.mockReturnValue(false);
+      mockSyncRpcClient.isClientRejected.mockReturnValue(false);
+      mockSyncRpcClient.checkProtocol.mockImplementationOnce(async () => {
+        mockSyncRpcClient.isClientRejected.mockReturnValue(true);
+        return { minProtocolVersion: 3, deploymentEpoch: 0 };
+      });
+
+      const result = await (service as unknown as {
+        pushProjectWithResult: (project: Project, fromRetryQueue?: boolean, sourceUserId?: string, taskIdsToDelete?: string[]) => Promise<{ success: boolean; conflict?: boolean; remoteData?: Project; retryEnqueued?: boolean; failureReason?: string; terminal?: boolean }>;
+      }).pushProjectWithResult(project, false, 'test-user-id');
+
+      expect(result).toEqual({
+        success: false,
+        retryEnqueued: false,
+        failureReason: '当前客户端同步协议已过期，请刷新后重试',
+        terminal: true,
+      });
+      expect(mockSyncRpcClient.upsertProject).not.toHaveBeenCalled();
+      expect(mockClient.from).not.toHaveBeenCalledWith('projects');
     });
 
     it('pushProjectWithResult 在 RPC 返回 supabase_client_unavailable 时应继续写入 RetryQueue', async () => {
@@ -5266,6 +5318,31 @@ describe('SimpleSyncService', () => {
         projectId: 'project-1',
         baseUpdatedAt: null,
       }));
+      expect(mockClient.rpc).not.toHaveBeenCalledWith('soft_delete_project', expect.anything());
+    });
+
+    it('deleteProjectFromCloud 在 feature 默认关闭但 probe 拒绝客户端时不应回退 soft_delete_project', async () => {
+      mockSupabase.isConfigured = true;
+      mockSupabase.clientAsync.mockResolvedValue(mockClient);
+      mockClient.auth.getSession = vi.fn().mockResolvedValue({
+        data: { session: { user: { id: 'user-1' } } },
+      });
+      mockSyncRpcClient.isFeatureEnabled.mockReturnValue(false);
+      mockSyncRpcClient.isClientRejected.mockReturnValue(false);
+      mockSyncRpcClient.checkProtocol.mockImplementationOnce(async () => {
+        mockSyncRpcClient.isClientRejected.mockReturnValue(true);
+        return { minProtocolVersion: 3, deploymentEpoch: 0 };
+      });
+      mockClient.rpc = vi.fn().mockResolvedValue({ data: true, error: null });
+
+      const result = await service.deleteProjectFromCloud('project-1', 'user-1');
+
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error.details?.retryable).toBe(false);
+      }
+      expect(service.state().syncError).toBe('当前客户端同步协议已过期，请刷新后重试');
+      expect(mockSyncRpcClient.deleteProject).not.toHaveBeenCalled();
       expect(mockClient.rpc).not.toHaveBeenCalledWith('soft_delete_project', expect.anything());
     });
 
