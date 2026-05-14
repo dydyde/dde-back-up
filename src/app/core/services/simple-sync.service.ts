@@ -499,6 +499,10 @@ export class SimpleSyncService {
     await this.realtimePollingService.suspendTransport();
   }
 
+  async restoreRemoteConnectivity(reason: string): Promise<void> {
+    await this.connectivityRecovery.restoreRemoteConnectivity(reason);
+  }
+
   private handleSupabaseConnectivityChange(change: SupabaseConnectivityChange): void {
     this.connectivityRecovery.handleSupabaseConnectivityChange(change, this.syncState().isOnline);
   }
@@ -602,6 +606,8 @@ export class SimpleSyncService {
         return;
       }
     }
+
+    this.connectivityRecovery.cancelScheduledRecovery();
 
     const remoteReady = await this.connectivityRecovery.probeRemoteReachability(
       reason,

@@ -24,6 +24,7 @@ import { ToastService } from './toast.service';
 import { SentryAlertService } from './sentry-alert.service';
 import { SentryLazyLoaderService } from './sentry-lazy-loader.service';
 import { NetworkAwarenessService } from './network-awareness.service';
+import { QueueBackupService } from './queue-backup.service';
 import { RetryQueueService } from '../app/core/services/sync/retry-queue.service';
 import { WriteGuardService } from './write-guard.service';
 import { SyncWriterLeaseService } from './sync-writer-lease.service';
@@ -60,6 +61,11 @@ const mockSentryAlertService = {
 
 const mockNetworkAwarenessService = {
   setStoragePressure: vi.fn(),
+};
+
+const mockQueueBackupService = {
+  backupQueue: vi.fn().mockResolvedValue(true),
+  restoreQueue: vi.fn().mockResolvedValue(null),
 };
 
 // 模拟 RetryQueueService（P2-15 跨队列去重）
@@ -295,6 +301,7 @@ describe('ActionQueueService', () => {
         { provide: SentryAlertService, useValue: mockSentryAlertService },
         { provide: SentryLazyLoaderService, useValue: mockSentryLazyLoaderService },
         { provide: NetworkAwarenessService, useValue: mockNetworkAwarenessService },
+        { provide: QueueBackupService, useValue: mockQueueBackupService },
         { provide: RetryQueueService, useValue: mockRetryQueueService },
         { provide: WriteGuardService, useValue: mockWriteGuardService },
         { provide: SyncWriterLeaseService, useValue: mockSyncWriterLeaseService },

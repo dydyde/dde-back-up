@@ -96,6 +96,10 @@ export class ConnectivityRecoveryService {
     this.connectivityRecoveryTimer = null;
   }
 
+  cancelScheduledRecovery(): void {
+    this.clearConnectivityRecoveryTimer();
+  }
+
   /**
    * 探测远端可达性
    */
