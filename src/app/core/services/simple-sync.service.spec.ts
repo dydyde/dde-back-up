@@ -45,6 +45,7 @@ import {
   ConnectionSyncOperationsService,
   RetryQueueService,
   SyncStateService,
+  ConnectivityRecoveryService,
 } from './sync';
 import type { RetryQueueItem } from './sync';
 import { Task, Project, Connection } from '../../../models';
@@ -692,7 +693,19 @@ describe('SimpleSyncService', () => {
       checkCapacityWarning: vi.fn() as MockFn,
       getTypeBreakdown: vi.fn().mockReturnValue({ task: 0, project: 0, connection: 0 }) as MockFn,
     };
-    
+
+    const mockConnectivityRecovery = {
+      startRuntime: vi.fn() as MockFn,
+      stopRuntime: vi.fn() as MockFn,
+      handleSupabaseConnectivityChange: vi.fn() as MockFn,
+      // 委托给 mockSupabase.probeReachability 以保持测试兼容性
+      probeRemoteReachability: vi.fn(async (reason: string, timeoutMs?: number, force?: boolean) => {
+        return await mockSupabase.probeReachability({ timeoutMs, force });
+      }) as MockFn,
+      scheduleConnectivityRecovery: vi.fn() as MockFn,
+      restoreRemoteConnectivity: vi.fn().mockResolvedValue(undefined) as MockFn,
+    };
+
     const injector = Injector.create({
       providers: [
         { provide: SupabaseClientService, useValue: mockSupabase },
@@ -723,6 +736,7 @@ describe('SimpleSyncService', () => {
         { provide: RetryQueueService, useValue: mockRetryQueueService },
         { provide: SyncStateService, useClass: SyncStateService },
         { provide: BlackBoxSyncService, useValue: mockBlackBoxSync },
+        { provide: ConnectivityRecoveryService, useValue: mockConnectivityRecovery },
         // Sentry 懒加载服务 mock
         { provide: SentryLazyLoaderService, useValue: mockSentryLazyLoaderService }
       ]

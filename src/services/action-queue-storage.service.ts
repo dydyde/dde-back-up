@@ -17,16 +17,12 @@ import { ToastService } from './toast.service';
 import { SentryLazyLoaderService } from './sentry-lazy-loader.service';
 import { NetworkAwarenessService } from './network-awareness.service';
 import { AuthService } from './auth.service';
+import { QueueBackupService, type LegacyQueueReviewItem } from './queue-backup.service';
 import { DeadLetterItem, QueuedAction, TaskDeletePayload, TaskPayload } from './action-queue.types';
 import {
   getRemainingBrowserNetworkResumeDelayMs,
   isBrowserNetworkSuspendedWindow,
 } from '../utils/browser-network-suspension';
-
-// ========== IndexedDB 备份支持 ==========
-const QUEUE_BACKUP_DB_NAME = 'nanoflow-queue-backup';
-const QUEUE_BACKUP_DB_VERSION = 1;
-const QUEUE_BACKUP_STORE_NAME = 'queue-backup';
 
 /**
  * 操作队列本地配置
@@ -102,6 +98,7 @@ export class ActionQueueStorageService {
   private readonly sentryLazyLoader = inject(SentryLazyLoaderService);
   private readonly networkAwareness = inject(NetworkAwarenessService);
   private readonly authService = inject(AuthService);
+  private readonly queueBackup = inject(QueueBackupService);
 
   // ========== 死信队列 ==========
   readonly deadLetterQueue = signal<DeadLetterItem[]>([]);
@@ -188,10 +185,6 @@ export class ActionQueueStorageService {
     return `${baseKey}.${ownerUserId}`;
   }
 
-  private getQueueBackupRecordId(ownerUserId = this.getCurrentOwnerUserId()): string {
-    return `queue:${ownerUserId}`;
-  }
-
   private getLegacyReviewStorageKey(ownerUserId = this.getCurrentOwnerUserId()): string {
     return `${this.LEGACY_REVIEW_STORAGE_KEY_PREFIX}${ownerUserId}`;
   }
@@ -260,7 +253,12 @@ export class ActionQueueStorageService {
       return localSnapshot.queue;
     }
 
-    const backupQueue = await this.restoreQueueFromIndexedDB(ownerUserId);
+    const backupQueue = await this.queueBackup.restoreQueue(ownerUserId, (legacyItems) => {
+      this.quarantineLegacyQueueForReview(
+        legacyItems.map((item) => item.action),
+        'legacy-idb-backup'
+      );
+    });
     return backupQueue ?? [];
   }
 
@@ -284,7 +282,7 @@ export class ActionQueueStorageService {
       }
     }
 
-    const backupSucceeded = await this.backupQueueToIndexedDB(queue, ownerUserId);
+    const backupSucceeded = await this.queueBackup.backupQueue(queue, ownerUserId);
     if (!localSnapshotSaved && backupSucceeded) {
       this.invalidateLocalQueueSnapshot(ownerUserId);
       return;
@@ -1105,7 +1103,7 @@ export class ActionQueueStorageService {
         this.logger.warn('LocalStorage 配额不足，启用队列冻结保护');
         // 同步冻结写入，防止后续操作在备份完成前继续写入
         this.freezeQueueWrites('quota_exceeded');
-        void this.backupQueueToIndexedDB(currentQueue).then(success => {
+        void this.queueBackup.backupQueue(currentQueue, this.getCurrentOwnerUserId()).then(success => {
           if (success) {
             this.invalidateLocalQueueSnapshot();
             this.toast.warning('存储空间不足', '同步队列已冻结。请释放浏览器存储后继续写入。', {
@@ -1143,7 +1141,12 @@ export class ActionQueueStorageService {
       }
 
       // localStorage 为空，尝试从 IndexedDB 恢复
-      void this.restoreQueueFromIndexedDB().then(backupQueue => {
+      void this.queueBackup.restoreQueue(this.getCurrentOwnerUserId(), (legacyItems) => {
+        this.quarantineLegacyQueueForReview(
+          legacyItems.map((item) => item.action),
+          'legacy-idb-backup'
+        );
+      }).then(backupQueue => {
         if (restoreGeneration !== this.queueRestoreGeneration || restoreOwnerUserId !== this.getCurrentOwnerUserId()) {
           this.logger.debug('忽略过期的队列备份恢复结果', { restoreOwnerUserId });
           return;
@@ -1211,7 +1214,7 @@ export class ActionQueueStorageService {
     }
   }
 
-  // ========== IndexedDB 备份（私有） ==========
+  // ========== 存储失败逃生模式 ==========
 
   private triggerStorageFailureEscapeMode(): void {
     this.logger.error('【存储灾难】localStorage 和 IndexedDB 均不可用，进入逃生模式');
@@ -1233,99 +1236,6 @@ export class ActionQueueStorageService {
         this.logger.error('存储失败回调执行异常', e);
       }
     }
-  }
-
-  private async backupQueueToIndexedDB(
-    queue: QueuedAction[],
-    ownerUserId = this.getCurrentOwnerUserId()
-  ): Promise<boolean> {
-    if (typeof indexedDB === 'undefined') return false;
-
-    try {
-      const recordId = this.getQueueBackupRecordId(ownerUserId);
-      const db = await this.openQueueBackupDb();
-      return new Promise((resolve) => {
-        const transaction = db.transaction([QUEUE_BACKUP_STORE_NAME], 'readwrite');
-        const store = transaction.objectStore(QUEUE_BACKUP_STORE_NAME);
-        const putRequest = store.put({ id: recordId, ownerUserId, actions: queue, savedAt: new Date().toISOString() });
-        putRequest.onsuccess = () => {
-          db.close();
-          this.logger.info('队列已备份到 IndexedDB', { count: queue.length, ownerUserId });
-          resolve(true);
-        };
-        putRequest.onerror = () => {
-          db.close();
-          this.logger.error('IndexedDB 写入失败', putRequest.error);
-          resolve(false);
-        };
-      });
-    } catch (e) {
-      this.logger.error('IndexedDB 备份异常', e);
-      return false;
-    }
-  }
-
-  private async restoreQueueFromIndexedDB(
-    ownerUserId = this.getCurrentOwnerUserId()
-  ): Promise<QueuedAction[] | null> {
-    if (typeof indexedDB === 'undefined') return null;
-
-    try {
-      const recordId = this.getQueueBackupRecordId(ownerUserId);
-      const db = await this.openQueueBackupDb();
-      return new Promise((resolve) => {
-        const transaction = db.transaction([QUEUE_BACKUP_STORE_NAME], 'readonly');
-        const store = transaction.objectStore(QUEUE_BACKUP_STORE_NAME);
-        const request = store.get(recordId);
-        request.onsuccess = () => {
-          const data = request.result as { id: string; actions: QueuedAction[]; savedAt: string } | undefined;
-          if (data?.actions) {
-            db.close();
-            this.logger.info('从 IndexedDB 恢复队列备份', { count: data.actions.length, savedAt: data.savedAt });
-            resolve(data.actions);
-            return;
-          }
-
-          const legacyRequest = store.get(this.LEGACY_QUEUE_BACKUP_RECORD_ID);
-          legacyRequest.onsuccess = () => {
-            const legacyData = legacyRequest.result as { id: string; actions: QueuedAction[]; savedAt: string } | undefined;
-            db.close();
-            if (legacyData?.actions && legacyData.actions.length > 0) {
-              this.quarantineLegacyQueueForReview(legacyData.actions, 'legacy-idb-backup');
-            }
-            resolve(null);
-          };
-          legacyRequest.onerror = () => {
-            db.close();
-            this.logger.warn('从 IndexedDB 读取 legacy 备份失败', legacyRequest.error);
-            resolve(null);
-          };
-        };
-        request.onerror = () => {
-          db.close();
-          this.logger.warn('从 IndexedDB 读取备份失败', request.error);
-          resolve(null);
-        };
-      });
-    } catch (e) {
-      this.logger.warn('IndexedDB 恢复异常', e);
-      // eslint-disable-next-line no-restricted-syntax -- 备份恢复失败时返回 null 交由上层维持当前内存队列
-      return null;
-    }
-  }
-
-  private openQueueBackupDb(): Promise<IDBDatabase> {
-    return new Promise((resolve, reject) => {
-      const request = indexedDB.open(QUEUE_BACKUP_DB_NAME, QUEUE_BACKUP_DB_VERSION);
-      request.onerror = () => reject(request.error);
-      request.onsuccess = () => resolve(request.result);
-      request.onupgradeneeded = (event) => {
-        const db = (event.target as IDBOpenDBRequest).result;
-        if (!db.objectStoreNames.contains(QUEUE_BACKUP_STORE_NAME)) {
-          db.createObjectStore(QUEUE_BACKUP_STORE_NAME, { keyPath: 'id' });
-        }
-      };
-    });
   }
 
   // ========== 状态重置 ==========
