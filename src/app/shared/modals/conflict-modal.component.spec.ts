@@ -1,6 +1,5 @@
-import { Component, EventEmitter, Input, Output } from '@angular/core';
+import { Component, EventEmitter, Input, Output, ViewChild } from '@angular/core';
 import { TestBed, type ComponentFixture } from '@angular/core/testing';
-import { By } from '@angular/platform-browser';
 import { describe, expect, it, beforeEach, vi } from 'vitest';
 import type { Project, Task } from '../../../models';
 import {
@@ -9,6 +8,7 @@ import {
 } from '../../../services/conflict-auto-resolver.service';
 import { ConflictTaskDiffComponent } from '../components/conflict-task-diff.component';
 import { ConflictModalComponent } from './conflict-modal.component';
+import { type ConflictResolutionPlan } from '../../../services/conflict-resolution.types';
 
 @Component({
   selector: 'app-conflict-task-diff',
@@ -22,14 +22,6 @@ class ConflictTaskDiffStubComponent {
   @Input() recommendations = [];
   @Output() selectionChange = new EventEmitter<Map<string, 'local' | 'remote'>>();
 }
-
-@Component({
-  selector: 'app-conflict-modal-host',
-  standalone: true,
-  imports: [ConflictModalComponent],
-  template: `<app-conflict-modal />`,
-})
-class ConflictModalHostComponent {}
 
 function createTask(overrides: Partial<Task> = {}): Task {
   return {
@@ -88,15 +80,15 @@ function createAutoReport(): AutoResolutionReport {
   };
 }
 
-function getByTestId<T extends HTMLElement>(fixture: ComponentFixture<ConflictModalHostComponent>, testId: string): T {
+function getByTestId<T extends HTMLElement>(fixture: ComponentFixture<unknown>, testId: string): T {
   const element = fixture.nativeElement.querySelector(`[data-testid="${testId}"]`) as T | null;
   expect(element).not.toBeNull();
   return element as T;
 }
 
 describe('ConflictModalComponent', () => {
-  let fixture: ComponentFixture<ConflictModalHostComponent>;
-  let modalComponent: ConflictModalComponent;
+  let fixture: ComponentFixture<HostComponent>;
+  let host: HostComponent;
   const mockAutoResolver = {
     analyze: vi.fn(() => createAutoReport()),
   };
@@ -110,13 +102,14 @@ describe('ConflictModalComponent', () => {
     });
 
     await TestBed.configureTestingModule({
-      imports: [ConflictModalHostComponent],
+      imports: [HostComponent],
       providers: [
         { provide: ConflictAutoResolverService, useValue: mockAutoResolver },
       ],
     }).compileComponents();
 
-    fixture = TestBed.createComponent(ConflictModalHostComponent);
+    fixture = TestBed.createComponent(HostComponent);
+    host = fixture.componentInstance;
 
     const localTask = createTask({
       id: 'task-1',
@@ -131,15 +124,11 @@ describe('ConflictModalComponent', () => {
       updatedAt: '2026-05-12T20:20:00.000Z',
     });
 
-    modalComponent = fixture.debugElement.query(By.directive(ConflictModalComponent)).componentInstance as ConflictModalComponent;
-
-    Object.assign(modalComponent, {
-      conflictData: () => ({
+    host.conflictData = {
       projectId: 'project-1',
       localProject: createProject('project-1', '蚯蚓养殖', '2026-05-13T10:22:00.000Z', [localTask]),
       remoteProject: createProject('project-1', '蚯蚓养殖', '2026-05-12T20:20:00.000Z', [remoteTask]),
-      }),
-    });
+    };
     fixture.detectChanges();
   });
 
@@ -149,15 +138,15 @@ describe('ConflictModalComponent', () => {
     const resolveMergeSpy = vi.fn();
     const cancelSpy = vi.fn();
 
-    modalComponent.resolveLocal.subscribe(resolveLocalSpy);
-    modalComponent.resolveRemote.subscribe(resolveRemoteSpy);
-    modalComponent.resolveMerge.subscribe(resolveMergeSpy);
-    modalComponent.cancel.subscribe(cancelSpy);
+    host.resolveLocal.subscribe(resolveLocalSpy);
+    host.resolveRemote.subscribe(resolveRemoteSpy);
+    host.resolveMerge.subscribe(resolveMergeSpy);
+    host.cancel.subscribe(cancelSpy);
 
     getByTestId<HTMLButtonElement>(fixture, 'conflict-selective-toggle').click();
     fixture.detectChanges();
 
-    expect(modalComponent.selectiveMode()).toBe(true);
+    expect(host.modal.selectiveMode()).toBe(true);
     expect(getByTestId<HTMLButtonElement>(fixture, 'conflict-selective-toggle').textContent).toContain('逐任务选择模式');
 
     getByTestId<HTMLButtonElement>(fixture, 'conflict-resolve-local').click();
@@ -173,7 +162,7 @@ describe('ConflictModalComponent', () => {
 
   it('should emit a resolution plan when applying suggested resolution', () => {
     const applyPlanSpy = vi.fn();
-    modalComponent.applyPlan.subscribe(applyPlanSpy);
+    host.applyPlan.subscribe(applyPlanSpy);
 
     getByTestId<HTMLButtonElement>(fixture, 'conflict-apply-suggested').click();
 
@@ -184,10 +173,8 @@ describe('ConflictModalComponent', () => {
   });
 
   it('should show a busy hint and disable actions while resolving', () => {
-    Object.assign(modalComponent, {
-      isResolving: () => true,
-      activeResolution: () => 'local',
-    });
+    host.isResolving = true;
+    host.activeResolution = 'local';
     fixture.detectChanges();
 
     expect(getByTestId<HTMLButtonElement>(fixture, 'conflict-resolve-local').disabled).toBe(true);
@@ -195,4 +182,55 @@ describe('ConflictModalComponent', () => {
     expect(getByTestId<HTMLButtonElement>(fixture, 'conflict-cancel').disabled).toBe(true);
     expect(fixture.nativeElement.textContent).toContain('正在保留本地修改并覆盖云端');
   });
+
+  it('should emit cancel when Escape is pressed (when not resolving)', () => {
+    const cancelSpy = vi.fn();
+    host.cancel.subscribe(cancelSpy);
+
+    const target = getByTestId<HTMLButtonElement>(fixture, 'conflict-resolve-local');
+    target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+
+    expect(cancelSpy).toHaveBeenCalledOnce();
+  });
+
+  it('should ignore Escape while resolving', () => {
+    const cancelSpy = vi.fn();
+    host.cancel.subscribe(cancelSpy);
+
+    host.isResolving = true;
+    fixture.detectChanges();
+
+    const target = getByTestId<HTMLButtonElement>(fixture, 'conflict-resolve-local');
+    target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+
+    expect(cancelSpy).not.toHaveBeenCalled();
+  });
 });
+
+@Component({
+  standalone: true,
+  imports: [ConflictModalComponent],
+  template: `
+    <app-conflict-modal
+      [conflictData]="conflictData"
+      [isResolving]="isResolving"
+      [activeResolution]="activeResolution"
+      (resolveLocal)="resolveLocal.emit()"
+      (resolveRemote)="resolveRemote.emit()"
+      (resolveMerge)="resolveMerge.emit()"
+      (applyPlan)="applyPlan.emit($event)"
+      (cancel)="cancel.emit()" />`,
+})
+class HostComponent {
+  conflictData: { localProject: Project; remoteProject: Project; projectId: string } | null = null;
+  isResolving = false;
+  activeResolution: 'local' | 'remote' | 'merge' | 'plan' | null = null;
+
+  @Output() resolveLocal = new EventEmitter<void>();
+  @Output() resolveRemote = new EventEmitter<void>();
+  @Output() resolveMerge = new EventEmitter<void>();
+  @Output() applyPlan = new EventEmitter<ConflictResolutionPlan>();
+  @Output() cancel = new EventEmitter<void>();
+
+  @ViewChild(ConflictModalComponent) modal!: ConflictModalComponent;
+}

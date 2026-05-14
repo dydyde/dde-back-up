@@ -589,12 +589,17 @@ export class ProjectOperationService {
    * @param projectId 项目 ID
    * @param choice 解决方式：local（保留本地）、remote（使用远程）、merge（合并）
    */
-  async resolveConflict(projectId: string, choice: 'local' | 'remote' | 'merge'): Promise<boolean> {
+  async resolveConflict(
+    projectId: string,
+    choice: 'local' | 'remote' | 'merge',
+    options: { backgroundPersist?: boolean } = {}
+  ): Promise<boolean> {
     return this.resolveConflictInternal({
       projectId,
       preservePendingTaskDeletes: choice !== 'remote',
       requiresRemoteProject: choice !== 'local',
       finalizeAsRemote: choice === 'remote',
+      backgroundPersist: options.backgroundPersist ?? false,
       runResolution: (localProject, remoteProject) => this.syncCoordinator.resolveConflict(
         projectId,
         choice,
@@ -604,12 +609,17 @@ export class ProjectOperationService {
     });
   }
 
-  async resolveConflictWithPlan(projectId: string, plan: ConflictResolutionPlan): Promise<boolean> {
+  async resolveConflictWithPlan(
+    projectId: string,
+    plan: ConflictResolutionPlan,
+    options: { backgroundPersist?: boolean } = {}
+  ): Promise<boolean> {
     return this.resolveConflictInternal({
       projectId,
       preservePendingTaskDeletes: true,
       requiresRemoteProject: true,
       finalizeAsRemote: false,
+      backgroundPersist: options.backgroundPersist ?? false,
       filterPendingTaskDeletes: taskIds =>
         taskIds.filter(taskId => plan.taskChoices[taskId] !== 'remote'),
       runResolution: (localProject, remoteProject) => this.syncCoordinator.resolveConflictWithPlan(
@@ -626,6 +636,7 @@ export class ProjectOperationService {
     preservePendingTaskDeletes: boolean;
     requiresRemoteProject: boolean;
     finalizeAsRemote: boolean;
+    backgroundPersist: boolean;
     filterPendingTaskDeletes?: (taskIds: string[]) => string[];
     runResolution: (localProject: Project, remoteProject: Project | undefined) => Promise<Result<Project, OperationError>>;
   }): Promise<boolean> {
@@ -709,6 +720,23 @@ export class ProjectOperationService {
       const userId = sessionContext.ownerUserId;
       const isCloudBackedUser = !!userId && userId !== AUTH_CONFIG.LOCAL_MODE_USER_ID;
       if (isCloudBackedUser) {
+        if (options.backgroundPersist) {
+          this.finalizeResolvedProject(projectId, resolvedProject, {
+            pendingSync: true,
+          });
+          await this.clearResolvedConflictState(projectId, sessionContext.ownerUserId, activeConflict, conflictFingerprint);
+          void this.persistResolvedConflictCloudSave({
+            projectId,
+            resolvedProject,
+            remoteProject,
+            pendingTaskDeleteIds: effectivePendingTaskDeleteIds,
+            sessionContext,
+            activeConflict,
+            conflictFingerprint,
+          });
+          return true;
+        }
+
         try {
           const syncResult = await this.syncCoordinator.core.saveProjectSmart(resolvedProject, userId);
           const persistedProject = syncResult.newVersion !== undefined
@@ -837,6 +865,152 @@ export class ProjectOperationService {
     await this.clearResolvedConflictState(projectId, sessionContext.ownerUserId, activeConflict, conflictFingerprint);
 
     return true;
+  }
+
+  private async persistResolvedConflictCloudSave(options: {
+    projectId: string;
+    resolvedProject: Project;
+    remoteProject: Project | undefined;
+    pendingTaskDeleteIds: string[];
+    sessionContext: { ownerUserId: string | null; sessionGeneration: number };
+    activeConflict: unknown;
+    conflictFingerprint?: {
+      projectId: string;
+      ownerUserId: string | null;
+      conflictedAt?: string;
+      localVersion?: number;
+      remoteVersion?: number;
+      pendingTaskDeleteIds?: string[];
+    };
+  }): Promise<void> {
+    const {
+      projectId,
+      resolvedProject,
+      remoteProject,
+      pendingTaskDeleteIds,
+      sessionContext,
+      activeConflict,
+      conflictFingerprint,
+    } = options;
+
+    const userId = sessionContext.ownerUserId;
+    if (!userId || userId === AUTH_CONFIG.LOCAL_MODE_USER_ID) {
+      return;
+    }
+
+    try {
+      const syncResult = await this.syncCoordinator.core.saveProjectSmart(resolvedProject, userId);
+      const persistedProject = syncResult.newVersion !== undefined
+        ? { ...resolvedProject, version: syncResult.newVersion }
+        : resolvedProject;
+
+      if (!this.isProjectSessionContextCurrent(sessionContext, 'resolveConflict:saveProjectSmart', projectId)) {
+        const hasDeferredDeleteWork = pendingTaskDeleteIds.length > 0;
+        if (syncResult.success && !(await this.handoffPendingTaskDeletes(sessionContext, persistedProject, pendingTaskDeleteIds))) {
+          return;
+        }
+
+        if (this.canSettleStaleProjectLocally(sessionContext)) {
+          if (syncResult.success) {
+            const currentMatchesResolved = this.doesCurrentProjectMatchSnapshot(projectId, resolvedProject);
+            this.finalizeResolvedProjectCurrentState(projectId, {
+              pendingSync: hasDeferredDeleteWork || !currentMatchesResolved,
+              clearProjectChanges: currentMatchesResolved,
+              version: syncResult.newVersion,
+            });
+            await this.clearResolvedConflictState(projectId, sessionContext.ownerUserId, activeConflict, conflictFingerprint);
+          } else if (syncResult.terminal) {
+            const currentMatchesResolved = this.doesCurrentProjectMatchSnapshot(projectId, resolvedProject);
+            this.finalizeResolvedProjectCurrentState(projectId, {
+              pendingSync: !currentMatchesResolved,
+              clearProjectChanges: currentMatchesResolved,
+            });
+            await this.clearResolvedConflictState(projectId, sessionContext.ownerUserId, activeConflict, conflictFingerprint);
+          }
+        }
+
+        return;
+      }
+
+      if (syncResult.terminal) {
+        const currentMatchesResolved = this.doesCurrentProjectMatchSnapshot(projectId, resolvedProject);
+        if (currentMatchesResolved) {
+          this.finalizeResolvedProject(projectId, resolvedProject, {
+            pendingSync: false,
+          });
+        } else {
+          this.finalizeResolvedProjectCurrentState(projectId, {
+            pendingSync: true,
+            clearProjectChanges: false,
+          });
+        }
+        this.toastService.warning('同步已停止', syncResult.failureReason ?? '冲突已在本地解决，但不会自动同步到云端');
+      } else if (!syncResult.success && !syncResult.conflict) {
+        this.actionQueue.enqueue({
+          type: 'update',
+          entityType: 'project',
+          entityId: projectId,
+          payload: { project: resolvedProject, sourceUserId: userId, taskIdsToDelete: pendingTaskDeleteIds }
+        });
+        this.finalizeResolvedProject(projectId, resolvedProject, {
+          pendingSync: true,
+        });
+        this.toastService.warning('同步待重试', '冲突已在本地解决，但同步失败，稍后将自动重试');
+      } else if (syncResult.conflict) {
+        const captured = await this.captureConflictWithRemoteFallback(
+          resolvedProject,
+          syncResult.remoteData,
+          remoteProject,
+          sessionContext,
+          pendingTaskDeleteIds,
+        );
+        if (!captured) {
+          return;
+        }
+        this.toastService.error('同步冲突', '解决冲突后又发生新冲突，请稍后重试');
+        return;
+      } else {
+        await this.replayPendingTaskDeletes(
+          persistedProject,
+          pendingTaskDeleteIds,
+          sessionContext,
+        );
+        this.finalizeResolvedProject(projectId, resolvedProject, {
+          version: syncResult.newVersion ?? resolvedProject.version,
+          pendingSync: false,
+        });
+      }
+    } catch (_e) {
+      if (!this.isProjectSessionContextCurrent(sessionContext, 'resolveConflict:saveProjectSmart-error', projectId)) {
+        return;
+      }
+
+      this.actionQueue.enqueue({
+        type: 'update',
+        entityType: 'project',
+        entityId: projectId,
+        payload: { project: resolvedProject, sourceUserId: userId, taskIdsToDelete: pendingTaskDeleteIds }
+      });
+      this.finalizeResolvedProject(projectId, resolvedProject, {
+        pendingSync: true,
+      });
+    }
+
+    if (!this.isProjectSessionContextCurrent(sessionContext, 'resolveConflict:delete-conflict', projectId)) {
+      if (this.canSettleStaleProjectLocally(sessionContext)) {
+        await this.clearResolvedConflictState(projectId, sessionContext.ownerUserId, activeConflict, conflictFingerprint);
+      }
+      return;
+    }
+
+    if (!this.isProjectSessionContextCurrent(sessionContext, 'resolveConflict:clear-active-conflict', projectId)) {
+      if (this.canSettleStaleProjectLocally(sessionContext)) {
+        await this.clearResolvedConflictState(projectId, sessionContext.ownerUserId, activeConflict, conflictFingerprint);
+      }
+      return;
+    }
+
+    await this.clearResolvedConflictState(projectId, sessionContext.ownerUserId, activeConflict, conflictFingerprint);
   }
 
   private async captureConflictWithRemoteFallback(

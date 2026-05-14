@@ -180,6 +180,43 @@ describe('ProjectOperationService', () => {
     service = runInInjectionContext(injector, () => injector.get(ProjectOperationService));
   });
 
+  it('resolveConflict 在 backgroundPersist 模式下不应等待 saveProjectSmart 完成', async () => {
+    const deferred = (() => {
+      let resolve: ((value: unknown) => void) | null = null;
+      const promise = new Promise((res) => {
+        resolve = res as (value: unknown) => void;
+      });
+      return { promise, resolve: resolve! };
+    })();
+
+    mockConflictStorage.getConflict.mockResolvedValueOnce({
+      projectId: 'proj-bg',
+      localProject: createProject({ id: 'proj-bg', name: 'Local Conflict' }),
+      remoteProject: createProject({ id: 'proj-bg', name: 'Remote Conflict', version: 3 }),
+      conflictedAt: '2026-03-30T00:00:00.000Z',
+      localVersion: 1,
+      remoteVersion: 3,
+    });
+    mockProjectState.getProject.mockReturnValue(createProject({ id: 'proj-bg', name: 'Local Conflict' }));
+    mockSyncCoordinator.resolveConflict.mockResolvedValueOnce({
+      ok: true,
+      value: createProject({ id: 'proj-bg', name: 'Resolved Conflict', version: 4 }),
+    });
+    mockUserSession.currentUserId.mockReturnValue('user-1');
+    mockSyncCoordinator.core.saveProjectSmart.mockReturnValueOnce(deferred.promise as never);
+
+    const resolved = await service.resolveConflict('proj-bg', 'local', { backgroundPersist: true });
+
+    expect(resolved).toBe(true);
+    expect(mockSyncCoordinator.core.saveProjectSmart).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'proj-bg', name: 'Resolved Conflict' }),
+      'user-1',
+    );
+
+    deferred.resolve({ success: true, newVersion: 10 });
+    await Promise.resolve();
+  });
+
   it('本地模式创建项目失败时不应写入云端 ActionQueue', async () => {
     await service.addProject(createProject({ id: 'proj-local-only' }));
 

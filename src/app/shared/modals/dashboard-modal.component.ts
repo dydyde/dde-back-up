@@ -613,7 +613,7 @@ export class DashboardModalComponent implements OnInit {
     try {
       const plan = this.buildResolutionPlan(conflict);
       const counts = this.countResolutionChoices(plan);
-      const resolved = await this.projectOps.resolveConflictWithPlan(conflict.projectId, plan);
+      const resolved = await this.projectOps.resolveConflictWithPlan(conflict.projectId, plan, { backgroundPersist: true });
       await this.loadConflicts();
 
       if (!resolved) {
@@ -638,7 +638,7 @@ export class DashboardModalComponent implements OnInit {
     try {
       const conflict = await this.conflictStorage.getConflict(projectId);
       if (!conflict) { this.toastService.error('错误', '未找到冲突数据'); return; }
-      const resolved = await this.projectOps.resolveConflict(projectId, 'merge');
+      const resolved = await this.projectOps.resolveConflict(projectId, 'merge', { backgroundPersist: true });
       await this.loadConflicts();
       if (resolved) { this.toastService.success('已保留两者', '云端版本的任务已作为副本添加'); }
     } catch {
@@ -653,14 +653,14 @@ export class DashboardModalComponent implements OnInit {
     try {
       const conflict = await this.conflictStorage.getConflict(projectId);
       if (!conflict) { this.toastService.error('错误', '未找到冲突数据'); return; }
-      const resolved = await this.projectOps.resolveConflict(projectId, strategy);
+      const resolved = await this.projectOps.resolveConflict(projectId, strategy, { backgroundPersist: true });
       await this.loadConflicts();
       if (!resolved) {
         return;
       }
 
       if (strategy === 'local') {
-        this.toastService.success('已保留本地修改', '当前项目已按本地版本解决冲突');
+        this.toastService.success('已保留本地修改', '冲突已在本地解决，后台会自动同步到云端');
       } else {
         this.toastService.success('已采用云端版本', '当前项目已切换到云端结果');
       }

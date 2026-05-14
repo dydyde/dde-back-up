@@ -387,9 +387,15 @@ export class WorkspaceModalCoordinatorService {
   // ── Conflict ───────────────────────────────────────────────────────
 
   async openConflictModal(data: ConflictData): Promise<void> {
+    if (this._conflictModalRef) {
+      this.toast.info('冲突窗口已打开', '请先在当前窗口完成处理');
+      return;
+    }
+
+    this._pendingConflict = data;
     try {
       const component = await this.modalLoader.loadConflictModal();
-      this._conflictModalRef = this.dynamicModal.open(component, {
+      const modalRef = this.dynamicModal.open(component, {
         inputs: {
           conflictData: data,
           isResolving: false,
@@ -405,6 +411,24 @@ export class WorkspaceModalCoordinatorService {
         closeOnBackdropClick: false,
         closeOnEscape: false
       });
+      this._conflictModalRef = modalRef;
+
+      void modalRef.result.then((result: unknown) => {
+        if (this._conflictModalRef !== modalRef) {
+          return;
+        }
+
+        const choice = (result as { choice?: string } | undefined)?.choice;
+        if (!choice || choice === 'cancel') {
+          this._pendingConflict = null;
+          this.syncCoordinator.clearActiveConflict();
+        }
+      }).finally(() => {
+        if (this._conflictModalRef === modalRef) {
+          this._conflictModalRef = null;
+        }
+        this._isResolvingConflict = false;
+      });
     } catch {
       this.toast.error('冲突解决组件加载失败', '请刷新页面重试');
     }
@@ -412,6 +436,7 @@ export class WorkspaceModalCoordinatorService {
 
   setPendingConflict(data: ConflictData): void {
     this._pendingConflict = data;
+    this._conflictModalRef?.componentRef.setInput('conflictData', data);
   }
 
   private setConflictModalResolutionState(
@@ -425,30 +450,31 @@ export class WorkspaceModalCoordinatorService {
   private notifyConflictResolutionSuccess(action: ConflictResolutionAction): void {
     switch (action) {
       case 'local':
-        this.toast.success('已保留本地修改', '当前项目已按本地版本解决冲突');
+        this.toast.success('已保留本地修改', '冲突已在本地解决，后台会自动同步到云端');
         return;
       case 'remote':
         this.toast.success('已采用云端版本', '当前项目已切换到云端结果');
         return;
       case 'merge':
-        this.toast.success('已合并两边修改', '当前项目已保留本地与云端的有效内容');
+        this.toast.success('已合并两边修改', '冲突已在本地解决，后台会自动同步到云端');
         return;
       case 'plan':
-        this.toast.success('已按系统建议解决冲突');
+        this.toast.success('已按系统建议解决冲突', '冲突已在本地解决，后台会自动同步到云端');
         return;
     }
   }
 
   private async resolveConflictWith(strategy: 'local' | 'remote' | 'merge'): Promise<void> {
     if (this._isResolvingConflict) return;
+    if (!this._pendingConflict) {
+      this.toast.error('冲突数据已失效', '请稍后重试，或等待下次同步重新触发');
+      return;
+    }
     this._isResolvingConflict = true;
     this.setConflictModalResolutionState(true, strategy);
     try {
       const data = this._pendingConflict;
-      let resolved = true;
-      if (data) {
-        resolved = await this.projectOps.resolveConflict(data.projectId, strategy);
-      }
+      const resolved = await this.projectOps.resolveConflict(data.projectId, strategy, { backgroundPersist: true });
       if (!resolved) {
         return;
       }
@@ -456,6 +482,8 @@ export class WorkspaceModalCoordinatorService {
       this._pendingConflict = null;
       this._conflictModalRef = null;
       this.notifyConflictResolutionSuccess(strategy);
+    } catch {
+      this.toast.error('冲突解决失败', '请稍后重试');
     } finally {
       this.setConflictModalResolutionState(false, null);
       this._isResolvingConflict = false;
@@ -476,14 +504,15 @@ export class WorkspaceModalCoordinatorService {
 
   async applyConflictResolutionPlan(plan: ConflictResolutionPlan): Promise<void> {
     if (this._isResolvingConflict) return;
+    if (!this._pendingConflict) {
+      this.toast.error('冲突数据已失效', '请稍后重试，或等待下次同步重新触发');
+      return;
+    }
     this._isResolvingConflict = true;
     this.setConflictModalResolutionState(true, 'plan');
     try {
       const data = this._pendingConflict;
-      let resolved = true;
-      if (data) {
-        resolved = await this.projectOps.resolveConflictWithPlan(data.projectId, plan);
-      }
+      const resolved = await this.projectOps.resolveConflictWithPlan(data.projectId, plan, { backgroundPersist: true });
       if (!resolved) {
         return;
       }
@@ -491,6 +520,8 @@ export class WorkspaceModalCoordinatorService {
       this._pendingConflict = null;
       this._conflictModalRef = null;
       this.notifyConflictResolutionSuccess('plan');
+    } catch {
+      this.toast.error('冲突解决失败', '请稍后重试');
     } finally {
       this.setConflictModalResolutionState(false, null);
       this._isResolvingConflict = false;
