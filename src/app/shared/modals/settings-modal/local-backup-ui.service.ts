@@ -17,7 +17,7 @@ import type { ExportData } from '../../../../services/export.service';
  *
  * 从 SettingsModalComponent 抽离（2026-05-13）
  */
-@Injectable({ providedIn: 'root' })
+@Injectable()
 export class LocalBackupUIService {
   private readonly localBackupService = inject(LocalBackupService);
   private readonly importService = inject(ImportService);

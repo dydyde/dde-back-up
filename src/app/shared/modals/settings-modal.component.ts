@@ -35,6 +35,7 @@ const SIYUAN_TOKEN_MASK = '••••••••';
   selector: 'app-settings-modal',
   standalone: true,
   imports: [CommonModule, FormsModule],
+  providers: [LocalBackupUIService],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="fixed inset-0 bg-black/40 z-50 flex items-center justify-center backdrop-blur-sm animate-fade-in p-2 sm:p-4" (click)="close.emit()">
