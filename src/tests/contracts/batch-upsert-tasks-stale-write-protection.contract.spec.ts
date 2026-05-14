@@ -25,7 +25,7 @@ describe('batch_upsert_tasks stale-write protection migration', () => {
     const sql = readMigration();
     expect(sql).toContain('CREATE OR REPLACE FUNCTION public.batch_upsert_tasks(');
     expect(sql).toContain('SECURITY DEFINER');
-    expect(sql).toContain("SET search_path TO 'pg_catalog', 'public'");
+    expect(sql).toContain("SET search_path TO 'pg_catalog', 'pg_temp'");
   });
 
   it('extracts a payload-side updated_at (snake_case with camelCase fallback)', () => {

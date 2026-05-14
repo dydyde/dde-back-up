@@ -38,7 +38,7 @@ CREATE OR REPLACE FUNCTION public.batch_upsert_tasks(
 RETURNS integer
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path TO 'pg_catalog', 'public'
+SET search_path TO 'pg_catalog', 'pg_temp'
 AS $$
 DECLARE
   v_count integer := 0;
