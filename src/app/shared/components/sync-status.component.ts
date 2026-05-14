@@ -55,6 +55,10 @@ import type { QueuedAction } from '../../../services/action-queue.types';
               队列冻结
             } @else if (deadLetterCount() > 0) {
               {{ deadLetterCount() }} 失败
+            } @else if (syncError()) {
+              同步错误
+            } @else if (conflictCount() > 0) {
+              {{ conflictCount() }} 个冲突
             } @else if (pendingCount() > 0) {
               {{ pendingCount() }} 待同步
             } @else if (!isOnline()) {
@@ -97,11 +101,8 @@ import type { QueuedAction } from '../../../services/action-queue.types';
                  [attr.data-testid-pending]="pendingCount() > 0 ? 'pending-sync-indicator' : null"
                 [attr.data-testid-busy]="isAnySyncing() || isResyncing() || isRetrying() || isProcessing() ? 'sync-busy-indicator' : null"
                 [attr.data-testid-last-sync]="syncService.syncState().lastSyncTime"
-                 [attr.data-testid-success]="isLoggedIn() && isOnline() && !offlineMode() && !hasIssues() ? 'sync-success-indicator' : null"
-                 [class.bg-green-500]="isLoggedIn() && isOnline() && !offlineMode() && !hasIssues()"
-                 [class.bg-amber-500]="!isOnline() || offlineMode() || pendingCount() > 0 || !isLoggedIn()"
-                 [class.bg-red-500]="deadLetterCount() > 0"
-                 [class.bg-blue-500]="isSyncing()"
+                [attr.data-testid-success]="statusDotClass() === 'bg-green-500' ? 'sync-success-indicator' : null"
+                [ngClass]="statusDotClass()"
                  [class.animate-pulse]="isSyncing() || pendingCount() > 0">
             </div>
             <!-- 状态文字 -->
@@ -114,6 +115,10 @@ import type { QueuedAction } from '../../../services/action-queue.types';
                 队列冻结
               } @else if (deadLetterCount() > 0) {
                 {{ deadLetterCount() }} 个同步失败
+              } @else if (syncError()) {
+                同步错误
+              } @else if (conflictCount() > 0) {
+                {{ conflictCount() }} 个冲突待处理
               } @else if (pendingCount() > 0) {
                 {{ pendingCount() }} 待同步
               } @else if (!isOnline()) {
@@ -292,9 +297,7 @@ import type { QueuedAction } from '../../../services/action-queue.types';
         <div class="px-3 py-2 bg-gradient-to-r from-stone-50 dark:from-stone-700 to-white dark:to-stone-800 border-b border-stone-100 dark:border-stone-600 flex items-center justify-between">
           <div class="flex items-center gap-2">
             <div class="w-2 h-2 rounded-full" 
-                 [class.bg-green-500]="isLoggedIn() && isOnline() && !offlineMode()"
-                 [class.bg-amber-500]="!isOnline() || offlineMode() || !isLoggedIn()"
-                 [class.bg-blue-500]="isSyncing()"
+                 [ngClass]="statusDotClass()"
                  [class.animate-pulse]="isSyncing()">
             </div>
             <h3 class="font-bold text-stone-700 dark:text-stone-200 text-xs">同步状态</h3>
@@ -558,7 +561,15 @@ export class SyncStatusComponent {
   /** 状态点颜色（互斥优先级：同步中 > 失败 > 警告 > 正常） */
   readonly statusDotClass = computed(() => {
     if (this.isSyncing()) return 'bg-blue-500';
-    if (this.deadLetterCount() > 0 || this.queueFrozen() || this.legacyReviewCount() > 0) return 'bg-red-500';
+    if (
+      this.deadLetterCount() > 0
+      || this.queueFrozen()
+      || this.legacyReviewCount() > 0
+      || !!this.syncError()
+      || this.conflictCount() > 0
+    ) {
+      return 'bg-red-500';
+    }
     if (!this.isOnline() || this.offlineMode() || this.pendingCount() > 0 || !this.isLoggedIn()) return 'bg-amber-500';
     return 'bg-green-500';
   });
@@ -643,6 +654,12 @@ export class SyncStatusComponent {
     if (this.deadLetterCount() > 0) {
       return `${this.deadLetterCount()} 个操作失败`;
     }
+    if (this.syncError()) {
+      return '同步错误';
+    }
+    if (this.conflictCount() > 0) {
+      return `${this.conflictCount()} 个冲突待处理`;
+    }
     if (this.pendingCount() > 0) {
       return `${this.pendingCount()} 个操作待同步`;
     }
@@ -651,9 +668,6 @@ export class SyncStatusComponent {
     }
     if (this.offlineMode()) {
       return '连接中断 - 恢复后自动同步';
-    }
-    if (this.syncError()) {
-      return '同步错误';
     }
     if (!this.isLoggedIn()) {
       return '数据保存在本地 - 登录后可同步到云端';
