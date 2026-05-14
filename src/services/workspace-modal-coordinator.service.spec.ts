@@ -25,17 +25,30 @@ const mockToast = { error: vi.fn(), info: vi.fn(), success: vi.fn() };
 const mockRouter = { navigateByUrl: vi.fn() };
 const mockErrorHandler = { dismissRecoveryDialog: vi.fn() };
 
-let resolveModalResult: ((value?: unknown) => void) | null = null;
 let setInputSpy = vi.fn();
-const mockModalCloseRef = {
-  close: vi.fn((value?: unknown) => {
-    resolveModalResult?.(value);
-  }),
-  result: Promise.resolve(undefined),
-  componentRef: { setInput: (...args: unknown[]) => setInputSpy(...args) } as never,
+const createModalRef = () => {
+  let resolver: ((value?: unknown) => void) | null = null;
+  const result = new Promise(resolve => {
+    resolver = resolve as (value?: unknown) => void;
+  });
+
+  const ref = {
+    close: vi.fn((value?: unknown) => {
+      resolver?.(value);
+    }),
+    result,
+    componentRef: { setInput: (...args: unknown[]) => setInputSpy(...args) } as never,
+  };
+
+  return ref;
 };
+
+let lastModalRef: ReturnType<typeof createModalRef> | null = null;
 const mockDynamicModal = {
-  open: vi.fn(() => mockModalCloseRef),
+  open: vi.fn(() => {
+    lastModalRef = createModalRef();
+    return lastModalRef;
+  }),
   close: vi.fn(),
 };
 
@@ -73,12 +86,9 @@ describe('WorkspaceModalCoordinatorService', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     setInputSpy = vi.fn();
-    mockModalCloseRef.componentRef = { setInput: (...args: unknown[]) => setInputSpy(...args) } as never;
     mockProjectOps.resolveConflict.mockResolvedValue(true);
     mockProjectOps.resolveConflictWithPlan.mockResolvedValue(true);
-    mockModalCloseRef.result = new Promise(resolve => {
-      resolveModalResult = resolve as (value?: unknown) => void;
-    });
+    lastModalRef = null;
 
     injector = Injector.create({
       providers: [
@@ -173,7 +183,7 @@ describe('WorkspaceModalCoordinatorService', () => {
     await service.openLoginModal();
     service.loginReturnUrl = '/dashboard';
     service.closeLoginModal();
-    expect(mockModalCloseRef.close).toHaveBeenCalledOnce();
+    expect(lastModalRef?.close).toHaveBeenCalledOnce();
     expect(service.loginReturnUrl).toBeNull();
   });
 
@@ -226,7 +236,7 @@ describe('WorkspaceModalCoordinatorService', () => {
 
   it('should allow reopening dashboard after modal ref is externally closed', async () => {
     await service.openDashboard();
-    mockModalCloseRef.close();
+    lastModalRef?.close();
     await Promise.resolve();
     await service.openDashboard();
 
@@ -237,38 +247,33 @@ describe('WorkspaceModalCoordinatorService', () => {
   // ── resolveConflictLocal ───────────────────────────────────
 
   it('should resolve conflict and close modal', async () => {
-    // Set up pending conflict
-    service.setPendingConflict({ projectId: 'p-1' } as ConflictData);
-    // Open conflict modal to set the ref
     await service.openConflictModal({ projectId: 'p-1' } as ConflictData);
 
     await service.resolveConflictLocal();
 
     expect(mockProjectOps.resolveConflict).toHaveBeenCalledWith('p-1', 'local', { backgroundPersist: true });
-    expect(mockModalCloseRef.close).toHaveBeenCalledWith({ choice: 'local' });
+    expect(lastModalRef?.close).toHaveBeenCalledWith({ choice: 'local' });
     expect(setInputSpy).toHaveBeenCalledWith('isResolving', true);
     expect(setInputSpy).toHaveBeenCalledWith('activeResolution', 'local');
     expect(mockToast.success).toHaveBeenCalledWith('已保留本地修改', '冲突已在本地解决，后台会自动同步到云端');
   });
 
   it('should keep conflict modal open when resolveConflict returns false', async () => {
-    service.setPendingConflict({ projectId: 'p-1' } as ConflictData);
     await service.openConflictModal({ projectId: 'p-1' } as ConflictData);
     mockProjectOps.resolveConflict.mockResolvedValueOnce(false);
 
     await service.resolveConflictLocal();
 
     expect(mockProjectOps.resolveConflict).toHaveBeenCalledWith('p-1', 'local', { backgroundPersist: true });
-    expect(mockModalCloseRef.close).not.toHaveBeenCalled();
+    expect(lastModalRef?.close).not.toHaveBeenCalled();
 
     mockProjectOps.resolveConflict.mockResolvedValueOnce(true);
     await service.resolveConflictLocal();
 
-    expect(mockModalCloseRef.close).toHaveBeenCalledWith({ choice: 'local' });
+    expect(lastModalRef?.close).toHaveBeenCalledWith({ choice: 'local' });
   });
 
   it('should apply conflict resolution plan and close modal', async () => {
-    service.setPendingConflict({ projectId: 'p-1' } as ConflictData);
     await service.openConflictModal({ projectId: 'p-1' } as ConflictData);
 
     await service.applyConflictResolutionPlan({
@@ -280,13 +285,12 @@ describe('WorkspaceModalCoordinatorService', () => {
       taskChoices: { 'task-1': 'remote' },
       appliedBy: 'mixed',
     }, { backgroundPersist: true });
-    expect(mockModalCloseRef.close).toHaveBeenCalledWith({ choice: 'merge' });
+    expect(lastModalRef?.close).toHaveBeenCalledWith({ choice: 'merge' });
     expect(setInputSpy).toHaveBeenCalledWith('activeResolution', 'plan');
     expect(mockToast.success).toHaveBeenCalledWith('已按系统建议解决冲突', '冲突已在本地解决，后台会自动同步到云端');
   });
 
   it('should wire conflict modal applyPlan output to the plan resolver', async () => {
-    service.setPendingConflict({ projectId: 'p-1' } as ConflictData);
     await service.openConflictModal({ projectId: 'p-1' } as ConflictData);
 
     const openCall = mockDynamicModal.open.mock.calls[0] as unknown[];
@@ -305,11 +309,10 @@ describe('WorkspaceModalCoordinatorService', () => {
       taskChoices: { 'task-1': 'local' },
       appliedBy: 'mixed',
     }, { backgroundPersist: true });
-    expect(mockModalCloseRef.close).toHaveBeenCalledWith({ choice: 'merge' });
+    expect(lastModalRef?.close).toHaveBeenCalledWith({ choice: 'merge' });
   });
 
   it('should keep conflict modal open when applyPlan resolution returns false', async () => {
-    service.setPendingConflict({ projectId: 'p-1' } as ConflictData);
     await service.openConflictModal({ projectId: 'p-1' } as ConflictData);
     mockProjectOps.resolveConflictWithPlan.mockResolvedValueOnce(false);
 
@@ -329,7 +332,7 @@ describe('WorkspaceModalCoordinatorService', () => {
       taskChoices: { 'task-1': 'remote' },
       appliedBy: 'user',
     }, { backgroundPersist: true });
-    expect(mockModalCloseRef.close).not.toHaveBeenCalled();
+    expect(lastModalRef?.close).not.toHaveBeenCalled();
     expect(mockToast.success).not.toHaveBeenCalled();
     expect(setInputSpy).toHaveBeenCalledWith('isResolving', false);
   });
@@ -341,8 +344,31 @@ describe('WorkspaceModalCoordinatorService', () => {
 
     service.cancelConflictResolution();
 
-    expect(mockModalCloseRef.close).toHaveBeenCalledWith({ choice: 'cancel' });
+    expect(lastModalRef?.close).toHaveBeenCalledWith({ choice: 'cancel' });
     expect(mockSyncCoordinator.clearActiveConflict).toHaveBeenCalled();
     expect(mockToast.info).toHaveBeenCalled();
+  });
+
+  it('should refuse resolving when conflict data is missing', async () => {
+    await service.resolveConflictLocal();
+
+    expect(mockProjectOps.resolveConflict).not.toHaveBeenCalled();
+    expect(mockToast.error).toHaveBeenCalledWith('冲突数据已失效', '请稍后重试，或等待下次同步重新触发');
+  });
+
+  it('should not open conflict modal twice', async () => {
+    await service.openConflictModal({ projectId: 'p-1' } as ConflictData);
+    await service.openConflictModal({ projectId: 'p-1' } as ConflictData);
+
+    expect(mockDynamicModal.open).toHaveBeenCalledTimes(1);
+    expect(mockToast.info).toHaveBeenCalledWith('冲突窗口已打开', '请先在当前窗口完成处理');
+  });
+
+  it('should update conflict modal inputs when pending conflict changes', async () => {
+    await service.openConflictModal({ projectId: 'p-1' } as ConflictData);
+
+    service.setPendingConflict({ projectId: 'p-2' } as ConflictData);
+
+    expect(setInputSpy).toHaveBeenCalledWith('conflictData', { projectId: 'p-2' });
   });
 });

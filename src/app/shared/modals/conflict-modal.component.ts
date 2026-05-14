@@ -1,4 +1,4 @@
-import { Component, signal, Output, EventEmitter, input, computed, ChangeDetectionStrategy, inject } from '@angular/core';
+import { Component, signal, Output, EventEmitter, computed, ChangeDetectionStrategy, inject, Input } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { Project, Task } from '../../../models';
 import { ConflictTaskDiffComponent, TaskResolutionMap } from '../components/conflict-task-diff.component';
@@ -25,6 +25,7 @@ type ConflictAction = 'local' | 'remote' | 'merge' | 'plan';
       aria-labelledby="conflict-modal-title"
       aria-describedby="conflict-modal-description"
       class="bg-white dark:bg-stone-900 rounded-xl shadow-2xl w-[min(100vw-2rem,48rem)] p-6 animate-scale-in max-h-[90vh] overflow-y-auto"
+      (keydown.escape)="onEscape($event)"
       (click)="$event.stopPropagation()">
         <div class="flex items-center gap-3 mb-4">
           <div class="w-10 h-10 rounded-full bg-amber-100 dark:bg-amber-900/50 flex items-center justify-center flex-shrink-0">
@@ -293,15 +294,37 @@ type ConflictAction = 'local' | 'remote' | 'merge' | 'plan';
 export class ConflictModalComponent {
   private readonly autoResolver = inject(ConflictAutoResolverService);
 
-  /** 冲突数据（本地和远程项目信息） */
-  conflictData = input<{
+  private readonly conflictDataSignal = signal<{
     localProject: Project;
     remoteProject: Project;
     projectId: string;
   } | null>(null);
+  private readonly isResolvingSignal = signal(false);
+  private readonly activeResolutionSignal = signal<ConflictAction | null>(null);
 
-  readonly isResolving = input(false);
-  readonly activeResolution = input<ConflictAction | null>(null);
+  /** 冲突数据（本地和远程项目信息） */
+  readonly conflictData = computed(() => this.conflictDataSignal());
+  readonly isResolving = computed(() => this.isResolvingSignal());
+  readonly activeResolution = computed(() => this.activeResolutionSignal());
+
+  @Input({ alias: 'conflictData' })
+  set conflictDataInput(value: {
+    localProject: Project;
+    remoteProject: Project;
+    projectId: string;
+  } | null) {
+    this.conflictDataSignal.set(value);
+  }
+
+  @Input({ alias: 'isResolving' })
+  set isResolvingInput(value: boolean) {
+    this.isResolvingSignal.set(Boolean(value));
+  }
+
+  @Input({ alias: 'activeResolution' })
+  set activeResolutionInput(value: ConflictAction | null) {
+    this.activeResolutionSignal.set(value);
+  }
 
   @Output() resolveLocal = new EventEmitter<void>();
   @Output() resolveRemote = new EventEmitter<void>();
@@ -398,6 +421,16 @@ export class ConflictModalComponent {
 
   applySuggestedResolution(): void {
     this.applyPlan.emit(this.buildResolutionPlan());
+  }
+
+  onEscape(event: KeyboardEvent): void {
+    if (this.isResolving()) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    this.cancel.emit();
   }
 
   private getPendingManualSelections(): number {
