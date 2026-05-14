@@ -226,6 +226,31 @@ const deploymentEpoch = parseNumberEnv(
   0
 );
 
+const readIndexHtmlSupabaseUrlFallback = () => {
+  const indexHtmlPath = path.resolve(__dirname, '../index.html');
+  try {
+    const indexHtml = fs.readFileSync(indexHtmlPath, 'utf-8');
+    const matches = [
+      indexHtml.match(/var SUPABASE_URL = '([^']+)';/),
+      indexHtml.match(/var supabaseUrl = '([^']+)';/),
+      indexHtml.match(/<link rel="preconnect" href="([^"]+\.supabase\.co)" crossorigin>/i),
+      indexHtml.match(/<link rel="dns-prefetch" href="([^"]+\.supabase\.co)">/i)
+    ];
+
+    const candidates = matches.map((match) => match?.[1]).filter(Boolean);
+    for (const candidate of candidates) {
+      const normalized = String(candidate).trim();
+      if (/^https:\/\/[a-z0-9-]+\.supabase\.co$/i.test(normalized)) {
+        return normalized;
+      }
+    }
+
+    return null;
+  } catch {
+    return null;
+  }
+};
+
 // 如果没有配置 Supabase 环境变量，使用占位符（应用将以离线模式运行）
 const useOfflineMode = !supabaseUrl || !supabaseAnonKey;
 if (useOfflineMode) {
@@ -251,6 +276,14 @@ if (hasDevAutoLogin) {
   console.log('🔐 开发环境自动登录已配置，应用启动时将自动使用配置的凭据登录');
 }
 
+const indexHtmlSupabaseUrlFallback = !supabaseUrl && !supabaseAnonKey
+  ? readIndexHtmlSupabaseUrlFallback()
+  : null;
+
+if (indexHtmlSupabaseUrlFallback) {
+  console.log(`ℹ️ 使用 index.html 中的 Supabase URL 作为离线模式 fallback: ${indexHtmlSupabaseUrlFallback}`);
+}
+
 const targetPath = path.resolve(__dirname, '../src/environments/environment.development.ts');
 const targetPathProd = path.resolve(__dirname, '../src/environments/environment.ts');
 
@@ -260,8 +293,8 @@ if (!fs.existsSync(envDir)) {
   fs.mkdirSync(envDir, { recursive: true });
 }
 
-// 离线模式使用占位符
-const finalUrl = supabaseUrl || 'YOUR_SUPABASE_URL';
+// 离线模式使用占位符；但为保证 index.html resource hints 与预热脚本一致，允许从 index.html 推导 URL fallback
+const finalUrl = supabaseUrl || indexHtmlSupabaseUrlFallback || 'YOUR_SUPABASE_URL';
 const finalKey = supabaseAnonKey || 'YOUR_SUPABASE_ANON_KEY';
 
 // 开发环境自动登录配置（仅开发环境）
