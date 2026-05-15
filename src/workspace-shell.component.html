@@ -507,7 +507,7 @@
       <!-- 同步状态 -->
       <div class="px-3 py-1" [ngClass]="{'px-2': isMobile()}">
         @defer (when shouldMountDeferredSyncStatus()) {
-          <app-sync-status data-testid="sync-status" [embedded]="true"></app-sync-status>
+          <app-sync-status data-testid="sync-status" [embedded]="true" (openConflictCenter)="openDashboardAtConflicts()"></app-sync-status>
         } @placeholder {
           <div class="h-7 rounded-md bg-stone-100/60 dark:bg-stone-700/40 flex items-center gap-2 px-2">
             <div class="w-2 h-2 rounded-full bg-stone-300 dark:bg-stone-500 animate-pulse"></div>

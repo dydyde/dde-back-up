@@ -161,6 +161,32 @@ export class ModalLoaderService {
   }
   
   /**
+   * 2026-05-15 新增：判断 import() 失败是否属于"stale chunk"（部署窗口）。
+   *
+   * 触发场景：用户标签页里 main.js 引用的 chunk 哈希在新部署里已不存在，
+   * CDN 回退到 index.html（MIME `text/html`），浏览器拒绝当模块脚本解析。
+   * 这种错误重试同一个 URL 没有意义——URL 是死的，应当提示用户刷新页面。
+   */
+  private isStaleChunkError(error: unknown): boolean {
+    const message = this.extractErrorMessage(error);
+    if (!message) return false;
+    return (
+      /Failed to fetch dynamically imported module/i.test(message)
+      || /Importing a module script failed/i.test(message)
+      || /MIME type of [\u201c"]?text\/html[\u201d"]?/i.test(message)
+      || /Loading chunk \d+ failed/i.test(message)
+      || /ChunkLoadError/i.test(message)
+    );
+  }
+
+  private extractErrorMessage(error: unknown): string {
+    if (!error) return '';
+    if (error instanceof Error) return `${error.name}: ${error.message}`;
+    if (typeof error === 'string') return error;
+    try { return JSON.stringify(error); } catch { return String(error); }
+  }
+
+  /**
    * 通用模态框加载方法
    * @param type 模态框类型
    * @param loader 加载函数
@@ -192,7 +218,31 @@ export class ModalLoaderService {
       } catch (error) {
         lastError = error;
         this.logger.warn(`模态框加载失败 (尝试 ${attempt + 1}): ${type}`, error);
-        
+
+        // 2026-05-15 修复：识别 stale-chunk（部署窗口）类失败，跳过剩余重试。
+        // 这类错误重试同一 URL 无意义，且不应上报 Sentry——是预期内的部署窗口，不是 bug。
+        if (this.isStaleChunkError(error)) {
+          this.logger.warn(`模态框 ${type} 命中 stale-chunk，停止重试并提示用户刷新`);
+          this.toast.warning(
+            '版本已更新',
+            '请刷新页面以加载最新组件',
+            {
+              duration: 0,
+              action: {
+                label: '立即刷新',
+                onClick: () => {
+                  try {
+                    location.reload();
+                  } catch {
+                    // SSR/测试环境无 location，忽略
+                  }
+                },
+              },
+            }
+          );
+          throw error;
+        }
+
         // 如果还有重试机会，等待一段时间后重试
         if (attempt < this.MAX_RETRIES) {
           await this.delay(1000 * (attempt + 1)); // 递增延迟

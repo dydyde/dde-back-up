@@ -1,4 +1,4 @@
-import { Component, inject, Output, EventEmitter, computed, signal, OnInit, ChangeDetectionStrategy } from '@angular/core';
+import { Component, inject, Output, EventEmitter, computed, signal, OnInit, ChangeDetectionStrategy, input } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { ActionQueueService } from '../../../services/action-queue.service';
 import { SimpleSyncService } from '../../core/services/simple-sync.service';
@@ -12,6 +12,7 @@ import { ConflictAutoResolverService, AutoResolutionReport } from '../../../serv
 import { type ConflictResolutionPlan, type TaskResolutionChoice } from '../../../services/conflict-resolution.types';
 import { Task } from '../../../models';
 import { ConflictTaskDiffComponent, TaskResolutionMap } from '../components/conflict-task-diff.component';
+import { ProjectStore } from '../../core/state/stores';
 
 type TabKey = 'status' | 'conflicts' | 'queue';
 type ConflictAction = 'local' | 'remote' | 'merge' | 'plan';
@@ -34,6 +35,11 @@ interface ConflictItem {
   selectiveMode?: boolean;
   /** 当前正在执行的冲突处理动作 */
   activeResolution?: ConflictAction | null;
+  /**
+   * 2026-05-15 新增：本地已不再持有的项目（被删除/未同步过来）。
+   * 用于显示"项目已删除"标签和"丢弃此冲突记录"按钮，避免状态机永久卡住。
+   */
+  isOrphan?: boolean;
 }
 
 /** 仪表盘模态框 - 展示数据冲突、同步状态，支持内联冲突解决 */
@@ -218,6 +224,11 @@ interface ConflictItem {
                                 }">
                             {{ conflict.reasonLabel }}
                           </span>
+                          @if (conflict.isOrphan) {
+                            <span class="px-1.5 py-0.5 text-[9px] font-medium rounded bg-stone-200 text-stone-600 dark:bg-stone-700 dark:text-stone-300 flex-shrink-0" title="本地已找不到该项目，正常的冲突解决路径不可用">
+                              项目已删除
+                            </span>
+                          }
                         </div>
                         <div class="text-[10px] text-stone-400 dark:text-stone-500 whitespace-nowrap flex items-center gap-2">
                           <span>本地 {{ conflict.localTaskCount }}</span>
@@ -227,6 +238,19 @@ interface ConflictItem {
                           <span>{{ formatRelativeTime(conflict.conflictedAt) }}</span>
                         </div>
                       </div>
+
+                      @if (conflict.isOrphan) {
+                        <div class="mb-2 rounded-lg border border-stone-200 bg-stone-50 dark:border-stone-700 dark:bg-stone-800/50 p-2.5">
+                          <p class="text-[11px] text-stone-600 dark:text-stone-300 mb-2">
+                            本地数据中已找不到该项目，正常的"本地覆盖/云端覆盖/合并"操作无法继续。如果您确认无需保留此冲突记录，可以将其从本地丢弃。
+                          </p>
+                          <button (click)="discardOrphanConflict(conflict.projectId)"
+                            data-testid="discard-orphan-conflict-btn"
+                            class="px-3 py-1.5 text-[11px] font-medium bg-stone-600 hover:bg-stone-700 text-white rounded-lg transition-colors">
+                            丢弃此冲突记录
+                          </button>
+                        </div>
+                      }
 
                       <!-- 系统诊断摘要 -->
                       @if (conflict.autoReport) {
@@ -415,9 +439,16 @@ export class DashboardModalComponent implements OnInit {
   private syncCoordinator = inject(SyncCoordinatorService);
   private autoResolver = inject(ConflictAutoResolverService);
   private toastService = inject(ToastService);
+  private projectStore = inject(ProjectStore);
 
   @Output() close = new EventEmitter<void>();
   @Output() openConflictCenter = new EventEmitter<void>();
+
+  /**
+   * 2026-05-15 新增：父组件可通过此输入决定模态打开时落在哪个 Tab，
+   * 用于侧边栏冲突计数入口直达 conflicts Tab。
+   */
+  readonly initialTab = input<TabKey | undefined>(undefined);
 
   readonly isLoggedIn = computed(() => !!this.authService.currentUserId());
 
@@ -528,7 +559,23 @@ export class DashboardModalComponent implements OnInit {
   formatRelativeTime(isoString: string): string { return this.formatDate(isoString); }
 
   ngOnInit(): void {
+    // 2026-05-15 新增：尊重父组件通过 initialTab 指定的 Tab。
+    const requested = this.initialTab();
+    if (requested) {
+      this.activeTab.set(requested);
+    }
     this.loadConflicts();
+  }
+
+  /**
+   * 2026-05-15 新增：供 WorkspaceModalCoordinatorService 在仪表盘已打开时
+   * 命令式切换 Tab（例如从仪表盘内部"去解决冲突"按钮）。
+   */
+  setActiveTab(tab: TabKey): void {
+    this.activeTab.set(tab);
+    if (tab === 'conflicts') {
+      void this.loadConflicts();
+    }
   }
 
   async loadConflicts(): Promise<void> {
@@ -536,8 +583,8 @@ export class DashboardModalComponent implements OnInit {
     const items: ConflictItem[] = conflicts.map(conflict => this.mapConflictToItem(conflict));
     this.conflictItems.set(items);
 
-    // 有冲突时自动跳转到冲突 tab
-    if (items.length > 0) {
+    // 有冲突时自动跳转到冲突 tab（仅在未由 initialTab 显式指定时）
+    if (items.length > 0 && !this.initialTab()) {
       this.activeTab.set('conflicts');
     }
   }
@@ -548,6 +595,10 @@ export class DashboardModalComponent implements OnInit {
 
     // 生成自动解决报告
     const autoReport = this.autoResolver.analyze(record.projectId, localTasks, remoteTasks);
+
+    // 判断是否为"孤立"冲突：项目本地已被删除/未同步过来
+    const localProject = this.projectStore.getProject(record.projectId);
+    const isOrphan = !localProject;
 
     return {
       projectId: record.projectId,
@@ -564,7 +615,27 @@ export class DashboardModalComponent implements OnInit {
       autoReport,
       remoteSnapshotFresh: record.remoteSnapshotFresh === true,
       selectiveMode: false,
+      isOrphan,
     };
+  }
+
+  /**
+   * 2026-05-15 新增：丢弃孤立冲突记录（项目已删除）。
+   * 此操作只清理本地 IndexedDB 中的冲突记录，是状态机卡死的兜底出路。
+   */
+  async discardOrphanConflict(projectId: string): Promise<void> {
+    try {
+      const ok = await this.conflictStorage.deleteConflict(projectId);
+      if (ok) {
+        await this.conflictStorage.refreshConflictCount();
+        await this.loadConflicts();
+        this.toastService.success('已丢弃', '该冲突记录已从本地清除');
+      } else {
+        this.toastService.error('丢弃失败', '请稍后重试');
+      }
+    } catch {
+      this.toastService.error('丢弃失败', '请稍后重试');
+    }
   }
 
   private getReasonLabel(reason: string): string {

@@ -11,6 +11,7 @@ import { ToastService } from '../../../services/toast.service';
 import { SyncCoordinatorService } from '../../../services/sync-coordinator.service';
 import { ConflictAutoResolverService } from '../../../services/conflict-auto-resolver.service';
 import { LoggerService } from '../../../services/logger.service';
+import { ProjectStore } from '../../core/state/stores';
 
 function createConflictRecord(remoteSnapshotFresh = false) {
   const now = '2026-03-30T00:00:00.000Z';
@@ -132,6 +133,7 @@ describe('DashboardModalComponent conflict resolution', () => {
         { provide: SyncCoordinatorService, useValue: syncCoordinatorMock },
         { provide: LoggerService, useValue: loggerMock },
         { provide: ConflictAutoResolverService, useClass: ConflictAutoResolverService, deps: [LoggerService] },
+        { provide: ProjectStore, useValue: { getProject: vi.fn(() => undefined) } },
       ],
     });
 

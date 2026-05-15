@@ -58,7 +58,14 @@ import type { QueuedAction } from '../../../services/action-queue.types';
             } @else if (syncError()) {
               同步错误
             } @else if (conflictCount() > 0) {
-              {{ conflictCount() }} 个冲突
+              <button
+                type="button"
+                data-testid="open-conflict-center-btn"
+                (click)="openConflictCenter(); $event.stopPropagation()"
+                class="underline decoration-dotted underline-offset-2 text-red-600 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300 font-medium cursor-pointer"
+                title="点击打开冲突解决中心">
+                {{ conflictCount() }} 个冲突
+              </button>
             } @else if (pendingCount() > 0) {
               {{ pendingCount() }} 待同步
             } @else if (!isOnline()) {
@@ -118,7 +125,14 @@ import type { QueuedAction } from '../../../services/action-queue.types';
               } @else if (syncError()) {
                 同步错误
               } @else if (conflictCount() > 0) {
-                {{ conflictCount() }} 个冲突待处理
+                <button
+                  type="button"
+                  data-testid="open-conflict-center-btn"
+                  (click)="openConflictCenter(); $event.stopPropagation()"
+                  class="underline decoration-dotted underline-offset-2 text-red-600 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300 font-medium cursor-pointer"
+                  title="点击打开冲突解决中心">
+                  {{ conflictCount() }} 个冲突待处理
+                </button>
               } @else if (pendingCount() > 0) {
                 {{ pendingCount() }} 待同步
               } @else if (!isOnline()) {
@@ -135,6 +149,16 @@ import type { QueuedAction } from '../../../services/action-queue.types';
           
           <!-- 操作按钮 -->
           <div class="flex items-center gap-1">
+            @if (conflictCount() > 0) {
+              <button
+                type="button"
+                data-testid="resolve-conflicts-btn"
+                (click)="openConflictCenter(); $event.stopPropagation()"
+                class="px-2 py-0.5 text-[10px] font-medium bg-red-100 dark:bg-red-900/50 hover:bg-red-200 dark:hover:bg-red-800/50 text-red-700 dark:text-red-300 rounded transition-colors flex items-center gap-1 border border-red-200 dark:border-red-800"
+                title="打开冲突解决中心">
+                处理冲突
+              </button>
+            }
             @if (pendingCount() > 0 || deadLetterCount() > 0) {
               <button 
                 (click)="retryAll(); $event.stopPropagation()"
