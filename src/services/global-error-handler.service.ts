@@ -4,6 +4,10 @@ import { LoggerService } from './logger.service';
 import { ToastService } from './toast.service';
 import { SentryLazyLoaderService } from './sentry-lazy-loader.service';
 import { TOAST_CONFIG } from '../config/ui.config';
+import {
+  isGojsOverviewOriginRectNoise,
+  extractErrorStack as extractAnyErrorStack,
+} from '../utils/gojs-overview-noise';
 
 /**
  * 错误级别
@@ -232,19 +236,20 @@ export class GlobalErrorHandler implements ErrorHandler {
       return;
     }
 
-    const errorStack = error instanceof Error ? error.stack : undefined;
+    const errorStack = extractAnyErrorStack(error);
 
-    // 2026-05-15 新增：GoJS Overview 在首次 measure 完成前调用 `_getOriginRect` /
+    // 2026-05-15 根因修复：GoJS Overview 在首次 measure 完成前调用 `_getOriginRect` /
     // `transformViewToDoc` 触发 "Cannot read properties of null (reading 'width')"。
     // 上层（flow-overview.service.ts）已加 box.actualBounds.isReal() 守卫，但内嵌
-    // GoJS 仍可能在 ViewportBoundsChanged 等异步路径上抛出。属于已知非致命噪声，
-    // 降级 SILENT 并触发一次 overview.requestUpdate() 防御性自愈。
-    if (
-      typeof errorStack === 'string'
-      && /_getOriginRect/.test(errorStack)
-      && /Cannot read properties of null \(reading ['\u2018\u2019"]width['\u2018\u2019"]\)/i.test(errorMessage)
-    ) {
+    // GoJS 仍可能在 ResizeObserver / AnimationManager.tick / requestAnimationFrame
+    // 等异步路径上抛出。属于已知非致命噪声，降级 SILENT，并通过 window 钩子
+    // 触发一次 overview.requestUpdate() 防御性自愈。
+    //
+    // 共享 `isGojsOverviewOriginRectNoise`：与 main.ts 的 window.onerror /
+    // unhandledrejection 两路保持同一语义，避免一路吞、一路弹 Toast。
+    if (isGojsOverviewOriginRectNoise(errorMessage, errorStack)) {
       this.handleSilentError(errorMessage, errorStack);
+      this.requestOverviewSelfHeal();
       return;
     }
 
@@ -473,6 +478,28 @@ export class GlobalErrorHandler implements ErrorHandler {
   }
 
   // ========== 私有方法 ==========
+
+  /**
+   * 防御性自愈：GoJS Overview `_getOriginRect` 噪声命中 SILENT 后，触发一次
+   * `overview.requestUpdate()`，让下一帧用真实 documentBounds 重新 measure。
+   *
+   * FlowOverviewService 在初始化时会把自己挂到 `window.__NANOFLOW_OVERVIEW_HEAL__`，
+   * 这里通过全局函数指针解耦（避免 GlobalErrorHandler 直接依赖 features/flow）。
+   */
+  private requestOverviewSelfHeal(): void {
+    try {
+      type OverviewHealWindow = Window & {
+        __NANOFLOW_OVERVIEW_HEAL__?: () => void;
+      };
+      const heal = (window as OverviewHealWindow).__NANOFLOW_OVERVIEW_HEAL__;
+      if (typeof heal === 'function') {
+        heal();
+      }
+    } catch (e) {
+      // 自愈本身失败不能再触发错误处理链路
+      this.logger.debug('Overview self-heal hook failed', { error: e });
+    }
+  }
 
   /**
    * 提取错误消息

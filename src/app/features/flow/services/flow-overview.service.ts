@@ -70,6 +70,14 @@ export class FlowOverviewService {
   private overviewResizeObserver: ResizeObserver | null = null;
   // Pointer 事件清理
   private overviewPointerCleanup: (() => void) | null = null;
+  // 2026-05-15 A1 根因修复：Diagram 就绪门控
+  // 在 documentBounds.isReal() 之前绝不绑定 observed，避免 GoJS 内部
+  // ResizeObserver / AnimationManager 异步 tick 读到 null bounds 抛
+  // `_getOriginRect: Cannot read properties of null (reading 'width')`。
+  private overviewPendingInitialLayoutHandler: ((e: go.DiagramEvent) => void) | null = null;
+  // 2026-05-15 A4：全局自愈钩子。GlobalErrorHandler 命中 SILENT 噪声后会调用，
+  // 触发一次 overview.requestUpdate() 让下一帧用真实 documentBounds 重新 measure。
+  private overviewHealHookInstalled = false;
 
   get overviewInstance(): go.Overview | null {
     return this.overview;
@@ -174,8 +182,20 @@ export class FlowOverviewService {
         // 兼容性：spec mock 在 `Object.assign(this, options)` 时仅赋值不处理
         // autoScale 行为，因此现有断言（centerRect 调用次数与参数）保持成立；
         // 已新增 `AutoScale.None` 到 mock 与 ts 类型扩展。
+        // 2026-05-15 A1 根因修复：构造时不绑定 observed。
+        //
+        // 原行为：`new go.Overview(container, { observed: this.diagram, ... })`
+        // 会让 GoJS 立即在内部 ResizeObserver / AnimationManager 中持有 diagram
+        // 引用并安排首次 tick。如果此时 diagram.documentBounds 是 NaN/0
+        // （Diagram 切换、@defer 懒加载、布局首帧），异步 tick 会从
+        // `_getOriginRect → transformViewToDoc` 读 documentBounds=null 抛
+        // `Cannot read properties of null (reading 'width')`。上层守卫无法
+        // 拦截 GoJS 内部异步路径。
+        //
+        // 修复：构造时显式 `observed: null`，再走 `bindObservedWhenReady` 等
+        // documentBounds.isReal() 后再绑定；未就绪期间用 InitialLayoutCompleted
+        // 监听器延后到首次布局结束。
         this.overview = new go.Overview(container, {
-          observed: this.diagram,
           'animationManager.isEnabled': false,
           autoScale: go.AutoScale.None,
           // 禁用 Overview 内建 click/drag 交互，避免和手动 box 拖拽竞争。
@@ -188,7 +208,9 @@ export class FlowOverviewService {
         this.templateService.setupOverviewNodeTemplate(this.overview);
         this.linkTemplateService.setupOverviewLinkTemplate(this.overview);
 
-        this.overview.observed = this.diagram;
+        // 2026-05-15 A1：门控后绑定 observed。如果 diagram 已就绪，
+        // 这里同步完成；否则 listener 会在首次布局完成时回填。
+        this.bindObservedWhenReady();
 
         // 设置视口框样式
         this.templateService.setupOverviewBoxStyle(this.overview, isMobile);
@@ -212,6 +234,10 @@ export class FlowOverviewService {
         if (this.overview) {
           this.overview.requestUpdate();
         }
+
+        // 2026-05-15 A4：注册全局自愈钩子。GlobalErrorHandler 命中
+        // `_getOriginRect` SILENT 噪声后会调用，触发一次 requestUpdate 自愈。
+        this.installOverviewHealHook();
 
         this.logger.info(`Overview 初始化成功`);
       } catch (error) {
@@ -272,19 +298,46 @@ export class FlowOverviewService {
   }
 
   private cleanupOverview(): void {
-    // 清理 Pointer 监听
+    // 2026-05-15 A2 根因修复：销毁顺序必须先停 animation 再解绑 listener，
+    // 最后 observed = null → div = null。原顺序仅 `div = null` + `overview = null`
+    // 会让 GoJS 内部 AnimationManager.animations / ResizeObserver 在下一帧
+    // 仍持有 stale overview 引用，调用 `_getOriginRect` 抛 null.width 错误。
+    //
+    // 正确顺序：
+    //   1) 先停 animation，避免下一帧 tick
+    //   2) 清理我们注册的所有 DiagramListener（包含 pending bind handler）
+    //   3) observed = null，断开 GoJS 内部对 diagram 的反向引用
+    //   4) div = null，触发 GoJS 内部 ResizeObserver 解绑
+    //   5) overview = null
+
+    // 1) 先停动画
+    if (this.overview) {
+      try {
+        const overviewAny = this.overview as unknown as {
+          animationManager?: { stopAnimation?: () => void };
+        };
+        overviewAny.animationManager?.stopAnimation?.();
+      } catch {
+        // GoJS 内部状态异常时 stopAnimation 可能抛错，吞掉避免阻塞清理链路
+      }
+    }
+
+    // 2a) 清理 pending bind handler（在主 listener 清理前，避免 diagram 被置 null 后丢监听器引用）
+    this.removePendingInitialLayoutHandler();
+
+    // 2b) 清理 Pointer 监听
     if (this.overviewPointerCleanup) {
       this.overviewPointerCleanup();
       this.overviewPointerCleanup = null;
     }
     
-    // 清理 ResizeObserver
+    // 2c) 清理 ResizeObserver（我们的 container 监听，不是 GoJS 内部的）
     if (this.overviewResizeObserver) {
       this.overviewResizeObserver.disconnect();
       this.overviewResizeObserver = null;
     }
     
-    // 移除 DiagramListener
+    // 2d) 移除 DiagramListener
     if (this.diagram) {
       if (this.overviewDocumentBoundsChangedHandler) {
         this.diagram.removeDiagramListener('DocumentBoundsChanged', this.overviewDocumentBoundsChangedHandler);
@@ -296,7 +349,9 @@ export class FlowOverviewService {
       }
     }
     
-    // 取消视口轮询
+    // 2e) 取消所有 rAF。审计完成：所有 rAF id 均在此一次性 cancel，
+    // 销毁后即使有未完成的 rAF 回调，回调内部的 `if (this.isDestroyed || !this.overview) return`
+    // 也会兜底 no-op，杜绝异步 tick 持有 stale 引用。
     if (this.overviewViewportPollRafId !== null) {
       cancelAnimationFrame(this.overviewViewportPollRafId);
       this.overviewViewportPollRafId = null;
@@ -328,9 +383,18 @@ export class FlowOverviewService {
     this.overviewInteractionLastApplyAt = 0;
     this.throttledUpdateBindingsPending = false;
     this.pendingOverviewUpdateSource = null;
-    
-    // 销毁 Overview
+
+    // 移除全局自愈钩子（必须在 overview 置 null 之前，否则 hook 内部判 null 即可，
+    // 但保持显式 remove 更直观）
+    this.removeOverviewHealHook();
+
+    // 3 + 4 + 5) 断开 observed → div → 置 null
     if (this.overview) {
+      try {
+        this.overview.observed = null;
+      } catch {
+        // ignore
+      }
       this.overview.div = null;
       this.overview = null;
     }
@@ -790,8 +854,110 @@ export class FlowOverviewService {
   }
   
   private setOverviewFixedBounds(bounds: go.Rect | null): void {
-    if (!this.overview) return;
+    // 2026-05-15 A2：销毁后所有 setter 必须 no-op，避免 cleanupOverview 进行中
+    // 残留路径继续操作已解绑的 overview 引用。
+    if (this.isDestroyed || !this.overview) return;
     (this.overview as unknown as { fixedBounds: go.Rect | undefined }).fixedBounds = bounds ?? undefined;
+  }
+
+  /**
+   * 2026-05-15 A1：Diagram 就绪门控。
+   *
+   * GoJS `Overview.observed` 文档要求 observed Diagram 的 documentBounds 必须
+   * 是 real Rect 才能安全 measure。在 Diagram 刚构造、@defer 视图懒加载、
+   * 项目切换等场景下，documentBounds 可能是 NaN/0 的非 real Rect。
+   *
+   * 本方法做两件事：
+   *   1) 若 diagram 已就绪 → 立即赋值 observed；
+   *   2) 否则注册一次性 InitialLayoutCompleted 监听器，待首次布局结束后绑定。
+   *
+   * 未就绪期间 overview.observed 保持 null，GoJS 内部的 ResizeObserver /
+   * AnimationManager tick 在读 observed === null 时直接 return，不会触发
+   * `_getOriginRect` 抛错。
+   */
+  private bindObservedWhenReady(): void {
+    if (this.isDestroyed || !this.overview || !this.diagram) return;
+
+    const diagram = this.diagram;
+    const overview = this.overview;
+
+    // 清理可能存在的旧 listener，幂等
+    this.removePendingInitialLayoutHandler();
+
+    if (diagram.documentBounds.isReal()) {
+      overview.observed = diagram;
+      return;
+    }
+
+    this.logger.debug('Overview observed 延后绑定：documentBounds 尚未就绪');
+
+    const handler = (_e: go.DiagramEvent): void => {
+      if (this.isDestroyed) return;
+      if (!this.overview || !this.diagram) return;
+      if (!this.diagram.documentBounds.isReal()) return;
+
+      this.overview.observed = this.diagram;
+      this.removePendingInitialLayoutHandler();
+      // 首次绑定后请求一次 update，确保即时 measure
+      this.overview.requestUpdate();
+    };
+
+    this.overviewPendingInitialLayoutHandler = handler;
+    diagram.addDiagramListener('InitialLayoutCompleted', handler);
+    // 兜底：LayoutCompleted 在 GoJS 中可能先于 InitialLayoutCompleted 触发，
+    // 监听两者任一即可，绑定成功后会自行解除。
+    diagram.addDiagramListener('LayoutCompleted', handler);
+  }
+
+  private removePendingInitialLayoutHandler(): void {
+    if (!this.overviewPendingInitialLayoutHandler) return;
+    if (this.diagram) {
+      this.diagram.removeDiagramListener('InitialLayoutCompleted', this.overviewPendingInitialLayoutHandler);
+      this.diagram.removeDiagramListener('LayoutCompleted', this.overviewPendingInitialLayoutHandler);
+    }
+    this.overviewPendingInitialLayoutHandler = null;
+  }
+
+  /**
+   * 2026-05-15 A4：注册全局自愈钩子。
+   *
+   * GlobalErrorHandler 命中 GoJS `_getOriginRect` SILENT 噪声后会调用
+   * `window.__NANOFLOW_OVERVIEW_HEAL__()`。本方法把当前 overview 实例的
+   * `requestUpdate()` 暴露到全局，由错误处理路径触发一次 measure 自愈。
+   *
+   * 解耦理由：避免 GlobalErrorHandler 直接依赖 features/flow 服务（循环依赖）。
+   */
+  private installOverviewHealHook(): void {
+    if (this.overviewHealHookInstalled) return;
+    try {
+      type OverviewHealWindow = Window & {
+        __NANOFLOW_OVERVIEW_HEAL__?: () => void;
+      };
+      (window as OverviewHealWindow).__NANOFLOW_OVERVIEW_HEAL__ = () => {
+        if (this.isDestroyed || !this.overview) return;
+        try {
+          this.overview.requestUpdate();
+        } catch {
+          // 自愈过程中再抛错只会回到 GlobalErrorHandler 制造死循环，吞掉
+        }
+      };
+      this.overviewHealHookInstalled = true;
+    } catch {
+      // window 不可用（SSR/测试环境）忽略
+    }
+  }
+
+  private removeOverviewHealHook(): void {
+    if (!this.overviewHealHookInstalled) return;
+    try {
+      type OverviewHealWindow = Window & {
+        __NANOFLOW_OVERVIEW_HEAL__?: () => void;
+      };
+      delete (window as OverviewHealWindow).__NANOFLOW_OVERVIEW_HEAL__;
+    } catch {
+      // ignore
+    }
+    this.overviewHealHookInstalled = false;
   }
 
   /** 绑定 Overview 的 Pointer 事件监听 */
