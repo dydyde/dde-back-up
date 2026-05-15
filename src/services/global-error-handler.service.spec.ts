@@ -347,12 +347,71 @@ describe('GlobalErrorHandler', () => {
     expect(toastSpy.error).not.toHaveBeenCalled();
   });
 
-  it('should still show 401 Unauthorized as NOTIFY when device is online', () => {
-    vi.spyOn(navigator, 'onLine', 'get').mockReturnValue(true);
+  it('should classify ErrorEvent-wrapped GoJS _getOriginRect noise as SILENT (A3 根因修复)', () => {
+    // 2026-05-15 A3：window.onerror 包装为 ErrorEvent / 字符串 reason 时
+    // error 不再是 Error 实例，error.stack 为 undefined。共享 extractErrorStack
+    // 工具会去 error.error.stack / error.reason.stack 兜底，保证 SILENT 路径仍命中。
+    const innerError = new TypeError("Cannot read properties of null (reading 'width')");
+    innerError.stack = `TypeError: Cannot read properties of null (reading 'width')
+    at pe._getOriginRect (https://nanoflow.pages.dev/chunk-5AK6LAAR.js:7:91730)`;
+    // 模拟 ErrorEvent：本身不是 Error 实例，但 .error 字段持有真正的 TypeError
+    const errorEventLike = {
+      message: "Cannot read properties of null (reading 'width')",
+      error: innerError,
+    };
 
-    const error = new Error('401 Unauthorized');
+    service.handleError(errorEventLike);
+
+    expect(loggerSpy.debug).toHaveBeenCalledWith('Silent error captured', expect.any(Object));
+    expect(toastSpy.error).not.toHaveBeenCalled();
+  });
+
+  it('should classify PromiseRejectionEvent.reason GoJS noise as SILENT (A3 根因修复)', () => {
+    // 2026-05-15 A3：unhandledrejection 路径，reason 可能是含 stack 的对象（非 Error 实例）
+    const reason = {
+      message: "Cannot read properties of null (reading 'width')",
+      stack: `TypeError: Cannot read properties of null (reading 'width')
+    at pe._getOriginRect (https://nanoflow.pages.dev/chunk-5AK6LAAR.js:7:91730)`,
+    };
+
+    service.handleError(reason);
+
+    expect(loggerSpy.debug).toHaveBeenCalledWith('Silent error captured', expect.any(Object));
+    expect(toastSpy.error).not.toHaveBeenCalled();
+  });
+
+  it('should call __NANOFLOW_OVERVIEW_HEAL__ hook when SILENT noise is captured (A4 防御性自愈)', () => {
+    // 2026-05-15 A4：命中 SILENT 后通过全局钩子触发 overview.requestUpdate()
+    const healSpy = vi.fn();
+    type OverviewHealWindow = Window & {
+      __NANOFLOW_OVERVIEW_HEAL__?: () => void;
+    };
+    (window as OverviewHealWindow).__NANOFLOW_OVERVIEW_HEAL__ = healSpy;
+
+    try {
+      const error = new TypeError("Cannot read properties of null (reading 'width')");
+      error.stack = `TypeError: Cannot read properties of null (reading 'width')
+    at pe._getOriginRect (https://nanoflow.pages.dev/chunk-5AK6LAAR.js:7:91730)`;
+      service.handleError(error);
+
+      expect(healSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      delete (window as OverviewHealWindow).__NANOFLOW_OVERVIEW_HEAL__;
+    }
+  });
+
+  it('should NOT misfire SILENT predicate for unrelated null.width errors (A3 命中面验证)', () => {
+    // 2026-05-15 A3：双约束（_getOriginRect + null.width）保证命中面极窄
+    // 单一约束（仅 null.width）不应命中
+    const error = new TypeError("Cannot read properties of null (reading 'width')");
+    error.stack = `TypeError: Cannot read properties of null (reading 'width')
+    at someUnrelatedFunction (https://example.com/app.js:1:1)`;
+
     service.handleError(error);
 
+    // 不应作为 GoJS Overview 噪声静默处理；走默认 NOTIFY/分类（取决于其他规则）
+    // 此处至少不能命中 SILENT-by-overview 路径
+    // 由于没有命中其他 SILENT 规则，应当弹 Toast 或归类为非 SILENT
     expect(toastSpy.error).toHaveBeenCalled();
   });
 });

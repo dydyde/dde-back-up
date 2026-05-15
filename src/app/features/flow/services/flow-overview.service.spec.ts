@@ -529,6 +529,139 @@ describe('FlowOverviewService', () => {
     expect(diagramPosition.y).toBe(70);
   });
 
+  // ============ 2026-05-15 A1/A2/A4 根因修复回归 ============
+
+  it('A1：documentBounds 未就绪时初始化必须保持 overview.observed 为 null', () => {
+    // 销毁 beforeEach 创建的实例，重新走未就绪路径
+    service.destroyOverview();
+    container.remove();
+
+    container = document.createElement('div');
+    Object.defineProperty(container, 'clientWidth', { configurable: true, value: 180 });
+    Object.defineProperty(container, 'clientHeight', { configurable: true, value: 140 });
+    container.setPointerCapture = vi.fn();
+    container.releasePointerCapture = vi.fn();
+    document.body.appendChild(container);
+
+    // 让 documentBounds.isReal() 返回 false（width/height 为 NaN）
+    documentBounds = new go.Rect(0, 0, NaN, NaN);
+    const diagramMock = createDiagramMock();
+    service.setDiagram(diagramMock);
+    service.initializeOverview(container, false);
+    vi.runOnlyPendingTimers();
+
+    const overview = service.overviewInstance as unknown as { observed: unknown };
+    expect(overview).toBeTruthy();
+    // 未就绪：observed 必须不是 diagram
+    expect(overview.observed).not.toBe(diagramMock);
+  });
+
+  it('A1：documentBounds 就绪后通过 InitialLayoutCompleted 回填 observed', () => {
+    service.destroyOverview();
+    container.remove();
+    container = document.createElement('div');
+    Object.defineProperty(container, 'clientWidth', { configurable: true, value: 180 });
+    Object.defineProperty(container, 'clientHeight', { configurable: true, value: 140 });
+    container.setPointerCapture = vi.fn();
+    container.releasePointerCapture = vi.fn();
+    document.body.appendChild(container);
+
+    documentBounds = new go.Rect(0, 0, NaN, NaN);
+
+    // 自建 diagram，捕获 InitialLayoutCompleted listener 引用
+    let initialLayoutHandler: (() => void) | null = null;
+    const diagramMock = {
+      get documentBounds(): InstanceType<typeof go.Rect> {
+        return documentBounds;
+      },
+      model: { nodeDataArray: [{ key: 'a' }] },
+      skipsUndoManager: false,
+      requestUpdate: vi.fn(),
+      addDiagramListener: vi.fn((name: string, handler: () => void) => {
+        if (name === 'InitialLayoutCompleted') initialLayoutHandler = handler;
+        if (name === 'ViewportBoundsChanged') viewportListener = handler;
+      }),
+      removeDiagramListener: vi.fn(),
+      get position(): InstanceType<typeof go.Point> {
+        return diagramPosition;
+      },
+      set position(value: InstanceType<typeof go.Point>) {
+        diagramPosition = value.copy();
+        viewportListener?.();
+      },
+      get viewportBounds(): InstanceType<typeof go.Rect> {
+        return new go.Rect(0, 0, 800, 600);
+      },
+    } as unknown as go.Diagram;
+
+    service.setDiagram(diagramMock);
+    service.initializeOverview(container, false);
+    vi.runOnlyPendingTimers();
+
+    const overview = service.overviewInstance as unknown as { observed: unknown };
+    expect(overview.observed).not.toBe(diagramMock);
+    expect(initialLayoutHandler).toBeTruthy();
+
+    // 模拟首次布局完成
+    documentBounds = new go.Rect(0, 0, 400, 300);
+    initialLayoutHandler!();
+
+    expect(overview.observed).toBe(diagramMock);
+  });
+
+  it('A2：销毁后所有 setter 必须 no-op，不抛错', () => {
+    // 销毁后再调用任何 public 方法都不能抛错
+    service.destroyOverview();
+
+    expect(() => service.refreshOverview()).not.toThrow();
+    expect(() => service.updateTheme()).not.toThrow();
+    expect(service.overviewInstance).toBeNull();
+    expect(service.isOverviewInitialized).toBe(false);
+  });
+
+  it('A2：销毁时必须 observed=null 再 div=null，杜绝异步 tick 持有 stale 引用', () => {
+    const overview = service.overviewInstance as unknown as {
+      observed: unknown;
+      div: HTMLDivElement | null;
+    };
+    expect(overview.observed).toBeTruthy();
+    expect(overview.div).toBe(container);
+
+    service.destroyOverview();
+
+    // 销毁后 service 内部引用被释放，overviewInstance 应为 null
+    expect(service.overviewInstance).toBeNull();
+    // GoJS Overview 实例本身的 observed / div 应已被解除
+    expect(overview.observed).toBeNull();
+    expect(overview.div).toBeNull();
+  });
+
+  it('A4：注册全局自愈钩子 __NANOFLOW_OVERVIEW_HEAL__，调用时触发 requestUpdate', () => {
+    type HealWindow = Window & { __NANOFLOW_OVERVIEW_HEAL__?: () => void };
+    const heal = (window as HealWindow).__NANOFLOW_OVERVIEW_HEAL__;
+    expect(typeof heal).toBe('function');
+
+    const overview = service.overviewInstance as unknown as {
+      requestUpdate: ReturnType<typeof vi.fn>;
+    };
+    const before = overview.requestUpdate.mock.calls.length;
+
+    heal!();
+
+    expect(overview.requestUpdate.mock.calls.length).toBe(before + 1);
+  });
+
+  it('A4：销毁后调用自愈钩子必须 no-op（不能再触发 stale overview）', () => {
+    type HealWindow = Window & { __NANOFLOW_OVERVIEW_HEAL__?: () => void };
+    const heal = (window as HealWindow).__NANOFLOW_OVERVIEW_HEAL__;
+
+    service.destroyOverview();
+
+    // 销毁后自愈钩子应被卸载，或调用时安全 no-op
+    expect(() => heal?.()).not.toThrow();
+    expect((window as HealWindow).__NANOFLOW_OVERVIEW_HEAL__).toBeUndefined();
+  });
+
   function createDiagramMock(): go.Diagram {
     const listeners = new Map<string, () => void>();
     const diagram = {

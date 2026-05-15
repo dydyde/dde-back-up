@@ -7,6 +7,11 @@ import { pushStartupTrace } from './src/utils/startup-trace';
 import { ensureBrowserNetworkSuspensionTracking } from './src/utils/browser-network-suspension';
 import { applyStartupVersionAction, decideStartupVersionAction } from './src/utils/startup-version-policy';
 import { forceClearCacheImpl, type ForceClearCacheDeps } from './src/utils/force-clear-cache-impl';
+import {
+  isGojsOverviewOriginRectNoise,
+  extractErrorStack as extractAnyErrorStack,
+  extractErrorMessageLoose,
+} from './src/utils/gojs-overview-noise';
 // ============= 【P0 启动优化 2026-03-26】受控 dynamic import + head modulepreload =============
 // 关键模块改回 dynamic import，以缩小 main 静态闭包并通过 perf-startup-guard。
 // 配套保障：
@@ -243,6 +248,18 @@ window.onerror = (message, source, lineno, colno, error) => {
     return true;
   }
 
+  // 2026-05-15 根因修复：GoJS Overview 异步 tick（ResizeObserver / AnimationManager）
+  // 在 documentBounds 未就绪时抛 "Cannot read properties of null (reading 'width')"
+  // 上层守卫无法拦截，必须在浏览器层就吞掉避免控制台红框 + Angular Toast 风暴。
+  // 与 GlobalErrorHandler.handleError 共享同一个谓词，确保两路语义一致。
+  {
+    const noiseMessage = extractErrorMessageLoose(error ?? message);
+    const noiseStack = extractAnyErrorStack(error);
+    if (isGojsOverviewOriginRectNoise(noiseMessage, noiseStack)) {
+      return true; // 阻止默认处理
+    }
+  }
+
   logError(`全局错误: ${message}`, { source, lineno, colno, error });
   return false; // 继续默认处理
 };
@@ -270,6 +287,16 @@ window.addEventListener('unhandledrejection', (event) => {
   if (isBrowserNetworkSuspendedReason(reason)) {
     event.preventDefault();
     return;
+  }
+
+  // 2026-05-15 根因修复：unhandledrejection 路径同样兜底 GoJS Overview 噪声
+  {
+    const noiseMessage = extractErrorMessageLoose(reason);
+    const noiseStack = extractAnyErrorStack(reason);
+    if (isGojsOverviewOriginRectNoise(noiseMessage, noiseStack)) {
+      event.preventDefault();
+      return;
+    }
   }
 
   logError('未处理的 Promise 拒绝', event.reason);
