@@ -1986,7 +1986,16 @@ export class RetryQueueService {
       // 【2026-03-20 优化】只有在实际通知了同步开始时才通知同步结束
       // 避免未发起任何网络请求的空转也触发状态切换
       const queueWasModified = this.queue.length !== initialQueueLength;
-      if (processGeneration === this.queueViewGeneration && (hasNotifiedSyncStart || queueWasModified)) {
+      // 【根因修复 2026-05-15】拆分配对通知逻辑，杜绝 isSyncing 卡死：
+      //   - 若本切片已通过 notifySyncStartOnce() 发出 true，则 MUST 配对发出 false，
+      //     即使 queueViewGeneration 在切片飞行中被 bump（如 clearCurrentView 切账号场景）。
+      //     否则上层 SyncState.isSyncing 会永久卡在 true，UI "同步中..." 永不收口。
+      //   - 若本切片未发出 true 但队列被修改，仅在 generation 一致时同步 pendingCount；
+      //     generation 已变更说明 clearCurrentView 已重置 pendingCount，不再覆盖。
+      const shouldNotifyFalse =
+        hasNotifiedSyncStart ||
+        (processGeneration === this.queueViewGeneration && queueWasModified);
+      if (shouldNotifyFalse) {
         this.lastDrainCompletedBySuccess = drainCompletedBySuccessfulReplay;
         try {
           this.operationHandler.onProcessingStateChange(false, this.queue.length);

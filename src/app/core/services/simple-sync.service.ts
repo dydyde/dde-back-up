@@ -21,7 +21,7 @@
  *   - 不得在此处再写「已重构为 X 行」的承诺直到 line count 实际达标
  */
 
-import { Injectable, inject, signal, computed, DestroyRef, Injector } from '@angular/core';
+import { Injectable, inject, computed, DestroyRef, Injector } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { SupabaseClientService, type SupabaseConnectivityChange } from '../../../services/supabase-client.service';
 import { LoggerService } from '../../../services/logger.service';
@@ -252,7 +252,16 @@ export class SimpleSyncService {
   readonly isOnline = computed(() => this.syncState().isOnline);
   readonly isSyncing = computed(() => this.syncState().isSyncing);
   readonly hasConflict = computed(() => this.syncState().hasConflict);
-  readonly isLoadingRemote = signal(false);
+  /**
+   * 是否正在从远程加载（统一委派给 SyncStateService）。
+   *
+   * 【根因修复 2026-05-15】此处原为 `signal(false)`，是从未被写入的孤儿信号。
+   * SyncCoordinatorService.isLoadingRemote 转发自这里，导致所有上游消费者
+   * （sync-status / project.guard / mobile-todo-drawer / text-view）读到的
+   * "远程加载中"永久为 false。改为转发 SyncStateService 的同名 signal，
+   * ProjectDataService 通过 setLoadingRemote(...) 写入，单一事实源。
+   */
+  readonly isLoadingRemote = this.syncStateService.isLoadingRemote;
   
   /** 最后一次同步时间 */
   private lastSyncTimeByProject: Map<string, string> = new Map();
