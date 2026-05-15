@@ -116,17 +116,16 @@ export class FlowOverviewService {
         
         // 设置背景色和显示质量优化
         container.style.backgroundColor = this.getOverviewBackgroundColor();
-        
-        // 优化渲染：强制浏览器使用更高对比度和锐利度的图像渲染算法
-        container.style.imageRendering = 'auto'; // 基础回退
-        if ('imageRendering' in container.style) {
-          // 尝试各种浏览器的锐化选项（非标准属性需类型断言）
-          const style = container.style as CSSStyleDeclaration & Record<string, string>;
-          style.imageRendering = '-webkit-optimize-contrast';
-          if (style.imageRendering !== '-webkit-optimize-contrast') {
-             style.imageRendering = 'crisp-edges';
-          }
-        }
+
+        // 【2026-05-15 性能修复 P2】移除 `image-rendering: -webkit-optimize-contrast`
+        // / `crisp-edges` 的强制设置。该属性在 Chromium 上会让小地图 canvas 走
+        // 像素化采样路径（关闭 GPU 双线性过滤），在 DPR≥2 + 高分辨率场景下显著
+        // 增加单帧 paint 成本，并可能回退到 CPU 软合成 —— 这是拖动小地图预览框
+        // 出现「卡顿 + 拖尾」的另一主因。
+        //
+        // 现仅显式声明 `auto`，让 GPU 走默认双线性合成。视觉锐度差异在 DPR≥2 下
+        // 肉眼不可分辨（GoJS 已经按 DPR 渲染，且 P3 还会把 computePixelRatio 限到 2x）。
+        container.style.imageRendering = 'auto';
         
         // 提升抗锯齿效果（非标准 vendor-prefixed 属性）
         const vendorStyle = container.style as CSSStyleDeclaration & Record<string, string>;
@@ -180,8 +179,13 @@ export class FlowOverviewService {
           autoScale: go.AutoScale.None,
           // 禁用 Overview 内建 click/drag 交互，避免和手动 box 拖拽竞争。
           isEnabled: false,
-          // 强制使用高像素比渲染（至少为 2），大幅提升小地图的清晰度和视网膜屏幕支持
-          'computePixelRatio': () => Math.max(window.devicePixelRatio || 1, 2)
+          // 【2026-05-15 性能修复 P3】把 `computePixelRatio` 从 `max(DPR, 2)` 改为
+          // `min(DPR, 2)`：
+          //   - 1x 屏（外接显示器、低 DPI Windows）此前被强制 2x，单帧 paint 像素 4 倍；
+          //   - 3x 屏（手机/部分 Retina）此前是 3x，限到 2x 后 paint 减半；
+          //   - 视觉锐度差异在小地图这种工具面板尺寸下肉眼不可分辨。
+          // 与 P2 联动消除小地图 canvas 单帧 paint 的非必要开销。
+          'computePixelRatio': () => Math.min(window.devicePixelRatio || 1, 2)
         });
 
         // 设置模板
@@ -633,13 +637,24 @@ export class FlowOverviewService {
           if (containerWidth > 0 && containerHeight > 0 && totalBounds.width > 0 && totalBounds.height > 0) {
             const worldBounds = calculateExtendedBounds(nodeBounds.copy().unionRect(viewportBounds), viewportBounds);
 
+            // 【2026-05-15 性能修复 P6】激活 `overviewBoundsCache` 真实去重。
+            //
+            // 之前 `overviewBoundsCache` 只赋值不读，setOverviewFixedBounds 每帧都被
+            // 调用，触发 GoJS Overview 内部 `documentBounds` 重算 + invalidate 级联。
+            // 拖拽 box 时 worldBounds 每帧都变化（因为它包含 viewportBounds），所以拖拽
+            // 期内 dedup 不命中是预期的；但 idle 状态、resize 后多次 render、节点静止
+            // 时的 ViewportBoundsChanged 重放等场景下 worldBounds 不变，去重能避免
+            // 无意义的 invalidate。
+            //
+            // Key 用 worldBounds 而非 viewportBounds（原代码的字段名误用）：worldBounds
+            // 才是真正传给 setOverviewFixedBounds 的值。`q = round` 把亚像素抖动归并到
+            // 整数桶，避免浮点尾数不命中。
             const q = (v: number) => Math.round(v);
-            const boundsKey = `${q(viewportBounds.x)}|${q(viewportBounds.y)}|${q(viewportBounds.width)}|${q(viewportBounds.height)}`;
-            
-            this.setOverviewFixedBounds(worldBounds);
+            const worldBoundsKey = `${q(worldBounds.x)}|${q(worldBounds.y)}|${q(worldBounds.width)}|${q(worldBounds.height)}`;
 
-            if (boundsKey !== this.overviewBoundsCache) {
-              this.overviewBoundsCache = boundsKey;
+            if (worldBoundsKey !== this.overviewBoundsCache) {
+              this.setOverviewFixedBounds(worldBounds);
+              this.overviewBoundsCache = worldBoundsKey;
             }
 
             const currentScale = this.overview.scale;
@@ -718,22 +733,26 @@ export class FlowOverviewService {
         }
         
         if (this.overview) {
-          if (source === 'document') {
-            this.overview.requestUpdate();
-            if (usingManualViewportBounds) {
-              this.overview.updateAllTargetBindings();
-            } else {
-              // 普通数据刷新阶段仅做轻量 requestUpdate，把全量绑定刷新合并到延后窗口，
-              // 避免 remote refresh -> Flow 重算 -> overview bindings 同帧叠加成主线程长任务。
-              scheduleViewportBindingsUpdate('deferred');
-            }
+          // 【2026-05-15 性能修复 P5】手动拖拽路径不再直接调用
+          // `updateAllTargetBindings()`，统一走 `scheduleViewportBindingsUpdate('immediate')`
+          // 复用 16ms 节流窗口。
+          //
+          // 原因：拖拽 box 时 applyOverviewUpdate 每帧（120Hz 输入下甚至更频繁）执行，
+          // `updateAllTargetBindings()` 会遍历所有 Overview 节点的所有 Binding
+          // (location/color/width 等)，百节点级即可成为稳定 6-12ms 的主线程长任务，
+          // 导致拖动手感「阻滞」。box 拖拽期间节点本身的数据（位置/颜色）不会变，
+          // 16ms 节流肉眼无差异。
+          //
+          // requestUpdate 仍每次同步触发，保证视图框/缩略块每帧重绘跟手。
+          this.overview.requestUpdate();
+          if (usingManualViewportBounds) {
+            scheduleViewportBindingsUpdate('immediate');
+          } else if (source === 'document') {
+            // 普通数据刷新阶段仅做轻量 requestUpdate，把全量绑定刷新合并到延后窗口，
+            // 避免 remote refresh -> Flow 重算 -> overview bindings 同帧叠加成主线程长任务。
+            scheduleViewportBindingsUpdate('deferred');
           } else {
-            this.overview.requestUpdate();
-            if (usingManualViewportBounds) {
-              this.overview.updateAllTargetBindings();
-            } else {
-              scheduleViewportBindingsUpdate(this.isOverviewBoxDragging ? 'immediate' : 'deferred');
-            }
+            scheduleViewportBindingsUpdate(this.isOverviewBoxDragging ? 'immediate' : 'deferred');
           }
         }
 
@@ -1056,12 +1075,66 @@ export class FlowOverviewService {
       }
     };
 
+    /**
+     * 【2026-05-15 性能修复 P4】输入侧 rAF 合流。
+     *
+     * 起因：原 `onPointerMove` 同步调用 `applyManualBoxDrag`，内部立即
+     * 写入 `diagram.position` 并 `diagram.requestUpdate()`，紧接着再调度
+     * 一次 overview rAF。120Hz 鼠标/触控板每秒触发 120 次 pointermove，
+     * 60Hz 屏每帧只能消化 1 次，多余 1 次的工作变成「上一帧没画完，下一
+     * 帧又开了一次」的主线程拥堵；同时主图重绘走同步路径、overview 走 rAF，
+     * 两者周期错位进一步加重合成层 ghost。
+     *
+     * 修复：在拖拽周期内维护单一 rAF —— pointermove 仅记录最新 client 坐标
+     * 并调度一次 rAF；rAF 回调 flush 最新坐标。同一帧内多次 pointermove 自动
+     * 折叠为一次主图位移 + 一次 overview 调度，主图与 overview 进入同一 rAF
+     * 周期，消除两帧错位。
+     *
+     * 配合 2026-05-09 稳定 view→doc 映射：rAF 内仍使用 `manualDragStart*`
+     * 起始映射，几何精度不变；rAF 用 latestClientX/Y 即可正确反映最终位置。
+     *
+     * pointerup 路径不走 rAF：必须取消 pending rAF 并同步 flush，确保松手
+     * 帧 `diagram.position` 与 `centerRect` 都用最终 client 坐标。
+     */
+    let pendingDragClientX: number | null = null;
+    let pendingDragClientY: number | null = null;
+    let pendingDragRafId: number | null = null;
+
+    const cancelPendingDragRaf = (): void => {
+      if (pendingDragRafId !== null) {
+        cancelAnimationFrame(pendingDragRafId);
+        pendingDragRafId = null;
+      }
+      pendingDragClientX = null;
+      pendingDragClientY = null;
+    };
+
     const applyManualBoxDragFromEvent = (ev: PointerEvent | MouseEvent): void => {
       if (!isManualBoxDrag) return;
+      // 【2026-05-15 性能修复 P4 配套】同步 flush 路径前先取消任何 pending 输入 rAF，
+      // 避免松手后 rAF 用旧坐标覆盖最终位置。
+      cancelPendingDragRaf();
       // 【2026-05-09 根因修复】直接传 client 坐标，让 applyManualBoxDrag 内部使用
       // 拖拽起始时捕获的稳定 transform 计算 document 位移，避免依赖
       // overview.transformViewToDoc（其结果会随 overview.scale/position 漂移）。
       applyManualBoxDrag(ev.clientX, ev.clientY);
+    };
+
+    const scheduleManualBoxDrag = (clientX: number, clientY: number): void => {
+      pendingDragClientX = clientX;
+      pendingDragClientY = clientY;
+      if (pendingDragRafId !== null) return;
+      pendingDragRafId = requestAnimationFrame(() => {
+        pendingDragRafId = null;
+        if (pendingDragClientX === null || pendingDragClientY === null) return;
+        const x = pendingDragClientX;
+        const y = pendingDragClientY;
+        pendingDragClientX = null;
+        pendingDragClientY = null;
+        if (!isManualBoxDrag) return;
+        applyManualBoxDrag(x, y);
+        this.overviewScheduleUpdate?.('viewport');
+      });
     };
 
     const onPointerMove = (ev: PointerEvent): void => {
@@ -1072,8 +1145,7 @@ export class FlowOverviewService {
       }
 
       if (capturedPointerId !== null && ev.pointerId !== capturedPointerId) return;
-      applyManualBoxDragFromEvent(ev);
-      this.overviewScheduleUpdate?.('viewport');
+      scheduleManualBoxDrag(ev.clientX, ev.clientY);
     };
 
     const resetOverviewInteractionState = (): void => {
@@ -1104,6 +1176,10 @@ export class FlowOverviewService {
         this.throttledUpdateBindingsTimer = null;
       }
       this.throttledUpdateBindingsPending = false;
+
+      // 【2026-05-15 性能修复 P4】拖拽周期结束时必须清掉任何尚未 flush 的输入 rAF，
+      // 避免在 endManualBoxDrag 把状态清零后 rAF 仍然触发 applyManualBoxDrag。
+      cancelPendingDragRaf();
 
       endManualBoxDrag();
 
@@ -1165,8 +1241,8 @@ export class FlowOverviewService {
       if (isManualBoxDrag) {
         stopEventForManualDrag(ev);
       }
-      applyManualBoxDragFromEvent(ev);
-      this.overviewScheduleUpdate?.('viewport');
+      // 【2026-05-15 性能修复 P4】走 rAF 合流，避免 120Hz 输入下同步刷主图。
+      scheduleManualBoxDrag(ev.clientX, ev.clientY);
     };
 
     const onMouseDown = (ev: MouseEvent): void => {
@@ -1185,8 +1261,8 @@ export class FlowOverviewService {
     };
     const onMouseMove = (ev: MouseEvent): void => {
       if (!isMouseDraggingBox) return;
-      applyManualBoxDragFromEvent(ev);
-      this.overviewScheduleUpdate?.('viewport');
+      // 【2026-05-15 性能修复 P4】走 rAF 合流。
+      scheduleManualBoxDrag(ev.clientX, ev.clientY);
     };
     const onMouseUp = (ev: MouseEvent): void => {
       if (!isMouseDraggingBox) return;

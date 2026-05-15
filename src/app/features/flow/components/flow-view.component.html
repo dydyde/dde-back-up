@@ -56,8 +56,15 @@
         
         <!-- 小地图/导航器 -->
         @if (isOverviewVisible()) {
+          <!--
+            【2026-05-15 性能修复 P1】移除 `backdrop-blur`，改用不透明背景。
+            backdrop-filter: blur 会强制浏览器对容器身后像素做模糊采样合成；
+            当容器内部 GoJS Overview canvas 与主图 canvas 同时每帧重绘时，
+            Chrome/Safari 合成器会复用上一帧的模糊缓冲，呈现拖尾/虚影。
+            回滚：把 class 换回 `bg-white/90 dark:bg-stone-800/90 backdrop-blur`。
+          -->
           <div 
-            class="absolute z-20 pointer-events-auto bg-white/90 dark:bg-stone-800/90 backdrop-blur rounded-lg shadow-md border border-stone-200/60 dark:border-stone-700/60 select-none"
+            class="absolute z-20 pointer-events-auto bg-white dark:bg-stone-800 rounded-lg shadow-md border border-stone-200/60 dark:border-stone-700/60 select-none"
             style="overflow: hidden;"
             [ngClass]="{ 'opacity-40 hover:opacity-100': isOverviewCollapsed() }"
             [style.right.px]="8"
@@ -222,8 +229,12 @@
       
       <!-- 小地图/导航器 -->
       @if (isOverviewVisible()) {
+        <!--
+          【2026-05-15 性能修复 P1】移除 `backdrop-blur`，改用不透明背景。
+          见上方同位说明：合成器拖尾的主元凶。
+        -->
         <div 
-          class="absolute z-20 pointer-events-auto bg-white/90 dark:bg-stone-800/90 backdrop-blur rounded-lg shadow-md border border-stone-200/60 dark:border-stone-700/60 select-none"
+          class="absolute z-20 pointer-events-auto bg-white dark:bg-stone-800 rounded-lg shadow-md border border-stone-200/60 dark:border-stone-700/60 select-none"
           style="overflow: hidden;"
           [ngClass]="{
             'opacity-40 hover:opacity-100': isOverviewCollapsed()
