@@ -1127,6 +1127,24 @@ export class ConnectionSyncOperationsService {
       return false;
     }
 
+    // 2026-05-15 B1 根因修复：终态拒绝 reason 不再入 RetryQueue，改为「就地软删 + Sentry info」
+    //
+    // 命中场景（服务端 RPC 永远不会接受的状态）：
+    //   - connection_endpoint_not_in_project：connection 引用的 source/target task
+    //     不在同一 project（典型：跨项目移动 task 后 connection 未联动清理）
+    //   - connection_owned_by_other_project：connection 在服务端归属另一 project
+    //   - endpoint_tombstone：endpoint task 已被远端软删
+    //   - legacy_endpointless_tombstone：历史 endpointless tombstone 拒收
+    //
+    // 行为变更：从「入 RetryQueue → 重试耗尽 → 移除 → 下次本地编辑再次入队」
+    // 改为「本地标 deletedAt + 不入队 + Sentry info（非 warning，已知可自愈）」。
+    // 后续本地 sync 会把 tombstone 推到其他设备，达成最终一致。
+    if (result.status === 'unauthorized' && this.isTerminalConnectionRejection(result.reason)) {
+      this.discardInvalidConnectionLocally(connection, projectId, result.reason ?? 'unknown');
+      // 不调 setSyncError —— 不是需要用户感知的错误
+      return false;
+    }
+
     const message = result.status === 'client-version-rejected'
       ? '当前客户端同步协议已过期，请刷新后重试'
       : '同步写入被服务端拒绝，已保留本地变更等待重试';
@@ -1147,6 +1165,79 @@ export class ConnectionSyncOperationsService {
       this.safeAddToRetryQueue('connection', 'upsert', connection, projectId, sourceUserId);
     }
     return false;
+  }
+
+  /**
+   * 2026-05-15 B1：判断 sync RPC `unauthorized` 拒绝 reason 是否为终态。
+   *
+   * 终态意味着：服务端在当前数据形态下永远不会接受这条 connection 写入。
+   * 客户端必须放弃重试并就地清理，否则会陷入「RetryQueue 反复入队 → 超限移除 →
+   * 下次编辑再次入队」的循环（用户截图复现）。
+   */
+  private isTerminalConnectionRejection(reason: string | undefined): boolean {
+    if (!reason) return false;
+    return (
+      reason === 'connection_endpoint_not_in_project'
+      || reason === 'connection_owned_by_other_project'
+      || reason === 'endpoint_tombstone'
+      || reason === 'legacy_endpointless_tombstone'
+    );
+  }
+
+  /**
+   * 2026-05-15 B1/B2：将无效 connection 在本地 Store 标记为软删，不入 RetryQueue。
+   *
+   * - 不直接 `removeConnection`（保留 deletedAt 以便其他设备同步收口）
+   * - 不调 `safeAddToRetryQueue`（已知服务端不会接受）
+   * - Sentry 上报 level=info（这是已知可自愈状态，不是 warning）
+   * - 写入本地 tombstone 时间戳保证后续 sync 会把删除意图推到其他设备
+   */
+  private discardInvalidConnectionLocally(
+    connection: Connection,
+    projectId: string,
+    reason: string,
+  ): void {
+    const now = new Date().toISOString();
+    const connectionId = connection.id;
+
+    this.logger.info('connection 终态拒绝，就地软删避免 RetryQueue 循环', {
+      connectionId,
+      projectId,
+      reason,
+      source: connection.source,
+      target: connection.target,
+    });
+
+    this.updateProjectsFromCurrentData(projects => projects.map(project => {
+      if (project.id !== projectId) return project;
+
+      let changed = false;
+      const connections = (project.connections || []).map(c => {
+        if (c.id !== connectionId) return c;
+        if (c.deletedAt) return c; // 已被软删
+        changed = true;
+        return { ...c, deletedAt: now, updatedAt: now };
+      });
+
+      return changed ? { ...project, connections } : project;
+    }));
+
+    // 上报 Sentry info，便于趋势观察但不告警
+    this.sentryLazyLoader.captureMessage('connection_discarded_terminal_rejection', {
+      level: 'info',
+      tags: {
+        operation: 'pushConnection',
+        entityType: 'connection',
+        reason,
+      },
+      extra: {
+        connectionId,
+        projectId,
+        // 注意：source/target 是 task id，是脱敏的 UUID，可以上报
+        source: connection.source,
+        target: connection.target,
+      },
+    });
   }
   
   /**
@@ -1255,6 +1346,13 @@ export class ConnectionSyncOperationsService {
           targetExists,
         }
       );
+
+      // 2026-05-15 B2 根因修复：命中 referencesDeletedTask 时主动就地软删，
+      // 不再依赖未来某次 RPC 拒绝才清理（连接引用的 endpoint task 已 tombstone，
+      // 后续 RPC 必然返回 endpoint_tombstone，与其等拒绝再清理，不如直接收口）。
+      if (referencesDeletedTask) {
+        this.discardInvalidConnectionLocally(connection, projectId, 'endpoint_tombstone');
+      }
 
       return {
         valid: false,

@@ -408,6 +408,119 @@ describe('ConnectionSyncOperationsService', () => {
     expect(mockRetryQueue.recordCircuitSuccess).not.toHaveBeenCalled();
   });
 
+  // ============ 2026-05-15 B1 根因修复：终态拒绝就地软删 ============
+
+  it.each([
+    ['connection_endpoint_not_in_project'],
+    ['connection_owned_by_other_project'],
+    ['endpoint_tombstone'],
+    ['legacy_endpointless_tombstone'],
+  ])('B1：sync RPC 终态拒绝 reason=%s 时应就地软删且不入 RetryQueue', async (reason) => {
+    mockSyncRpcClient.isFeatureEnabled.mockReturnValue(true);
+    const rpcResult: SyncRpcResult = createSyncRpcResult({
+      status: 'unauthorized',
+      reason,
+    });
+    mockSyncRpcClient.upsertConnection.mockImplementationOnce(async () => rpcResult);
+
+    const connection: Connection = {
+      id: 'connection-terminal-reject',
+      source: 'task-a',
+      target: 'task-b',
+      updatedAt: '2026-04-30T00:00:00.000Z',
+    };
+    mockProjects = [{
+      id: 'project-1',
+      connections: [connection],
+      tasks: [],
+    }];
+
+    const result = await service.pushConnection(connection, 'project-1', false, false, false, 'user-1');
+
+    expect(result).toBe(false);
+    // 根因不变量 1：禁止入 RetryQueue（否则陷入「重试超限 → 移除 → 下次再入队」循环）
+    expect(mockRetryQueue.add).not.toHaveBeenCalled();
+    // 根因不变量 2：本地 connection 已被打上 deletedAt
+    const local = mockProjects[0].connections.find(c => c.id === 'connection-terminal-reject');
+    expect(local?.deletedAt).toBeTruthy();
+    // 根因不变量 3：Sentry 上报为 info 级（已知可自愈，非 warning）
+    const sentry = TestBed.inject(SentryLazyLoaderService) as unknown as {
+      captureMessage: ReturnType<typeof vi.fn>;
+    };
+    const infoCalls = sentry.captureMessage.mock.calls.filter(call => call[0] === 'connection_discarded_terminal_rejection');
+    expect(infoCalls.length).toBe(1);
+    expect(infoCalls[0][1]).toEqual(expect.objectContaining({
+      level: 'info',
+      tags: expect.objectContaining({ reason }),
+    }));
+    // 根因不变量 4：不该污染 syncError（这是正常自愈，非错误）
+    expect(mockSyncState.setSyncError).not.toHaveBeenCalled();
+  });
+
+  it('B1：非终态 unauthorized reason（如 project_not_owned）仍走原入队路径', async () => {
+    mockSyncRpcClient.isFeatureEnabled.mockReturnValue(true);
+    const rpcResult: SyncRpcResult = createSyncRpcResult({
+      status: 'unauthorized',
+      reason: 'project_not_owned',
+    });
+    mockSyncRpcClient.upsertConnection.mockImplementationOnce(async () => rpcResult);
+
+    const connection: Connection = {
+      id: 'connection-non-terminal',
+      source: 'task-a',
+      target: 'task-b',
+      updatedAt: '2026-04-30T00:00:00.000Z',
+    };
+    mockProjects = [{
+      id: 'project-1',
+      connections: [connection],
+      tasks: [],
+    }];
+
+    const result = await service.pushConnection(connection, 'project-1', false, false, false, 'user-1');
+
+    expect(result).toBe(false);
+    // 非终态：保留原行为（入队 + warning）
+    expect(mockRetryQueue.add).toHaveBeenCalledWith('connection', 'upsert', connection, 'project-1', 'user-1');
+    // 本地 connection 不应被软删
+    const local = mockProjects[0].connections.find(c => c.id === 'connection-non-terminal');
+    expect(local?.deletedAt).toBeFalsy();
+  });
+
+  it('B2：validateTasksExist 命中 referencesDeletedTask 时应主动就地软删', async () => {
+    // 模拟 task-a 在本地 tombstone 中
+    mockTombstoneService.getLocalTombstones.mockReturnValueOnce(new Set(['task-a']));
+    // 让任务存在性查询返回 task-b 但不返回 task-a
+    taskExistenceResult = { data: [{ id: 'task-b' }], error: null };
+
+    const connection: Connection = {
+      id: 'connection-references-deleted-task',
+      source: 'task-a',
+      target: 'task-b',
+      updatedAt: '2026-04-30T00:00:00.000Z',
+    };
+    mockProjects = [{
+      id: 'project-1',
+      connections: [connection],
+      tasks: [],
+    }];
+
+    const result = await service.pushConnection(connection, 'project-1', false, false, false, 'user-1');
+
+    expect(result).toBe(false);
+    // 不该入队
+    expect(mockRetryQueue.add).not.toHaveBeenCalled();
+    // 本地已被软删
+    const local = mockProjects[0].connections.find(c => c.id === 'connection-references-deleted-task');
+    expect(local?.deletedAt).toBeTruthy();
+    // Sentry info 上报
+    const sentry = TestBed.inject(SentryLazyLoaderService) as unknown as {
+      captureMessage: ReturnType<typeof vi.fn>;
+    };
+    const infoCalls = sentry.captureMessage.mock.calls.filter(call => call[0] === 'connection_discarded_terminal_rejection');
+    expect(infoCalls.length).toBe(1);
+  });
+
   it('pushConnection 直接 upsert 前若远端连接更新更晚则应抛出版本冲突并阻止覆盖', async () => {
     connectionFreshnessResult = {
       data: {
