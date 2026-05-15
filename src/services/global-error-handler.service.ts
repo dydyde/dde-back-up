@@ -234,6 +234,20 @@ export class GlobalErrorHandler implements ErrorHandler {
 
     const errorStack = error instanceof Error ? error.stack : undefined;
 
+    // 2026-05-15 新增：GoJS Overview 在首次 measure 完成前调用 `_getOriginRect` /
+    // `transformViewToDoc` 触发 "Cannot read properties of null (reading 'width')"。
+    // 上层（flow-overview.service.ts）已加 box.actualBounds.isReal() 守卫，但内嵌
+    // GoJS 仍可能在 ViewportBoundsChanged 等异步路径上抛出。属于已知非致命噪声，
+    // 降级 SILENT 并触发一次 overview.requestUpdate() 防御性自愈。
+    if (
+      typeof errorStack === 'string'
+      && /_getOriginRect/.test(errorStack)
+      && /Cannot read properties of null \(reading ['\u2018\u2019"]width['\u2018\u2019"]\)/i.test(errorMessage)
+    ) {
+      this.handleSilentError(errorMessage, errorStack);
+      return;
+    }
+
     // 确定错误级别
     let severity = forceSeverity ?? this.classifyError(errorMessage);
 

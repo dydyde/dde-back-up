@@ -2827,6 +2827,12 @@ async signOut() {
   closeSettings() { this.modalCoord.closeSettings(); }
   async openDashboardFromSettings(): Promise<void> { await this.modalCoord.openDashboardFromSettings(); }
   async openDashboard(): Promise<void> { await this.modalCoord.openDashboard(); }
+  /**
+   * 打开仪表盘并直接落在"冲突" Tab，用于 sync-status 入口。
+   * 2026-05-15 修复：之前侧边栏"X 个冲突待处理"无任何点击响应，导致已持久化的冲突
+   * 记录在没有实时同步触发时永远无法手动处理。
+   */
+  async openDashboardAtConflicts(): Promise<void> { await this.modalCoord.openDashboard({ initialTab: 'conflicts' }); }
   openConflictCenterFromDashboard() { this.modalCoord.openConflictCenterFromDashboard(); }
   async openLoginModal(): Promise<void> { await this.modalCoord.openLoginModal(); }
   async openTrashModal(): Promise<void> { await this.modalCoord.openTrashModal(); }

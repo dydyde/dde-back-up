@@ -597,4 +597,33 @@ describe('FlowOverviewService', () => {
     expect(bounds.right).toBeGreaterThanOrEqual(x + 800);
     expect(bounds.bottom).toBeGreaterThanOrEqual(y + 600);
   }
+
+  it('overview.box.actualBounds 未就绪时 pointerdown 应安全 no-op，不修改 diagramPosition（_getOriginRect 守卫）', () => {
+    // 【2026-05-15 根因回归】GoJS Overview 在首次 measure 完成前
+    // `overview.box.actualBounds` 内部 Rect 为 null，再调 `transformViewToDoc`
+    // 会触发 "Cannot read properties of null (reading 'width')" at _getOriginRect。
+    // 这里把 box.actualBounds 替换为 NaN Rect（isReal=false）来模拟 overview 未就绪场景，
+    // beginManualBoxDrag 应当早出，整个拖拽周期不应抛错，diagram.position 也不应被修改。
+    const overview = service.overviewInstance as unknown as {
+      box: { actualBounds: InstanceType<typeof go.Rect> };
+    };
+    overview.box.actualBounds = new go.Rect(NaN, NaN, NaN, NaN);
+
+    const beforeX = diagramPosition.x;
+    const beforeY = diagramPosition.y;
+
+    // 不应抛任何异常
+    expect(() => {
+      dispatchPointer('pointerdown', 20, 20);
+      vi.runOnlyPendingTimers();
+      dispatchPointer('pointermove', 120, 90);
+      vi.runOnlyPendingTimers();
+      dispatchPointer('pointerup', 120, 90);
+      vi.runOnlyPendingTimers();
+    }).not.toThrow();
+
+    // 由于 beginManualBoxDrag 早出，diagram.position 完全没被改动
+    expect(diagramPosition.x).toBe(beforeX);
+    expect(diagramPosition.y).toBe(beforeY);
+  });
 });

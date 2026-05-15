@@ -371,4 +371,37 @@ describe('WorkspaceModalCoordinatorService', () => {
 
     expect(setInputSpy).toHaveBeenCalledWith('conflictData', { projectId: 'p-2' });
   });
+
+  // ── openDashboard initialTab & openConflictCenterFromDashboard ─────────
+
+  it('openDashboard 应通过 inputs 透传 initialTab 给 DashboardModalComponent', async () => {
+    await service.openDashboard({ initialTab: 'conflicts' });
+
+    expect(mockDynamicModal.open).toHaveBeenCalledOnce();
+    const callArgs = mockDynamicModal.open.mock.calls[0];
+    const config = callArgs[1] as { inputs?: Record<string, unknown> };
+    expect(config?.inputs).toEqual({ initialTab: 'conflicts' });
+  });
+
+  it('openConflictCenterFromDashboard 应切换已打开仪表盘的 Tab 而不是关闭它', async () => {
+    const setActiveTabSpy = vi.fn();
+    // 在打开仪表盘前替换 modalRef 的 componentRef.instance，模拟 DashboardModalComponent.setActiveTab。
+    mockDynamicModal.open.mockImplementationOnce(() => {
+      const ref = createModalRef();
+      (ref as unknown as { componentRef: { instance: unknown; setInput: unknown } }).componentRef = {
+        instance: { setActiveTab: setActiveTabSpy },
+        setInput: (...args: unknown[]) => setInputSpy(...args),
+      };
+      lastModalRef = ref;
+      return ref;
+    });
+    await service.openDashboard();
+
+    service.openConflictCenterFromDashboard();
+
+    expect(setActiveTabSpy).toHaveBeenCalledWith('conflicts');
+    expect(lastModalRef?.close).not.toHaveBeenCalled();
+    // 不再误导用户：原"请从项目列表中选择..."toast 应不再触发
+    expect(mockToast.info).not.toHaveBeenCalledWith('冲突解决中心', expect.stringContaining('请从项目列表中选择'));
+  });
 });

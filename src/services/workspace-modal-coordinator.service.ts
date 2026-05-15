@@ -147,12 +147,19 @@ export class WorkspaceModalCoordinatorService {
     await this.openDashboard();
   }
 
-  async openDashboard(): Promise<void> {
-    if (this.isModalLoading('dashboard') || this._dashboardModalRef) return;
+  async openDashboard(options?: { initialTab?: 'status' | 'conflicts' | 'queue' }): Promise<void> {
+    if (this.isModalLoading('dashboard') || this._dashboardModalRef) {
+      // 仪表盘已开：若调用方指定了 initialTab，直接切换现有实例的 Tab，避免一无所获。
+      if (options?.initialTab && this._dashboardModalRef) {
+        this.applyDashboardInitialTab(this._dashboardModalRef, options.initialTab);
+      }
+      return;
+    }
     this.setModalLoading('dashboard', true);
     try {
       const component = await this.modalLoader.loadDashboardModal();
       const modalRef = this.dynamicModal.open(component, {
+        inputs: options?.initialTab ? { initialTab: options.initialTab } : undefined,
         outputs: {
           close: () => {
             this._dashboardModalRef = null;
@@ -174,9 +181,27 @@ export class WorkspaceModalCoordinatorService {
     }
   }
 
+  /**
+   * 切换已打开仪表盘的 activeTab。
+   * 2026-05-15 修复：原 `openConflictCenterFromDashboard` 直接 close + toast 误导用户；
+   * 改为通过 componentRef 调用组件公开的 `setActiveTab` 方法（不存在时回退 setInput）。
+   */
+  private applyDashboardInitialTab(modalRef: ModalRef, tab: 'status' | 'conflicts' | 'queue'): void {
+    const componentRef = modalRef.componentRef as { instance?: unknown; setInput?: (key: string, value: unknown) => void } | null;
+    const instance = componentRef?.instance as { setActiveTab?: (tab: string) => void } | null;
+    if (instance && typeof instance.setActiveTab === 'function') {
+      instance.setActiveTab(tab);
+      return;
+    }
+    componentRef?.setInput?.('initialTab', tab);
+  }
+
   openConflictCenterFromDashboard(): void {
-    this.dynamicModal.close();
-    this.toast.info('冲突解决中心', '请从项目列表中选择有冲突的项目进行处理');
+    // 2026-05-15 根因修复：原实现 `dynamicModal.close()` + toast 把用户刚打开的仪表盘
+    // 关掉，反而让用户更找不到入口。改为在仪表盘内部直接切到 conflicts Tab。
+    if (this._dashboardModalRef) {
+      this.applyDashboardInitialTab(this._dashboardModalRef, 'conflicts');
+    }
   }
 
   // ── Login ──────────────────────────────────────────────────────────

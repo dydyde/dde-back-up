@@ -309,6 +309,22 @@ describe('GlobalErrorHandler', () => {
     expect(toastSpy.error).not.toHaveBeenCalled();
   });
 
+  it('should classify GoJS _getOriginRect null width as SILENT (Overview 未就绪噪声)', () => {
+    // 2026-05-15 新增：GoJS Overview 在首次 measure 完成前内部 Rect 为 null，
+    // 触发 _getOriginRect → "Cannot read properties of null (reading 'width')"。
+    // 已在 flow-overview.service.ts 加 box.actualBounds.isReal() 守卫，
+    // 但 GoJS 异步路径仍可能抛出，应当降级为 SILENT 不噪声。
+    const error = new TypeError("Cannot read properties of null (reading 'width')");
+    error.stack = `TypeError: Cannot read properties of null (reading 'width')
+    at pe._getOriginRect (https://nanoflow.pages.dev/chunk-5AK6LAAR.js:7:91730)
+    at Overview.transformViewToDoc (https://nanoflow.pages.dev/chunk-5AK6LAAR.js:7:91900)`;
+
+    service.handleError(error);
+
+    expect(loggerSpy.debug).toHaveBeenCalledWith('Silent error captured', expect.any(Object));
+    expect(toastSpy.error).not.toHaveBeenCalled();
+  });
+
   it('should suppress network errors as SILENT when device is offline', () => {
     // 模拟离线状态
     vi.spyOn(navigator, 'onLine', 'get').mockReturnValue(false);

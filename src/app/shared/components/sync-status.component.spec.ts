@@ -248,15 +248,33 @@ describe('SyncStatusComponent', () => {
     expect(embeddedFixture.nativeElement.textContent).not.toContain('已保存到云端');
   });
 
-  it('紧凑模式在仅有冲突时不应继续显示已保存文案', () => {
-    const compactFixture = TestBed.createComponent(SyncStatusComponent);
-    (compactFixture.componentInstance as unknown as { compact: ReturnType<typeof signal<boolean>> }).compact = signal(true);
+  it('嵌入模式点击"X 个冲突待处理"按钮应触发 openConflictCenter 事件', () => {
+    const embeddedFixture = TestBed.createComponent(SyncStatusComponent);
+    (embeddedFixture.componentInstance as unknown as { embedded: ReturnType<typeof signal<boolean>> }).embedded = signal(true);
+    conflictCount.set(2);
+    const emitSpy = vi.fn();
+    embeddedFixture.componentInstance.openConflictCenterEvent.subscribe(emitSpy);
+    embeddedFixture.detectChanges();
+
+    const btn = embeddedFixture.nativeElement.querySelector('[data-testid="open-conflict-center-btn"]') as HTMLButtonElement | null;
+    expect(btn).not.toBeNull();
+    btn?.click();
+
+    expect(emitSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('嵌入模式有冲突时应渲染"处理冲突"快捷按钮，并触发 openConflictCenter', () => {
+    const embeddedFixture = TestBed.createComponent(SyncStatusComponent);
+    (embeddedFixture.componentInstance as unknown as { embedded: ReturnType<typeof signal<boolean>> }).embedded = signal(true);
     conflictCount.set(1);
-    compactFixture.detectChanges();
+    const emitSpy = vi.fn();
+    embeddedFixture.componentInstance.openConflictCenterEvent.subscribe(emitSpy);
+    embeddedFixture.detectChanges();
 
-    const text = compactFixture.nativeElement.textContent as string;
+    const btn = embeddedFixture.nativeElement.querySelector('[data-testid="resolve-conflicts-btn"]') as HTMLButtonElement | null;
+    expect(btn).not.toBeNull();
+    btn?.click();
 
-    expect(text).toContain('1 个冲突');
-    expect(text).not.toContain('已保存');
+    expect(emitSpy).toHaveBeenCalledTimes(1);
   });
 });

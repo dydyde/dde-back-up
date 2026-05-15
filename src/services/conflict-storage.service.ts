@@ -8,7 +8,7 @@
  * - 即使应用崩溃、网络断开，用户数据都在等待处理
  * - 只存元数据就像只留路标却清理了事故现场 —— 不负责任
  */
-import { Injectable, inject, signal, computed } from '@angular/core';
+import { Injectable, inject, signal, computed, effect } from '@angular/core';
 import { LoggerService } from './logger.service';
 import { AuthService } from './auth.service';
 import { Project } from '../models';
@@ -76,6 +76,27 @@ export class ConflictStorageService {
   constructor() {
     // 初始化时加载冲突数量
     this.refreshConflictCount();
+
+    /**
+     * 2026-05-15 修复：原构造里只调一次 refreshConflictCount，登出再换号登录后
+     * `getCurrentOwnerUserId()` 变了，但 signal 仍是上一个账号的数。
+     * 跟随 `currentUserId` 变化重新计数，避免侧边栏卡死在前一账号的"X 个冲突待处理"。
+     *
+     * 用 try/catch 包裹：单元测试用 bare `Injector.create()` 没有 ChangeDetectionScheduler，
+     * 直接调 effect() 会抛 NullInjectorError。生产/TestBed 中正常生效。
+     */
+    try {
+      let lastOwner: string | null = this.authService.currentUserId();
+      effect(() => {
+        const next = this.authService.currentUserId();
+        if (next !== lastOwner) {
+          lastOwner = next;
+          void this.refreshConflictCount();
+        }
+      });
+    } catch (e) {
+      this.logger.debug('Auth 切换 effect 注册失败（通常在测试 bare injector 环境）', e);
+    }
   }
   
   /**
