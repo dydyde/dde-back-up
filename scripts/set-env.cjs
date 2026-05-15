@@ -260,8 +260,24 @@ if (!fs.existsSync(envDir)) {
   fs.mkdirSync(envDir, { recursive: true });
 }
 
-// 离线模式使用占位符
-const finalUrl = supabaseUrl || 'YOUR_SUPABASE_URL';
+// 【根因修复 2026-05-15】离线模式下，从 index.html 既有 preconnect 提示派生 Supabase URL 回退值，
+// 保证 `var SUPABASE_URL` 与 `<link rel="preconnect" href="...supabase.co">` 在 CI 中始终对齐，
+// 避免 cloudflare-migration-artifacts.contract.spec.ts 在无 env 时把硬编码的 supabase.co 提示
+// 与占位符 'YOUR_SUPABASE_URL' 拉扯成不一致状态。
+const indexHtmlPathForFallback = path.resolve(__dirname, '../index.html');
+const deriveSupabaseUrlFromIndexHtml = () => {
+  try {
+    const html = fs.readFileSync(indexHtmlPathForFallback, 'utf-8');
+    const preconnectMatch = html.match(/<link\s+rel="preconnect"\s+href="(https:\/\/[a-z0-9-]+\.supabase\.co)"/i);
+    if (preconnectMatch) return preconnectMatch[1];
+    const dnsMatch = html.match(/<link\s+rel="dns-prefetch"\s+href="(https:\/\/[a-z0-9-]+\.supabase\.co)"/i);
+    if (dnsMatch) return dnsMatch[1];
+  } catch {
+    /* index.html 不可读时回退到占位符 */
+  }
+  return null;
+};
+const finalUrl = supabaseUrl || deriveSupabaseUrlFromIndexHtml() || 'YOUR_SUPABASE_URL';
 const finalKey = supabaseAnonKey || 'YOUR_SUPABASE_ANON_KEY';
 
 // 开发环境自动登录配置（仅开发环境）
