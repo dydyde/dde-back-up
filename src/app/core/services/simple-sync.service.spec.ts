@@ -2584,6 +2584,19 @@ describe('SimpleSyncService', () => {
     it('isLoadingRemote signal 应该存在', () => {
       expect(service.isLoadingRemote()).toBe(false);
     });
+
+    it('isLoadingRemote 必须委派给 SyncStateService（修复 2026-05-15 孤儿信号根因）', () => {
+      // 【回归】此前 SimpleSyncService.isLoadingRemote 是从未被写入的孤儿 signal，
+      // SyncCoordinator 转发它，导致所有上游消费者读到的"远程加载中"永久为 false。
+      // 修复后必须与 SyncStateService.isLoadingRemote 引用同一 signal。
+      expect(service.isLoadingRemote).toBe(service['syncStateService'].isLoadingRemote);
+
+      service['syncStateService'].setLoadingRemote(true);
+      expect(service.isLoadingRemote()).toBe(true);
+
+      service['syncStateService'].setLoadingRemote(false);
+      expect(service.isLoadingRemote()).toBe(false);
+    });
   });
   
   // 【技术债务重构】此测试组应迁移至 task-sync-operations.service.spec.ts

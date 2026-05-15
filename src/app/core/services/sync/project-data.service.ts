@@ -11,7 +11,7 @@
  * 从 SimpleSyncService 提取，Sprint 9 技术债务修复
  */
 
-import { Injectable, inject, signal } from '@angular/core';
+import { Injectable, inject } from '@angular/core';
 import { SupabaseClientService } from '../../../../services/supabase-client.service';
 import { AuthService } from '../../../../services/auth.service';
 import { LoggerService } from '../../../../services/logger.service';
@@ -113,8 +113,16 @@ export class ProjectDataService {
   private readonly sessionManager = inject(SessionManagerService, { optional: true });
   private readonly tombstoneService = inject(TombstoneService);
   
-  /** 是否正在从远程加载 */
-  readonly isLoadingRemote = signal(false);
+  /**
+   * 是否正在从远程加载
+   *
+   * 【根因修复 2026-05-15】此前 ProjectDataService、SimpleSyncService 各持一份 signal，
+   * 且 SimpleSyncService 的 signal 从未被写入（孤儿信号），导致 SyncCoordinator/
+   * project.guard/mobile-todo-drawer/sync-status 等所有上游消费者读到的"远程加载中"
+   * 永久为 false。这里统一以 SyncStateService.isLoadingRemote 为单一事实源，
+   * 写入通过 setLoadingRemote(...)，所有消费者从同一 signal 读取。
+   */
+  readonly isLoadingRemote = this.syncState.isLoadingRemote;
   
   /** 离线缓存配置 */
   private readonly OFFLINE_CACHE_KEY = CACHE_CONFIG.OFFLINE_CACHE_KEY;
@@ -659,7 +667,7 @@ export class ProjectDataService {
     const client = await this.getSupabaseClient();
     if (!client) return [];
     
-    this.isLoadingRemote.set(true);
+    this.syncState.setLoadingRemote(true);
     
     try {
       // 1. 加载项目列表
@@ -753,7 +761,7 @@ export class ProjectDataService {
       });
       return [];
     } finally {
-      this.isLoadingRemote.set(false);
+      this.syncState.setLoadingRemote(false);
     }
   }
   
