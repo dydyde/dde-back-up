@@ -1349,10 +1349,12 @@ export class TaskSyncOperationsService {
           taskIds,
           baseUpdatedAt: null,
           deleteMode: 'soft',
+          baseUpdatedAtMap: this.buildTaskBaseUpdatedAtMap(taskIds),
         });
 
         if (result.status === 'applied' || result.status === 'idempotent-replay') {
           await this.applySuccessfulTaskDeleteRpc(client, result, projectId, taskIds, tombstoneTimestamps);
+          this.requeueStaleTaskDeletes(result, projectId, false, undefined, 'softDeleteTasksBatch');
           return result.affectedCount ?? taskIds.length;
         }
 
@@ -1500,10 +1502,12 @@ export class TaskSyncOperationsService {
           taskIds,
           baseUpdatedAt: null,
           deleteMode: 'purge',
+          baseUpdatedAtMap: this.buildTaskBaseUpdatedAtMap(taskIds),
         });
 
         if (result.status === 'applied' || result.status === 'idempotent-replay') {
           await this.applySuccessfulTaskDeleteRpc(client, result, projectId, taskIds);
+          this.requeueStaleTaskDeletes(result, projectId, fromRetryQueue, sourceUserId, 'purgeTasksFromCloud');
           return true;
         }
 
@@ -1611,14 +1615,69 @@ export class TaskSyncOperationsService {
       await this.tombstoneService.deleteAttachmentFilesFromStorage(client, result.attachmentPaths);
     }
 
-    this.tombstoneService.addLocalTombstones(projectId, taskIds, tombstoneTimestamps);
-    this.settleDeletedTaskDependencies(projectId, taskIds);
+    // 服务端因 stale-write 保护跳过的 task 不应被加入 tombstone（避免本地误判为已删除）
+    const skipped = new Set(result.skippedIds ?? []);
+    const actuallyDeleted = skipped.size > 0
+      ? taskIds.filter(id => !skipped.has(id))
+      : taskIds;
+
+    this.tombstoneService.addLocalTombstones(projectId, actuallyDeleted, tombstoneTimestamps);
+    this.settleDeletedTaskDependencies(projectId, actuallyDeleted);
     this.logger.info('sync_delete_tasks 成功', {
       projectId,
       taskCount: taskIds.length,
+      deletedCount: actuallyDeleted.length,
+      skippedCount: skipped.size,
       affectedCount: result.affectedCount ?? null,
       status: result.status,
     });
+  }
+
+  /**
+   * 构造 `sync_delete_tasks.base_updated_at_map`：从 TaskStore 取每个 task 的本地 updated_at 快照。
+   * 服务端据此识别"已被远端改动"的 task 并跳过删除，保护用户在新设备上做过的合法变更。
+   */
+  private buildTaskBaseUpdatedAtMap(taskIds: string[]): Record<string, string> | undefined {
+    if (!this.taskStore || taskIds.length === 0) return undefined;
+    const map: Record<string, string> = {};
+    let count = 0;
+    for (const id of taskIds) {
+      const task = this.taskStore.getTask(id);
+      const updatedAt = task?.updatedAt;
+      if (typeof updatedAt === 'string' && updatedAt.length > 0) {
+        map[id] = updatedAt;
+        count++;
+      }
+    }
+    return count > 0 ? map : undefined;
+  }
+
+  /**
+   * 服务端因 stale-write 保护跳过的 task：客户端要把它们重排回 RetryQueue，
+   * 走 pull+merge 路径而不是用陈旧 delete payload 反复打。
+   */
+  private requeueStaleTaskDeletes(
+    result: SyncRpcResult,
+    projectId: string,
+    fromRetryQueue: boolean,
+    sourceUserId: string | undefined,
+    operation: string,
+  ): void {
+    const skipped = result.skippedIds ?? [];
+    if (skipped.length === 0) return;
+
+    this.logger.warn('sync_delete_tasks 跳过陈旧 task 删除（远端版本更新）', {
+      projectId,
+      operation,
+      skippedIds: skipped,
+    });
+    this.sentryLazyLoader.captureMessage('sync_rpc_task_delete_skipped_stale', {
+      level: 'warning',
+      tags: { operation, entityType: 'task', status: result.status },
+      extra: { projectId, skippedIds: skipped },
+    });
+
+    this.queueTaskDeletesForRetry(skipped, projectId, fromRetryQueue, sourceUserId);
   }
 
   private handleRejectedTaskDeleteRpc(

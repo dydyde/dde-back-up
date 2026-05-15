@@ -515,6 +515,75 @@ describe('SyncRpcClientService', () => {
     expect(result.attachmentPaths).toEqual(['u/p/t/a.png']);
   });
 
+  it('deleteTasks: 携带 baseUpdatedAtMap 时应灌入 payload 并解析 skipped_ids 供调用方重排队', async () => {
+    const env = environment as unknown as MutableEnv;
+    env.syncRpcEnabled = true;
+
+    let capturedPayload: Record<string, unknown> | null = null;
+    const rpc = vi.fn(async (_name, payload) => {
+      capturedPayload = payload as Record<string, unknown>;
+      return {
+        data: {
+          status: 'applied',
+          project_id: 'project-1',
+          deleted_count: 1,
+          attachment_paths: [],
+          skipped_ids: ['task-2'],
+          updated_at: '2026-05-15T10:00:00.000Z',
+        },
+        error: null,
+      };
+    });
+
+    const service = buildService(rpc as never);
+    const result = await service.deleteTasks({
+      operationId: 'op-stale-delete',
+      projectId: 'project-1',
+      taskIds: ['task-1', 'task-2'],
+      baseUpdatedAt: null,
+      deleteMode: 'soft',
+      baseUpdatedAtMap: {
+        'task-1': '2026-05-15T09:00:00.000Z',
+        'task-2': '2026-05-15T09:30:00.000Z',
+      },
+    });
+
+    expect(capturedPayload).not.toBeNull();
+    expect((capturedPayload as Record<string, unknown>)['base_updated_at_map']).toEqual({
+      'task-1': '2026-05-15T09:00:00.000Z',
+      'task-2': '2026-05-15T09:30:00.000Z',
+    });
+    expect(result.status).toBe('applied');
+    expect(result.skippedIds).toEqual(['task-2']);
+  });
+
+  it('deleteTasks: 仅当 baseUpdatedAtMap 至少含一个非空值时才附带 base_updated_at_map（向后兼容）', async () => {
+    const env = environment as unknown as MutableEnv;
+    env.syncRpcEnabled = true;
+
+    let capturedPayload: Record<string, unknown> | null = null;
+    const rpc = vi.fn(async (_name, payload) => {
+      capturedPayload = payload as Record<string, unknown>;
+      return {
+        data: { status: 'applied', deleted_count: 0, attachment_paths: [] },
+        error: null,
+      };
+    });
+
+    const service = buildService(rpc as never);
+    await service.deleteTasks({
+      operationId: 'op-empty-map',
+      projectId: 'project-1',
+      taskIds: ['task-1'],
+      baseUpdatedAt: null,
+      baseUpdatedAtMap: { 'task-1': null, 'task-other': '2026-05-15T09:00:00.000Z' },
+    });
+
+    // task-1 在 map 中但 null；task-other 不在 task_ids 中 → filtered 为空 → 不应附带字段
+    expect(capturedPayload).not.toBeNull();
+    expect(Object.prototype.hasOwnProperty.call(capturedPayload!, 'base_updated_at_map')).toBe(false);
+  });
+
   it('deleted-remote-newer 状态按服务端 tombstone 冲突解析', async () => {
     const env = environment as unknown as MutableEnv;
     env.syncRpcEnabled = true;

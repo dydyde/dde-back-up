@@ -51,6 +51,11 @@ export interface SyncRpcResult {
   affectedCount?: number;
   /** 任务 purge 时服务端返回、客户端后续异步清理的附件路径。 */
   attachmentPaths?: string[];
+  /**
+   * `sync_delete_tasks` 返回：服务端发现 existing.updated_at > base + 1s 而拒绝删除的 task id 列表。
+   * 调用方应把这些 id 重排入 RetryQueue（走 pull+merge 路径），避免用陈旧 delete 覆盖远端最新状态。
+   */
+  skippedIds?: string[];
   raw: unknown;
 }
 
@@ -248,7 +253,14 @@ export class SyncRpcClientService {
     taskIds: string[];
     baseUpdatedAt: string | null;
     deleteMode?: 'soft' | 'purge';
+    /**
+     * 可选：每个 task 在本地的 `updated_at` 快照。服务端用它做 stale-write 判定
+     * （existing.updated_at > base + 1s 即跳过该 task 并写入 `skipped_ids`）。
+     * 缺省时退化为现有行为（无 stale guard）。
+     */
+    baseUpdatedAtMap?: Record<string, string | null | undefined>;
   }): Promise<SyncRpcResult> {
+    const baseMap = this.buildBaseUpdatedAtMap(params.taskIds, params.baseUpdatedAtMap);
     return this.invokeRpc('sync_delete_tasks', {
       operation_id: params.operationId,
       protocol_version: this.clientProtocolVersion(),
@@ -256,8 +268,30 @@ export class SyncRpcClientService {
       project_id: params.projectId,
       task_ids: params.taskIds,
       delete_mode: params.deleteMode ?? 'purge',
+      ...(baseMap ? { base_updated_at_map: baseMap } : {}),
       ...this.buildAuditFields(),
     });
+  }
+
+  /**
+   * 仅保留 `task_ids` 范围内有非空 updated_at 的条目，避免把不必要的 key 灌进 payload。
+   * 全空时返回 null（不附带 base_updated_at_map，服务端走 0430 原行为）。
+   */
+  private buildBaseUpdatedAtMap(
+    taskIds: string[],
+    map: Record<string, string | null | undefined> | undefined,
+  ): Record<string, string> | null {
+    if (!map) return null;
+    const filtered: Record<string, string> = {};
+    let count = 0;
+    for (const id of taskIds) {
+      const value = map[id];
+      if (typeof value === 'string' && value.length > 0) {
+        filtered[id] = value;
+        count++;
+      }
+    }
+    return count > 0 ? filtered : null;
   }
 
   // ---------------- internals ----------------
@@ -294,6 +328,9 @@ export class SyncRpcClientService {
     if (typeof obj['deleted_count'] === 'number') result.affectedCount = obj['deleted_count'] as number;
     if (Array.isArray(obj['attachment_paths'])) {
       result.attachmentPaths = obj['attachment_paths'].filter((value): value is string => typeof value === 'string');
+    }
+    if (Array.isArray(obj['skipped_ids'])) {
+      result.skippedIds = obj['skipped_ids'].filter((value): value is string => typeof value === 'string');
     }
     return result;
   }
