@@ -873,7 +873,15 @@ export class ProjectOperationService {
     remoteProject: Project | undefined;
     pendingTaskDeleteIds: string[];
     sessionContext: { ownerUserId: string | null; sessionGeneration: number };
-    activeConflict: unknown;
+    activeConflict: {
+      projectId?: string;
+      conflictedAt?: string;
+      local?: Project;
+      remote?: Project;
+      localProject?: Project;
+      remoteProject?: Project;
+      pendingTaskDeleteIds?: string[];
+    } | null;
     conflictFingerprint?: {
       projectId: string;
       ownerUserId: string | null;

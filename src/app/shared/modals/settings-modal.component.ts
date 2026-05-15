@@ -4,7 +4,7 @@ import { FormsModule } from '@angular/forms';
 import { LoggerService } from '../../../services/logger.service';
 import { UserSessionService } from '../../../services/user-session.service';
 import { PreferenceService } from '../../../services/preference.service';
-import { ExportService, type ExportData } from '../../../services/export.service';
+import { ExportService } from '../../../services/export.service';
 import { ImportService, ImportOptions } from '../../../services/import.service';
 import { AttachmentExportService } from '../../../services/attachment-export.service';
 import { AttachmentImportService, type AttachmentImportItem } from '../../../services/attachment-import.service';
@@ -15,7 +15,6 @@ import { FocusPreferenceService } from '../../../services/focus-preference.servi
 import { GateService } from '../../../services/gate.service';
 import { LocalBackupUIService } from './settings-modal/local-backup-ui.service';
 import { ThemeType, ColorMode, Project } from '../../../models';
-import { LOCAL_BACKUP_CONFIG } from '../../../config/local-backup.config';
 import { SIYUAN_CONFIG, SIYUAN_ERROR_MESSAGES } from '../../../config/siyuan.config';
 import { ExternalSourceCacheService } from '../../core/external-sources/external-source-cache.service';
 import { SiyuanPreviewService } from '../../core/external-sources/siyuan/siyuan-preview.service';
@@ -968,7 +967,7 @@ export class SettingsModalComponent {
       const message = this.formatSiyuanDiagnosisMessage(result.errorCode);
       this.siyuanConnectionStatus.set(message);
     } catch (error) {
-      this.logger.warn('思源连接诊断失败', {
+      this.logger.warn('SettingsModal', '思源连接诊断失败', {
         message: error instanceof Error ? error.message : 'unknown',
       });
       this.siyuanConnectionStatus.set('检测失败，请稍后重试');

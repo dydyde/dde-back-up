@@ -360,7 +360,7 @@ export class ImportService {
     data: ExportData,
     existingProjects: Project[],
     options: ImportOptions,
-    onProjectImported?: (project: Project) => Promise<void>
+    onProjectImported?: (project: Project) => void | Promise<void>
   ): Promise<ImportExecutionResult> {
     if (this._isImporting()) {
       return {
@@ -443,7 +443,7 @@ export class ImportService {
     exportProject: ExportProject,
     existingProject: Project | undefined,
     options: ImportOptions,
-    onProjectImported?: (project: Project) => Promise<void>
+    onProjectImported?: (project: Project) => void | Promise<void>
   ): Promise<ImportProjectResult> {
     const { conflictStrategy } = options;
     let generateNewIds = options.generateNewIds ?? false;
@@ -519,7 +519,7 @@ export class ImportService {
   private async mergeProject(
     exportProject: ExportProject,
     existingProject: Project,
-    onProjectImported?: (project: Project) => Promise<void>
+    onProjectImported?: (project: Project) => void | Promise<void>
   ): Promise<ImportProjectResult> {
     try {
       // 合并任务（按 ID 去重）

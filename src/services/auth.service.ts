@@ -761,7 +761,10 @@ export class AuthService {
     this.devAutoLoginAttempted = true;
     
     // 检查是否配置了开发环境自动登录
-    const envWithDevLogin = environment as { devAutoLogin?: { email: string; password: string }; production?: boolean };
+    const envWithDevLogin = environment as {
+      devAutoLogin?: { email: string; password: string } | null;
+      production?: boolean;
+    };
     const devAutoLogin = envWithDevLogin.devAutoLogin;
     if (!devAutoLogin || !devAutoLogin.email || !devAutoLogin.password) {
       return null;
