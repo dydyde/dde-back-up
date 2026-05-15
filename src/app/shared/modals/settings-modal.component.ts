@@ -968,7 +968,7 @@ export class SettingsModalComponent {
       const message = this.formatSiyuanDiagnosisMessage(result.errorCode);
       this.siyuanConnectionStatus.set(message);
     } catch (error) {
-      this.logger.warn('思源连接诊断失败', {
+      this.logger.warn('SettingsModal', '思源连接诊断失败', {
         message: error instanceof Error ? error.message : 'unknown',
       });
       this.siyuanConnectionStatus.set('检测失败，请稍后重试');
