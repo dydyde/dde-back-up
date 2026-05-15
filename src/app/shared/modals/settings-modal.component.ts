@@ -1005,8 +1005,9 @@ export class SettingsModalComponent {
   }
 
   async updateSiyuanRuntimeMode(event: Event): Promise<void> {
-    const value = (event.target as HTMLSelectElement | null)?.value;
-    if (value !== 'extension-relay' && value !== 'direct' && value !== 'cache-only') return;
+    const rawValue = (event.target as HTMLSelectElement | null)?.value;
+    if (rawValue !== 'extension-relay' && rawValue !== 'direct' && rawValue !== 'cache-only') return;
+    const value: SiyuanRuntimeMode = rawValue;
     const config = await this.siyuanCache.loadConfig();
     // 切到 relay 模式时把 IndexedDB 中残留的 token 清掉，避免 direct 模式遗留 token 与 relay 语义混淆。
     const nextConfig = value === 'extension-relay'
