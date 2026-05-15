@@ -11,7 +11,17 @@ export type ToastType = 'success' | 'error' | 'warning' | 'info';
  */
 export interface ToastAction {
   label: string;
-  onClick: () => void;
+  /**
+   * 点击回调。可以是同步函数（返回 void）或异步函数（返回 Promise）。
+   * 当返回 Promise 时，按钮会显示 `pendingLabel`（如果提供）并禁用，
+   * Promise 完成或 5 秒兜底超时后才 dismiss toast。
+   */
+  onClick: () => void | Promise<void>;
+  /**
+   * 点击后异步处理期间显示的标签（如 "正在刷新…"）。
+   * 不提供时按钮文案保持 `label`，但仍会被禁用直到 onClick 完成。
+   */
+  pendingLabel?: string;
 }
 
 /**

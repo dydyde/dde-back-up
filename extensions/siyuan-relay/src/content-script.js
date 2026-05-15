@@ -9,6 +9,8 @@ const ALLOWED_MESSAGE_TYPES = new Set([
   'nanoflow.siyuan.ping',
   'nanoflow.siyuan.get-preview',
   'nanoflow.siyuan.test-connection',
+  'nanoflow.siyuan.set-config',
+  'nanoflow.siyuan.get-config-status',
 ]);
 
 function isAllowedOrigin(origin) {
@@ -25,6 +27,8 @@ function isAllowedOrigin(origin) {
 function responseTypeFor(messageType) {
   if (messageType === 'nanoflow.siyuan.ping') return 'nanoflow.siyuan.pong';
   if (messageType === 'nanoflow.siyuan.test-connection') return 'nanoflow.siyuan.test-connection-result';
+  if (messageType === 'nanoflow.siyuan.set-config') return 'nanoflow.siyuan.set-config-result';
+  if (messageType === 'nanoflow.siyuan.get-config-status') return 'nanoflow.siyuan.config-status-result';
   return 'nanoflow.siyuan.preview-result';
 }
 

@@ -6,6 +6,7 @@ import { createPostHandoffSwRegistrationStrategy } from './src/services/sw-regis
 import { pushStartupTrace } from './src/utils/startup-trace';
 import { ensureBrowserNetworkSuspensionTracking } from './src/utils/browser-network-suspension';
 import { applyStartupVersionAction, decideStartupVersionAction } from './src/utils/startup-version-policy';
+import { forceClearCacheImpl, type ForceClearCacheDeps } from './src/utils/force-clear-cache-impl';
 // ============= 【P0 启动优化 2026-03-26】受控 dynamic import + head modulepreload =============
 // 关键模块改回 dynamic import，以缩小 main 静态闭包并通过 perf-startup-guard。
 // 配套保障：
@@ -160,31 +161,50 @@ async function checkAndClearCacheIfNeeded(): Promise<boolean> {
 }
 
 // ========== 强制清理缓存工具函数（仅在错误页面按钮中使用，防止外部脚本滥用）==========
-let _forceClearInvoked = false;
+// 同步注册：保证 toast「立即刷新」点击时 window.__NANOFLOW_FORCE_CLEAR_CACHE__ 必然就绪。
+// 历史上这里挂在 scheduleIdleTask，但长时间后台/隐藏 tab 中 requestIdleCallback 会被 throttle，
+// 导致用户从后台返回点击 toast 时函数尚未注册，落到 fallback `location.reload()` —— 旧 SW
+// 仍是 controller，直接命中 ngsw 缓存返回旧 HTML/JS，UI 看起来「没反应」。
 function registerForceClearCacheTool(): void {
-  (window as Window & { __NANOFLOW_FORCE_CLEAR_CACHE__?: () => Promise<void> }).__NANOFLOW_FORCE_CLEAR_CACHE__ = async function() {
-    // 限流：防止重复调用导致刷新循环
-    if (_forceClearInvoked) return;
-    _forceClearInvoked = true;
-    log('🧹 用户触发强制清理缓存...');
-    localStorage.setItem(FORCE_CLEAR_KEY, 'true');
-    
-    try {
+  const deps: ForceClearCacheDeps = {
+    clearRecoveryStorage: () => {
       clearRecoveryStorage();
-      await clearApplicationCaches();
-      await unregisterApplicationServiceWorkers();
+    },
+    clearApplicationCaches: () => clearApplicationCaches(),
+    unregisterApplicationServiceWorkers: () => unregisterApplicationServiceWorkers(),
+    setForceClearFlag: () => {
+      localStorage.setItem(FORCE_CLEAR_KEY, 'true');
+    },
+    clearForceClearFlag: () => {
       // 当前页已完成清理，移除标记避免下一次启动再次触发恢复刷新。
       localStorage.removeItem(FORCE_CLEAR_KEY);
-    } catch (e) {
-      logError('强制清理失败', e);
-    }
-    
-    window.location.replace(window.location.href);
+    },
+    replaceLocation: (href) => {
+      window.location.replace(href);
+    },
+    reloadLocation: () => {
+      window.location.reload();
+    },
+    assignHref: (href) => {
+      window.location.href = href;
+    },
+    getCurrentHref: () => window.location.href,
+    getOriginRoot: () => `${window.location.origin}/`,
+    logInfo: (message, extra) => {
+      log(`${message}${extra ? ' ' + JSON.stringify(extra) : ''}`);
+    },
+    logError: (message, err) => {
+      logError(message, err);
+    },
+  };
+
+  (window as Window & { __NANOFLOW_FORCE_CLEAR_CACHE__?: () => Promise<void> }).__NANOFLOW_FORCE_CLEAR_CACHE__ = async function() {
+    await forceClearCacheImpl(deps);
   };
 }
 
-// 将维护工具注册放到浏览器空闲阶段，避免阻塞启动热路径。
-scheduleIdleTask(() => registerForceClearCacheTool());
+// 同步注册：开销仅为一次对象属性赋值，没有 idle 化必要。
+registerForceClearCacheTool();
 
 log('Build: ' + BUILD_ID);
 log('🚀 main.ts 开始执行');

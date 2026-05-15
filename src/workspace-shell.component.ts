@@ -2622,15 +2622,30 @@ export class WorkspaceShellComponent implements OnInit, OnDestroy, AfterViewInit
         )
         .subscribe(() => {
           this.appLifecycle.markVersionReady();
-          // 使用 ToastService 显示更新通知，带操作按钮
+          // 使用 ToastService 显示更新通知，带操作按钮。
+          //
+          // 关键修复（2026-05-15）：onClick 现在先调用 swUpdate.activateUpdate()
+          // 让 waiting SW 真正进入 active 状态，然后再走 reloadViaForceClearCache。
+          // 历史实现只清缓存 + reload，在 cache 清理超时被跳过时旧 SW 仍是 controller，
+          // reload 会命中旧 ngsw 缓存返回旧 HTML/JS，UI 看起来「没反应」。
           this.toast.info(
-            '🚀 发现新版本', 
+            '🚀 发现新版本',
             '软件有更新可用，点击刷新获取最新功能',
             {
               duration: 0, // 不自动关闭
               action: {
                 label: '立即刷新',
-                onClick: () => reloadViaForceClearCache()
+                pendingLabel: '正在刷新…',
+                onClick: async () => {
+                  try {
+                    await this.swUpdate.activateUpdate();
+                    this.logger.info('SwUpdate activateUpdate succeeded');
+                  } catch (err) {
+                    // activateUpdate 在跨域 / 第三方 SW 拦截下可能失败；仍兜底走 reload。
+                    this.logger.warn('SwUpdate activateUpdate failed; falling back to force-clear-cache', err);
+                  }
+                  reloadViaForceClearCache();
+                }
               }
             }
           );

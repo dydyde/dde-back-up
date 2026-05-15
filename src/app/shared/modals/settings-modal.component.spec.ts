@@ -165,6 +165,8 @@ describe('SettingsModalComponent', () => {
 
   const mockSiyuanPreview = {
     diagnoseConnection: vi.fn().mockResolvedValue({ ok: true, mode: 'extension-relay' }),
+    pushExtensionConfig: vi.fn().mockResolvedValue({ ok: true }),
+    getExtensionConfigStatus: vi.fn().mockResolvedValue({ baseUrl: 'http://127.0.0.1:6806', hasToken: false }),
   };
 
   beforeEach(async () => {
@@ -315,7 +317,49 @@ describe('SettingsModalComponent', () => {
     await component.testSiyuanConnection();
 
     expect(component.siyuanConnectionStatus()).toContain('检测失败，请稍后重试');
-    expect(mockLogger.warn).toHaveBeenCalledWith('思源连接诊断失败', expect.objectContaining({ message: 'network' }));
+    expect(mockLogger.warn).toHaveBeenCalledWith('SettingsModal', '思源连接诊断失败', expect.objectContaining({ message: 'network' }));
+  });
+
+  it('should push SiYuan baseUrl/token to the extension when the explicit save button is clicked', async () => {
+    // 模拟用户在 token 输入框输入一个值
+    await component.updateSiyuanToken({ target: { value: 'secret-token-value' } } as unknown as Event);
+    expect(component.siyuanTokenMask()).toBe('••••••••');
+    // relay 模式下 token 不能写入 IndexedDB
+    const tokenWrites = mockSiyuanCache.saveConfig.mock.calls.filter(
+      (call: unknown[]) => Object.prototype.hasOwnProperty.call(call[0] as object, 'token') && (call[0] as { token?: string }).token,
+    );
+    expect(tokenWrites).toHaveLength(0);
+
+    await component.saveSiyuanConfigToExtension();
+
+    expect(mockSiyuanPreview.pushExtensionConfig).toHaveBeenCalledWith(
+      expect.objectContaining({ baseUrl: 'http://127.0.0.1:6806', token: 'secret-token-value' }),
+    );
+    expect(component.siyuanConnectionStatus()).toContain('已写入扩展');
+    // token 在写入扩展后必须立即从 UI 清掉
+    expect(component.siyuanTokenMask()).toBe('');
+  });
+
+  it('should map push-config failure codes to friendly messages', async () => {
+    mockSiyuanPreview.pushExtensionConfig.mockResolvedValueOnce({ ok: false, errorCode: 'extension-unavailable' });
+
+    await component.saveSiyuanConfigToExtension();
+
+    expect(component.siyuanConnectionStatus()).toContain('扩展未安装或未启用');
+  });
+
+  it('should surface an "extension not supported" badge when getConfigStatus returns null', async () => {
+    mockSiyuanPreview.getExtensionConfigStatus.mockResolvedValueOnce(null);
+
+    await component.loadSiyuanConfig();
+    fixture.detectChanges();
+
+    const badge = fixture.nativeElement.querySelector('[data-testid="siyuan-extension-status"]') as HTMLElement | null;
+    expect(badge).toBeTruthy();
+    expect(badge!.textContent ?? '').toContain('扩展未安装或版本过旧');
+    const saveBtn = fixture.nativeElement.querySelector('[data-testid="siyuan-save-to-extension"]') as HTMLButtonElement | null;
+    expect(saveBtn).toBeTruthy();
+    expect(saveBtn!.disabled).toBe(true);
   });
 
   function findButtonByText(text: string): HTMLButtonElement {

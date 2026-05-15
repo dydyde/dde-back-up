@@ -5,7 +5,13 @@ import { ExternalSourceCacheService } from '../external-source-cache.service';
 import type { ExternalSourceLink, LocalSiyuanPreviewCache, SiyuanPreviewErrorCode, SiyuanPreviewResult } from '../external-source.model';
 import { SiyuanDirectProvider } from './siyuan-direct-provider';
 import { SiyuanExtensionProvider } from './siyuan-extension-provider';
-import { SiyuanProviderError, type SiyuanPreviewProvider } from './siyuan-provider.interface';
+import {
+  SiyuanProviderError,
+  type SiyuanExtensionConfigStatus,
+  type SiyuanPreviewProvider,
+  type SiyuanPushConfigInput,
+  type SiyuanPushConfigResult,
+} from './siyuan-provider.interface';
 
 interface ActivePreviewRequest {
   linkId: string;
@@ -35,6 +41,29 @@ export class SiyuanPreviewService {
     const diagnosis = await this.extensionProvider.diagnoseConnection();
     if (diagnosis.ok) return { ok: true, mode: 'extension-relay' };
     return { ok: false, mode: 'extension-relay', errorCode: diagnosis.errorCode ?? 'unknown' };
+  }
+
+  /**
+   * relay 模式专用：把 baseUrl/token 单向写入扩展。
+   * 其它模式直接返回 runtime-not-supported，避免把 token 误推到错误的通道。
+   */
+  async pushExtensionConfig(input: SiyuanPushConfigInput): Promise<SiyuanPushConfigResult> {
+    const config = await this.cache.loadConfig();
+    if (config.runtimeMode !== 'extension-relay') {
+      return { ok: false, errorCode: 'runtime-not-supported' };
+    }
+    return this.extensionProvider.pushConfig(input);
+  }
+
+  /**
+   * relay 模式专用：读取扩展中已保存的配置状态。
+   * 返回 null 表示扩展不支持该消息（旧扩展）或不可用，UI 应据此提示用户更新扩展。
+   * 其它模式始终返回 null。
+   */
+  async getExtensionConfigStatus(): Promise<SiyuanExtensionConfigStatus | null> {
+    const config = await this.cache.loadConfig();
+    if (config.runtimeMode !== 'extension-relay') return null;
+    return this.extensionProvider.getConfigStatus();
   }
 
   async preview(link: ExternalSourceLink, options?: { forceRefresh?: boolean }): Promise<SiyuanPreviewResult> {

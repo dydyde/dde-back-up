@@ -65,6 +65,10 @@ export const APP_LIFECYCLE_CONFIG = {
 
   /**
    * 连续失败阈值：达到后触发受控刷新兜底
+   *
+   * 重要：仅统计 resume pipeline 抛出的运行时异常；会话状态失败（no-session /
+   * refresh-failed）不计入，因为 reload 不修复 session 状态，强刷只会破坏用户当前 UI。
+   * 会话失败由 SessionManager 自身的断路 + "登录已过期" toast 处理。
    */
   AUTO_RELOAD_FAILURE_THRESHOLD: 2,
 } as const;

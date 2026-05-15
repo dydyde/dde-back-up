@@ -3,7 +3,13 @@ import { SIYUAN_CONFIG } from '../../../../config/siyuan.config';
 import { isValidSiyuanBlockId } from './siyuan-link-parser';
 import { normalizePreview } from './siyuan-preview-utils';
 import type { SiyuanBlockPreview, SiyuanChildBlockPreview, SiyuanPreviewErrorCode } from '../external-source.model';
-import { SiyuanProviderError, type SiyuanPreviewProvider } from './siyuan-provider.interface';
+import {
+  SiyuanProviderError,
+  type SiyuanExtensionConfigStatus,
+  type SiyuanPreviewProvider,
+  type SiyuanPushConfigInput,
+  type SiyuanPushConfigResult,
+} from './siyuan-provider.interface';
 
 interface ExtensionResponsePayload {
   blockId?: unknown;
@@ -13,6 +19,9 @@ interface ExtensionResponsePayload {
   sourceUpdatedAt?: unknown;
   childBlocks?: unknown;
   truncated?: unknown;
+  // set-config / get-config-status 共享 data 字段语义
+  baseUrl?: unknown;
+  hasToken?: unknown;
 }
 
 interface ExtensionMessage {
@@ -23,6 +32,18 @@ interface ExtensionMessage {
   errorCode?: unknown;
   errorMessage?: unknown;
 }
+
+type RelayRequestType =
+  | 'nanoflow.siyuan.get-preview'
+  | 'nanoflow.siyuan.test-connection'
+  | 'nanoflow.siyuan.set-config'
+  | 'nanoflow.siyuan.get-config-status';
+
+type RelayResponseType =
+  | 'nanoflow.siyuan.preview-result'
+  | 'nanoflow.siyuan.test-connection-result'
+  | 'nanoflow.siyuan.set-config-result'
+  | 'nanoflow.siyuan.config-status-result';
 
 const ALLOWED_ERROR_CODES: readonly SiyuanPreviewErrorCode[] = [
   'not-configured',
@@ -80,6 +101,58 @@ export class SiyuanExtensionProvider implements SiyuanPreviewProvider {
     });
   }
 
+  /**
+   * 把 NanoFlow 设置页填写的 baseUrl/token 单向写入扩展 chrome.storage.local。
+   * - 仅在 extension-relay 模式下被调用；
+   * - token 在调用结束后由 UI 立即丢弃，不写入 NanoFlow IndexedDB；
+   * - 旧扩展（不识别 set-config）会在 PREVIEW_FETCH_TIMEOUT_MS 后超时，归为 extension-unavailable，
+   *   UI 层据此提示用户更新扩展。
+   */
+  async pushConfig(input: SiyuanPushConfigInput): Promise<SiyuanPushConfigResult> {
+    if (typeof window === 'undefined') return { ok: false, errorCode: 'runtime-not-supported' };
+    if (!await this.pingExtension()) return { ok: false, errorCode: 'extension-unavailable' };
+    // payload 严格只携带 baseUrl/token；token === undefined 表示"保持现状"；token === '' 表示"清除"。
+    const payload: Record<string, unknown> = { baseUrl: input.baseUrl };
+    if (input.token !== undefined) payload.token = input.token;
+    try {
+      const response = await this.postRelayRequest({
+        requestType: 'nanoflow.siyuan.set-config',
+        responseType: 'nanoflow.siyuan.set-config-result',
+        payload,
+      });
+      if (response.ok === true) return { ok: true };
+      return { ok: false, errorCode: this.readErrorCode(response.errorCode) };
+    } catch (error) {
+      if (error instanceof SiyuanProviderError) return { ok: false, errorCode: error.code };
+      return { ok: false, errorCode: 'unknown' };
+    }
+  }
+
+  /**
+   * 读取扩展中已保存的配置状态：仅返回 baseUrl 与 hasToken。
+   * - 旧扩展不识别该消息 → 超时 → 返回 null，UI 据此切换到"扩展版本过旧"提示。
+   * - hasToken 仅为布尔，绝不回传 token 明文。
+   */
+  async getConfigStatus(): Promise<SiyuanExtensionConfigStatus | null> {
+    if (typeof window === 'undefined') return null;
+    if (!await this.pingExtension()) return null;
+    try {
+      const response = await this.postRelayRequest({
+        requestType: 'nanoflow.siyuan.get-config-status',
+        responseType: 'nanoflow.siyuan.config-status-result',
+      });
+      if (response.ok !== true || !response.data) return null;
+      const baseUrl = this.readBoundedString(response.data.baseUrl, SIYUAN_CONFIG.MAX_URI_LENGTH);
+      return {
+        baseUrl,
+        hasToken: response.data.hasToken === true,
+      };
+    } catch {
+      // 包括超时（SiyuanProviderError('extension-unavailable')）与未知错误，UI 一律视为"不支持/不可用"。
+      return null;
+    }
+  }
+
   private async pingExtension(): Promise<boolean> {
     try {
       const requestId = crypto.randomUUID();
@@ -131,8 +204,8 @@ export class SiyuanExtensionProvider implements SiyuanPreviewProvider {
   }
 
   private postRelayRequest(args: {
-    requestType: 'nanoflow.siyuan.get-preview' | 'nanoflow.siyuan.test-connection';
-    responseType: 'nanoflow.siyuan.preview-result' | 'nanoflow.siyuan.test-connection-result';
+    requestType: RelayRequestType;
+    responseType: RelayResponseType;
     payload?: Record<string, unknown>;
     signal?: AbortSignal;
   }): Promise<ExtensionMessage> {

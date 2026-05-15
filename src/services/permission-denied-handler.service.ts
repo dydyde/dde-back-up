@@ -160,7 +160,7 @@ export class PermissionDeniedHandlerService {
           duration: 8000,
           action: {
             label: '重新登录',
-            onClick: () => window.location.href = '/login'
+            onClick: () => { window.location.href = '/login'; }
           }
         }
       );

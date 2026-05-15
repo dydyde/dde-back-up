@@ -1,4 +1,4 @@
-import { Component, inject, ChangeDetectionStrategy } from '@angular/core';
+import { Component, inject, ChangeDetectionStrategy, signal } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { ToastService, ToastMessage } from '../../../services/toast.service';
 import { UiStateService } from '../../../services/ui-state.service';
@@ -121,7 +121,8 @@ import { UiStateService } from '../../../services/ui-state.service';
               @if (message.action) {
                 <button
                   (click)="handleAction(message)"
-                  class="mt-2 font-medium rounded-md transition-colors"
+                  [disabled]="isActionPending(message.id)"
+                  class="mt-2 font-medium rounded-md transition-colors disabled:opacity-60 disabled:cursor-wait"
                   [ngClass]="{
                     'text-[10px] px-2 py-0.5': uiState.isMobile(),
                     'text-xs px-3 py-1': !uiState.isMobile(),
@@ -130,7 +131,7 @@ import { UiStateService } from '../../../services/ui-state.service';
                     'bg-amber-100 dark:bg-amber-900 text-amber-700 dark:text-amber-300 hover:bg-amber-200 dark:hover:bg-amber-800': message.type === 'warning',
                     'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300 hover:bg-blue-200 dark:hover:bg-blue-800': message.type === 'info'
                   }">
-                  {{ message.action.label }}
+                  {{ isActionPending(message.id) && message.action.pendingLabel ? message.action.pendingLabel : message.action.label }}
                 </button>
               }
             </div>
@@ -183,14 +184,81 @@ import { UiStateService } from '../../../services/ui-state.service';
 export class ToastContainerComponent {
   readonly toast = inject(ToastService);
   readonly uiState = inject(UiStateService);
+
+  /**
+   * 5 秒兜底超时：如果 action.onClick 的 Promise 5 秒还没完成（例如等待
+   * `forceClearCacheImpl` 在某些机器上 hang），也强制 dismiss 并解除 pending，
+   * 否则 toast 永远卡在「正在刷新…」状态。
+   */
+  private static readonly PENDING_FALLBACK_MS = 5000;
+
+  /** 记录当前正在执行 action 的 toast id 集合（用于 UI 禁用按钮 + 替换标签）。 */
+  private readonly pendingActionIds = signal<readonly string[]>([]);
+
+  /**
+   * 模板辅助：当前 toast 的 action 是否处于「执行中」状态。
+   */
+  isActionPending(id: string): boolean {
+    return this.pendingActionIds().includes(id);
+  }
   
   /**
-   * 处理 Toast 操作按钮点击
+   * 处理 Toast 操作按钮点击。
+   *
+   * 关键修复（2026-05-15）：
+   * - onClick 可能是异步函数（例如 `swUpdate.activateUpdate()` + 强制清缓存）。
+   * - 同步立刻 dismiss toast 会让用户失去「正在处理」的视觉反馈，看起来「点了没反应」。
+   *   现在：调用前先把 toast 标记为 pending（按钮禁用、显示 pendingLabel），等
+   *   Promise 完成或 5 秒兜底超时后再 dismiss。
    */
   handleAction(message: ToastMessage): void {
-    if (message.action?.onClick) {
-      message.action.onClick();
+    if (this.isActionPending(message.id)) {
+      return; // 防重入：用户连点
     }
-    this.toast.dismiss(message.id);
+
+    const action = message.action;
+    if (!action?.onClick) {
+      this.toast.dismiss(message.id);
+      return;
+    }
+
+    // 标记 pending，触发模板重渲染（按钮禁用 + pendingLabel）。
+    this.pendingActionIds.update(ids => [...ids, message.id]);
+
+    let dismissed = false;
+    const dismissOnce = () => {
+      if (dismissed) return;
+      dismissed = true;
+      this.pendingActionIds.update(ids => ids.filter(id => id !== message.id));
+      this.toast.dismiss(message.id);
+    };
+
+    let result: void | Promise<void>;
+    try {
+      result = action.onClick();
+    } catch {
+      dismissOnce();
+      return;
+    }
+
+    // 仅对真正异步的 onClick 启用 pending UI + 5 秒兜底。
+    // 同步返回 void 时立刻 dismiss，避免无谓的 setTimeout/clearTimeout 周期。
+    if (!(result && typeof (result as Promise<void>).then === 'function')) {
+      dismissOnce();
+      return;
+    }
+
+    // 5 秒兜底：避免 onClick Promise 永远不 resolve。
+    const fallbackTimer = setTimeout(dismissOnce, ToastContainerComponent.PENDING_FALLBACK_MS);
+
+    (result as Promise<void>)
+      .catch(() => {
+        // onClick 内部的失败不应阻塞 toast 关闭。具体业务方应在 onClick 内自行
+        // 处理失败（例如重新弹 toast / 复位 prompt flag），这里仅保证 UI 解锁。
+      })
+      .finally(() => {
+        clearTimeout(fallbackTimer);
+        dismissOnce();
+      });
   }
 }

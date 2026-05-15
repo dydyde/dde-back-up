@@ -1472,3 +1472,22 @@ const SIYUAN_PREVIEW_CONFIG = {
 ## 18. 一句话结论
 
 > **把思源当知识源头，把 NanoFlow 当执行界面；任务只挂一个或多个思源锚点，NanoFlow 自己做安全预览，用户需要深入时再跳回思源原块。对于 HTTPS PWA 的 Mixed Content 障碍，首选桌面浏览器扩展 Relay，而不是先做本地 HTTP bridge。**
+
+---
+
+## 19. 配置流（v0.2.0 追加）
+
+为消除"设置页填写 token 但不联通到扩展"的体验断层，自扩展 v0.2.0 起新增"页面 → 扩展"单向配置通道：
+
+```
+NanoFlow 设置页 ── postMessage ──▶ content-script ── chrome.runtime ──▶ background ── chrome.storage.local
+                  ◀──── ack ────                  ◀───── ack ────
+```
+
+- 设置页"保存到扩展"按钮提交 `nanoflow.siyuan.set-config { baseUrl, token? }`。
+- 设置页加载时调用 `nanoflow.siyuan.get-config-status`，仅获取 `{ baseUrl, hasToken }`，**token 明文永不回流页面**。
+- 页面端不再把 token 写入 IndexedDB（`siyuan-local-config:<userId>` 在 `extension-relay` 模式下不携带 `token` 字段）。
+- 旧扩展（< v0.2.0）会因不识别新消息而触发超时，UI 自动展示"扩展未安装或版本过旧"徽标并禁用"保存到扩展"按钮，原有 Options 页流程不破坏。
+
+整体架构图（§ 5）保持不变；本节只描述配置写入路径。
+

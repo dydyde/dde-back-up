@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "NanoFlow SiYuan Relay",
   "description": "只读转发 NanoFlow 的思源块预览请求，token 仅保存在浏览器扩展本机存储。",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "permissions": ["storage"],
   "host_permissions": [
     "http://127.0.0.1:6806/*",

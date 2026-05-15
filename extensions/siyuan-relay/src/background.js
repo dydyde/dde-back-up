@@ -2,6 +2,7 @@ const DEFAULT_BASE_URL = 'http://127.0.0.1:6806';
 const PREVIEW_FETCH_TIMEOUT_MS = 5000;
 const MAX_PREVIEW_CHILDREN = 10;
 const MAX_PREVIEW_CHARS = 1200;
+const MAX_TOKEN_LENGTH = 256;
 const BLOCK_ID_PATTERN = /^\d{14}-[a-z0-9]{7}$/;
 const SIYUAN_BLOCK_REF_PATTERN = /\(\((\d{14}-[a-z0-9]{7})(?:\s+"([^"]*)")?\)\)/g;
 const ALLOWED_API_PATHS = new Set([
@@ -28,7 +29,69 @@ async function handleMessage(message) {
   if (message.type === 'nanoflow.siyuan.get-preview') {
     return getPreview(message);
   }
+  if (message.type === 'nanoflow.siyuan.set-config') {
+    return setConfig(message);
+  }
+  if (message.type === 'nanoflow.siyuan.get-config-status') {
+    return getConfigStatus(message);
+  }
   return buildPreviewError(message, 'unknown');
+}
+
+async function setConfig(message) {
+  const requestId = readRequestId(message);
+  const payload = message?.payload;
+  // 仅允许 payload 中出现 baseUrl/token 两个键，拒绝任何额外字段以收敛 attack surface。
+  if (!payload || typeof payload !== 'object') {
+    return { type: 'nanoflow.siyuan.set-config-result', requestId, ok: false, errorCode: 'unknown' };
+  }
+  const rawBaseUrl = typeof payload.baseUrl === 'string' ? payload.baseUrl.trim() : '';
+  const baseUrl = rawBaseUrl || DEFAULT_BASE_URL;
+  if (!isTrustedBaseUrl(baseUrl)) {
+    // 复用 token-invalid 而非新增错误码：UI 在 saveSiyuanConfigToExtension 中已用同一份白名单校验过 baseUrl，
+    // 走到这里说明页面被绕过（被注入脚本或调试器），此时把请求统一拒绝即可；下游 UI 的提示文案虽然偏向 token，
+    // 但用户最终修复路径仍是"改 baseUrl 或 token 后重新保存"。
+    return { type: 'nanoflow.siyuan.set-config-result', requestId, ok: false, errorCode: 'token-invalid' };
+  }
+  // 空字符串视为"清除授权"，与扩展 Options 页 clearConfig 行为一致。
+  const hasTokenField = Object.prototype.hasOwnProperty.call(payload, 'token');
+  const rawToken = hasTokenField && typeof payload.token === 'string' ? payload.token : undefined;
+  if (rawToken !== undefined && rawToken.length > MAX_TOKEN_LENGTH) {
+    return { type: 'nanoflow.siyuan.set-config-result', requestId, ok: false, errorCode: 'token-invalid' };
+  }
+  try {
+    await chrome.storage.local.set({ baseUrl });
+    if (hasTokenField) {
+      if (rawToken && rawToken.length > 0) {
+        await chrome.storage.local.set({ token: rawToken });
+      } else {
+        await chrome.storage.local.remove(['token']);
+      }
+    }
+    return { type: 'nanoflow.siyuan.set-config-result', requestId, ok: true };
+  } catch {
+    return { type: 'nanoflow.siyuan.set-config-result', requestId, ok: false, errorCode: 'unknown' };
+  }
+}
+
+async function getConfigStatus(message) {
+  const requestId = readRequestId(message);
+  try {
+    const stored = await chrome.storage.local.get(['baseUrl', 'token']);
+    const baseUrl = typeof stored.baseUrl === 'string' && isTrustedBaseUrl(stored.baseUrl)
+      ? stored.baseUrl
+      : DEFAULT_BASE_URL;
+    const hasToken = typeof stored.token === 'string' && stored.token.length > 0;
+    // 仅回传 baseUrl 与 hasToken，绝不把 token 明文经 message channel 返回页面。
+    return {
+      type: 'nanoflow.siyuan.config-status-result',
+      requestId,
+      ok: true,
+      data: { baseUrl, hasToken },
+    };
+  } catch {
+    return { type: 'nanoflow.siyuan.config-status-result', requestId, ok: false, errorCode: 'unknown' };
+  }
 }
 
 async function testConnection(message) {

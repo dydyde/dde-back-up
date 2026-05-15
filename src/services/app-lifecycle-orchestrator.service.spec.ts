@@ -12,6 +12,12 @@ import { APP_LIFECYCLE_CONFIG } from '../config';
 import { FEATURE_FLAGS } from '../config/feature-flags.config';
 import { FocusStartupProbeService } from './focus-startup-probe.service';
 import { FOCUS_CONFIG } from '../config/focus.config';
+import { SwUpdate } from '@angular/service-worker';
+
+const reloadViaForceClearCacheMock = vi.fn();
+vi.mock('../utils/force-clear-cache', () => ({
+  reloadViaForceClearCache: (fallback?: () => void) => reloadViaForceClearCacheMock(fallback),
+}));
 
 describe('AppLifecycleOrchestratorService', () => {
   let service: AppLifecycleOrchestratorService;
@@ -37,6 +43,12 @@ describe('AppLifecycleOrchestratorService', () => {
     info: ReturnType<typeof vi.fn>;
     warning: ReturnType<typeof vi.fn>;
   };
+  let mockSentry: {
+    addBreadcrumb: ReturnType<typeof vi.fn>;
+    setMeasurement: ReturnType<typeof vi.fn>;
+    captureException: ReturnType<typeof vi.fn>;
+    captureMessage: ReturnType<typeof vi.fn>;
+  };
   let originalRequestIdleCallbackDescriptor: PropertyDescriptor | undefined;
   const originalResumeInteractionFirst = FEATURE_FLAGS.RESUME_INTERACTION_FIRST_V1;
   const originalPulseDedup = FEATURE_FLAGS.RESUME_PULSE_DEDUP_V1;
@@ -57,6 +69,9 @@ describe('AppLifecycleOrchestratorService', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-02-14T00:00:00.000Z'));
+    if (typeof localStorage !== 'undefined') {
+      localStorage.removeItem('nanoflow.lifecycle.auto-reload');
+    }
     originalRequestIdleCallbackDescriptor = Object.getOwnPropertyDescriptor(window, 'requestIdleCallback');
     Object.defineProperty(window, 'requestIdleCallback', {
       configurable: true,
@@ -106,6 +121,15 @@ describe('AppLifecycleOrchestratorService', () => {
       warning: vi.fn(),
     };
 
+    mockSentry = {
+      addBreadcrumb: vi.fn(),
+      setMeasurement: vi.fn(),
+      captureException: vi.fn(),
+      captureMessage: vi.fn(),
+    };
+
+    reloadViaForceClearCacheMock.mockClear();
+
     const mockLoggerCategory = {
       info: vi.fn(),
       warn: vi.fn(),
@@ -122,14 +146,12 @@ describe('AppLifecycleOrchestratorService', () => {
         { provide: FocusStartupProbeService, useValue: mockFocusStartupProbe },
         { provide: SyncCoordinatorService, useValue: mockSyncCoordinator },
         { provide: ToastService, useValue: mockToast },
+        // SwUpdate 由 angular/service-worker 提供；测试中默认 disabled，
+        // 行为接近本地开发（即 activateUpdate 不会被调用）。
+        { provide: SwUpdate, useValue: { isEnabled: false, activateUpdate: vi.fn() } },
         {
           provide: SentryLazyLoaderService,
-          useValue: {
-            addBreadcrumb: vi.fn(),
-            setMeasurement: vi.fn(),
-            captureException: vi.fn(),
-            captureMessage: vi.fn(),
-          },
+          useValue: mockSentry,
         },
         {
           provide: LoggerService,
@@ -480,5 +502,227 @@ describe('AppLifecycleOrchestratorService', () => {
       source: 'resume-remote',
       reloadLocal: false,
     });
+  });
+
+  describe('auto-reload 仅在 pipeline 真异常时触发', () => {
+    /** 找到带指定 message 的 lifecycle.resume.fail breadcrumb，断言 data.failureKind */
+    const findFailBreadcrumbs = () =>
+      mockSentry.addBreadcrumb.mock.calls
+        .map(([entry]) => entry as { message?: string; data?: Record<string, unknown> })
+        .filter(entry => entry.message === 'lifecycle.resume.fail');
+
+    const expectNoAutoReload = (): void => {
+      expect(reloadViaForceClearCacheMock).not.toHaveBeenCalled();
+      const reloadMessageCalls = mockSentry.captureMessage.mock.calls.filter(
+        ([message]) => message === 'Lifecycle auto reload scheduled'
+      );
+      expect(reloadMessageCalls).toHaveLength(0);
+      expect(mockToast.warning).not.toHaveBeenCalledWith(
+        '恢复失败',
+        expect.anything(),
+        expect.anything()
+      );
+    };
+
+    it('regression: 连续 no-session 不应触发 auto-reload，且 breadcrumb 含 failureKind', async () => {
+      mockSessionManager.validateOrRefreshOnResume.mockResolvedValue({
+        ok: false,
+        refreshed: false,
+        deferred: false,
+        reason: 'no-session',
+      });
+
+      await service.triggerResume('visibility-quick');
+      await service.triggerResume('visibility-quick');
+      await flushResumeWithoutDrainingLongTimers();
+
+      expectNoAutoReload();
+
+      const failCrumbs = findFailBreadcrumbs();
+      expect(failCrumbs.length).toBeGreaterThanOrEqual(2);
+      for (const crumb of failCrumbs) {
+        expect(crumb.data?.['failureKind']).toBe('no-session');
+        expect(crumb.data?.['sessionFailureReason']).toBe('no-session');
+      }
+    });
+
+    it('regression: 连续 refresh-failed 不应触发 auto-reload', async () => {
+      mockSessionManager.validateOrRefreshOnResume.mockResolvedValue({
+        ok: false,
+        refreshed: false,
+        deferred: false,
+        reason: 'refresh-failed',
+      });
+
+      await service.triggerResume('visibility-quick');
+      await service.triggerResume('visibility-quick');
+      await flushResumeWithoutDrainingLongTimers();
+
+      expectNoAutoReload();
+      const failCrumbs = findFailBreadcrumbs();
+      expect(failCrumbs.length).toBeGreaterThanOrEqual(2);
+      for (const crumb of failCrumbs) {
+        expect(crumb.data?.['failureKind']).toBe('refresh-failed');
+      }
+    });
+
+    it('pipeline 真异常达到阈值后应触发 auto-reload，并标记 failureKind=pipeline-exception', async () => {
+      mockSimpleSync.recoverAfterResume.mockRejectedValue(new Error('boom'));
+
+      await service.triggerResume('visibility-quick');
+      await service.triggerResume('visibility-quick');
+      await flushResumeWithoutDrainingLongTimers();
+
+      const reloadMessageCalls = mockSentry.captureMessage.mock.calls.filter(
+        ([message]) => message === 'Lifecycle auto reload scheduled'
+      );
+      expect(reloadMessageCalls).toHaveLength(1);
+      const [, options] = reloadMessageCalls[0] as [string, { tags?: Record<string, unknown> }];
+      expect(options.tags?.['failureKind']).toBe('pipeline-exception');
+
+      expect(mockToast.warning).toHaveBeenCalledWith(
+        '恢复失败',
+        expect.any(String),
+        expect.any(Object)
+      );
+
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(reloadViaForceClearCacheMock).toHaveBeenCalledTimes(1);
+
+      const failCrumbs = findFailBreadcrumbs();
+      expect(failCrumbs.length).toBeGreaterThanOrEqual(2);
+      for (const crumb of failCrumbs) {
+        expect(crumb.data?.['failureKind']).toBe('pipeline-exception');
+      }
+    });
+
+    it('counter-isolation: no-session 不会累加 pipeline 计数，真异常仍按 catch 计数升级', async () => {
+      // 先两次 no-session 失败：consecutiveSessionFailures = 2，consecutiveFailures = 0
+      mockSessionManager.validateOrRefreshOnResume
+        .mockResolvedValueOnce({ ok: false, refreshed: false, deferred: false, reason: 'no-session' })
+        .mockResolvedValueOnce({ ok: false, refreshed: false, deferred: false, reason: 'no-session' });
+
+      await service.triggerResume('visibility-quick');
+      await service.triggerResume('visibility-quick');
+      await flushResumeWithoutDrainingLongTimers();
+
+      expectNoAutoReload();
+
+      // 第三次：一次 pipeline 真异常 → consecutiveFailures = 1，仍未达到阈值 2
+      mockSessionManager.validateOrRefreshOnResume.mockResolvedValueOnce({
+        ok: true,
+        refreshed: false,
+        deferred: false,
+      });
+      mockSimpleSync.recoverAfterResume.mockRejectedValueOnce(new Error('boom-1'));
+
+      await service.triggerResume('visibility-quick');
+      await flushResumeWithoutDrainingLongTimers();
+
+      expect(reloadViaForceClearCacheMock).not.toHaveBeenCalled();
+      const beforeReloadCalls = mockSentry.captureMessage.mock.calls.filter(
+        ([message]) => message === 'Lifecycle auto reload scheduled'
+      );
+      expect(beforeReloadCalls).toHaveLength(0);
+
+      // 第四次：第二次 pipeline 真异常 → consecutiveFailures = 2，触发 reload
+      mockSessionManager.validateOrRefreshOnResume.mockResolvedValueOnce({
+        ok: true,
+        refreshed: false,
+        deferred: false,
+      });
+      mockSimpleSync.recoverAfterResume.mockRejectedValueOnce(new Error('boom-2'));
+
+      await service.triggerResume('visibility-quick');
+      await flushResumeWithoutDrainingLongTimers();
+
+      const afterReloadCalls = mockSentry.captureMessage.mock.calls.filter(
+        ([message]) => message === 'Lifecycle auto reload scheduled'
+      );
+      expect(afterReloadCalls).toHaveLength(1);
+    });
+
+    it('deferred 路径不应累加任何失败计数器', async () => {
+      mockSessionManager.validateOrRefreshOnResume.mockResolvedValue({
+        ok: false,
+        refreshed: false,
+        deferred: true,
+        reason: 'client-unready',
+      });
+
+      await service.triggerResume('visibility-quick');
+      await service.triggerResume('visibility-quick');
+      await flushResumeWithoutDrainingLongTimers();
+
+      expectNoAutoReload();
+
+      // deferred 应记 success breadcrumb（带 deferred: true），不应记 fail
+      expect(findFailBreadcrumbs()).toHaveLength(0);
+    });
+  });
+
+  it('「检测到新版本」prompt: 后台超阈值 + 有 pending version 时应弹 toast', async () => {
+    service.initialize();
+    service.markVersionReady();
+
+    // 模拟后台 > NEW_VERSION_PROMPT_THRESHOLD_MS
+    setVisibilityState('hidden');
+    document.dispatchEvent(new Event('visibilitychange'));
+    vi.setSystemTime(new Date(Date.now() + APP_LIFECYCLE_CONFIG.NEW_VERSION_PROMPT_THRESHOLD_MS + 1));
+    setVisibilityState('visible');
+    document.dispatchEvent(new Event('visibilitychange'));
+
+    await flushResumeWithoutDrainingLongTimers();
+
+    expect(mockToast.info).toHaveBeenCalledWith(
+      '检测到新版本',
+      expect.any(String),
+      expect.objectContaining({
+        action: expect.objectContaining({
+          label: '立即刷新',
+          pendingLabel: '正在刷新…',
+        }),
+      })
+    );
+  });
+
+  it('「检测到新版本」prompt: 点击 onClick 失败后应复位抑制 flag，下一次 resume 仍能弹', async () => {
+    service.initialize();
+    service.markVersionReady();
+
+    // 第一次：触发后台 > 阈值，弹出 toast
+    setVisibilityState('hidden');
+    document.dispatchEvent(new Event('visibilitychange'));
+    vi.setSystemTime(new Date(Date.now() + APP_LIFECYCLE_CONFIG.NEW_VERSION_PROMPT_THRESHOLD_MS + 1));
+    setVisibilityState('visible');
+    document.dispatchEvent(new Event('visibilitychange'));
+    await flushResumeWithoutDrainingLongTimers();
+
+    expect(mockToast.info).toHaveBeenCalledTimes(1);
+    const firstCall = mockToast.info.mock.calls[0];
+    const action = firstCall[2].action;
+
+    // 模拟 onClick 全链路失败：与 #57 合并后 `reloadViaForceClearCache` 被
+    // 顶部 `vi.mock` 拦截为 `reloadViaForceClearCacheMock`，让它对第一次调用抛错，
+    // 触发 `triggerVersionReload` catch 分支复位 `hasShownResumeVersionPrompt`。
+    reloadViaForceClearCacheMock.mockImplementationOnce(() => {
+      throw new Error('reload blocked');
+    });
+
+    try {
+      await action.onClick();
+    } catch {
+      // triggerVersionReload 内部已 catch；外部不应抛
+    }
+
+    // 第二次 resume（再次超阈值）：应再次弹 toast，证明 flag 已复位
+    setVisibilityState('hidden');
+    document.dispatchEvent(new Event('visibilitychange'));
+    vi.setSystemTime(new Date(Date.now() + APP_LIFECYCLE_CONFIG.NEW_VERSION_PROMPT_THRESHOLD_MS + 1));
+    setVisibilityState('visible');
+    document.dispatchEvent(new Event('visibilitychange'));
+    await flushResumeWithoutDrainingLongTimers();
+
+    expect(mockToast.info).toHaveBeenCalledTimes(2);
   });
 });
