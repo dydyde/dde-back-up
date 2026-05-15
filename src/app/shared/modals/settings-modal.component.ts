@@ -952,6 +952,8 @@ export class SettingsModalComponent {
   }
 
   onSiyuanConfigSubmit(event: Event): void {
+    // 该 form 仅用于满足浏览器对 password input 的结构化语义要求（避免 DOM 警告）；
+    // 实际保存逻辑仍由各字段的 (change) 事件就地持久化。
     event.preventDefault();
   }
 

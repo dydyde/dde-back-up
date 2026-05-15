@@ -98,6 +98,7 @@ export class SiyuanExtensionProvider implements SiyuanPreviewProvider {
             resolve(message.ok === true);
             return;
           }
+          // 兼容旧 content-script：runtime 异常时可能统一回 preview-result。
           if (message.type === 'nanoflow.siyuan.preview-result' && this.readErrorCode(message.errorCode) === 'extension-unavailable') {
             window.clearTimeout(timer);
             window.removeEventListener('message', listener);

@@ -6,6 +6,7 @@
 
 - token 只保存在扩展 `chrome.storage.local`，不会写入 NanoFlow、Supabase 或预览缓存。
 - content script 只在 NanoFlow 正式域名、本地开发域名和预览域名注入（含 `https://www.nanoflow.app`，以及 `http://localhost:*` / `http://127.0.0.1:*` 本地端口）。
+- 本地开发放行任意 localhost 端口是为了兼容 Vite/Angular 多端口调试；请勿在启用扩展时运行不可信本地服务。
 - background 只允许访问策划案中列出的只读接口：
   - `/api/system/version`
   - `/api/block/getBlockKramdown`
