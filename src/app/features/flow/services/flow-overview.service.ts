@@ -919,21 +919,6 @@ export class FlowOverviewService {
       const vb = this.diagram.viewportBounds;
       if (!vb.isReal()) return;
 
-      /**
-       * 2026-05-15 根因修复：GoJS `_getOriginRect` 报 "Cannot read properties of
-       * null (reading 'width')" 是因为在 Overview 还没完成首次 measure 时，
-       * `overview.box.actualBounds` 内部 Rect 为 null。`transformViewToDoc` 会
-       * 反查 box.actualBounds 来反推 view→doc，未就绪则崩在 GoJS 内部。
-       *
-       * 与同文件 `updateOverviewBoxViewportBounds` 已有的 `box?.actualBounds?.isReal()`
-       * 守卫保持一致：未就绪时早出，避免触发 GoJS 内部空引用。
-       */
-      const boxBounds = this.overview.box?.actualBounds;
-      if (!boxBounds || !boxBounds.isReal()) {
-        this.logger.debug('beginManualBoxDrag: overview.box.actualBounds 未就绪，跳过手动拖拽初始化');
-        return;
-      }
-
       // 【2026-05-11 根因修复】新拖拽周期开始：重置位移标记。
       // 配合 updateScaleTowardTarget 仅在 dragging && hasMovement 时使用 smartLerp，
       // 保证 press 不动场景的 apply snap 到 target，消除 scale 残差跳动。
