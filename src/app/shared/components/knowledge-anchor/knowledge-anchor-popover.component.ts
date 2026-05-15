@@ -1,6 +1,7 @@
 import { ChangeDetectionStrategy, Component, inject, input, output, signal } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { SIYUAN_CONFIG, SIYUAN_ERROR_MESSAGES } from '../../../../config/siyuan.config';
+import { LoggerService } from '../../../../services/logger.service';
 import type { ExternalSourceLink, SiyuanPreviewResult } from '../../../core/external-sources/external-source.model';
 import { ExternalSourceLinkService } from '../../../core/external-sources/external-source-link.service';
 import { SiyuanPreviewService } from '../../../core/external-sources/siyuan/siyuan-preview.service';
@@ -72,6 +73,7 @@ import { shortenSiyuanBlockId } from '../../../core/external-sources/siyuan/siyu
 export class KnowledgeAnchorPopoverComponent {
   private readonly previewService = inject(SiyuanPreviewService);
   private readonly linkService = inject(ExternalSourceLinkService);
+  private readonly logger = inject(LoggerService).category('KnowledgeAnchorPopover');
 
   readonly link = input.required<ExternalSourceLink>();
   readonly hoverInside = output<void>();
@@ -87,7 +89,15 @@ export class KnowledgeAnchorPopoverComponent {
 
   async load(forceRefresh: boolean): Promise<void> {
     this.result.set({ status: 'loading' });
-    this.result.set(await this.previewService.preview(this.link(), { forceRefresh }));
+    try {
+      this.result.set(await this.previewService.preview(this.link(), { forceRefresh }));
+    } catch (error) {
+      this.logger.warn('桌面思源预览加载失败，降级为安全错误态', {
+        linkId: this.link().id,
+        message: error instanceof Error ? error.message : 'unknown',
+      });
+      this.result.set({ status: 'error', errorCode: 'unknown' });
+    }
   }
 
   open(): void {

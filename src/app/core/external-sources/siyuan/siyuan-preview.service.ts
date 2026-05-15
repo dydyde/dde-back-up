@@ -32,8 +32,9 @@ export class SiyuanPreviewService {
         ? { ok: true, mode: 'direct' }
         : { ok: false, mode: 'direct', errorCode: 'runtime-not-supported' };
     }
-    if (await this.extensionProvider.isAvailable()) return { ok: true, mode: 'extension-relay' };
-    return { ok: false, mode: 'extension-relay', errorCode: 'extension-unavailable' };
+    const diagnosis = await this.extensionProvider.diagnoseConnection();
+    if (diagnosis.ok) return { ok: true, mode: 'extension-relay' };
+    return { ok: false, mode: 'extension-relay', errorCode: diagnosis.errorCode ?? 'unknown' };
   }
 
   async preview(link: ExternalSourceLink, options?: { forceRefresh?: boolean }): Promise<SiyuanPreviewResult> {

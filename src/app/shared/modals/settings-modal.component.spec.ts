@@ -306,7 +306,16 @@ describe('SettingsModalComponent', () => {
 
     await component.testSiyuanConnection();
 
-    expect(component.siyuanConnectionStatus()).toContain('安装 NanoFlow 扩展后可实时预览');
+    expect(component.siyuanConnectionStatus()).toContain('扩展未安装或未注入当前页面');
+  });
+
+  it('should keep SiYuan diagnose failures local to settings status', async () => {
+    mockSiyuanPreview.diagnoseConnection.mockRejectedValueOnce(new Error('network'));
+
+    await component.testSiyuanConnection();
+
+    expect(component.siyuanConnectionStatus()).toContain('检测失败，请稍后重试');
+    expect(mockLogger.warn).toHaveBeenCalledWith('思源连接诊断失败', expect.objectContaining({ message: 'network' }));
   });
 
   function findButtonByText(text: string): HTMLButtonElement {

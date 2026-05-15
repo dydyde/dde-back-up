@@ -331,25 +331,27 @@ const SIYUAN_TOKEN_MASK = '••••••••';
                   <option value="cache-only">仅缓存与深链</option>
                 </select>
               </label>
-              <label class="block space-y-1">
-                <span class="text-[10px] font-bold text-slate-500 dark:text-stone-400">本地思源地址</span>
-                <input
-                  type="url"
-                  class="w-full rounded-lg border border-slate-200 dark:border-stone-600 bg-slate-50 dark:bg-stone-700 px-2 py-1.5 text-xs text-slate-700 dark:text-stone-200"
-                  [value]="siyuanBaseUrl()"
-                  (change)="updateSiyuanBaseUrl($event)"
-                  [placeholder]="defaultSiyuanBaseUrl" />
-              </label>
-              <label class="block space-y-1">
-                <span class="text-[10px] font-bold text-slate-500 dark:text-stone-400">本机 Token（可选，直连模式使用）</span>
-                <input
-                  type="password"
-                  autocomplete="off"
-                  class="w-full rounded-lg border border-slate-200 dark:border-stone-600 bg-slate-50 dark:bg-stone-700 px-2 py-1.5 text-xs text-slate-700 dark:text-stone-200"
-                  [value]="siyuanTokenMask()"
-                  (change)="updateSiyuanToken($event)"
-                  placeholder="留空则仅使用扩展或缓存" />
-              </label>
+              <form class="space-y-3" (submit)="onSiyuanConfigSubmit($event)">
+                <label class="block space-y-1">
+                  <span class="text-[10px] font-bold text-slate-500 dark:text-stone-400">本地思源地址</span>
+                  <input
+                    type="url"
+                    class="w-full rounded-lg border border-slate-200 dark:border-stone-600 bg-slate-50 dark:bg-stone-700 px-2 py-1.5 text-xs text-slate-700 dark:text-stone-200"
+                    [value]="siyuanBaseUrl()"
+                    (change)="updateSiyuanBaseUrl($event)"
+                    [placeholder]="defaultSiyuanBaseUrl" />
+                </label>
+                <label class="block space-y-1">
+                  <span class="text-[10px] font-bold text-slate-500 dark:text-stone-400">本机 Token（可选，直连模式使用）</span>
+                  <input
+                    type="password"
+                    autocomplete="off"
+                    class="w-full rounded-lg border border-slate-200 dark:border-stone-600 bg-slate-50 dark:bg-stone-700 px-2 py-1.5 text-xs text-slate-700 dark:text-stone-200"
+                    [value]="siyuanTokenMask()"
+                    (change)="updateSiyuanToken($event)"
+                    placeholder="留空则仅使用扩展或缓存" />
+                </label>
+              </form>
               <div class="grid grid-cols-3 gap-2">
                 <button type="button" class="rounded-lg border border-indigo-200 dark:border-indigo-800 px-2 py-1.5 text-[10px] font-bold text-indigo-600 dark:text-indigo-300" (click)="testSiyuanConnection()">
                   测试连接
@@ -949,15 +951,28 @@ export class SettingsModalComponent {
     this.siyuanTokenMask.set(value ? SIYUAN_TOKEN_MASK : '');
   }
 
+  onSiyuanConfigSubmit(event: Event): void {
+    // 该 form 仅用于满足浏览器对 password input 的结构化语义要求（避免 DOM 警告）；
+    // 实际保存逻辑仍由各字段的 (change) 事件就地持久化。
+    event.preventDefault();
+  }
+
   async testSiyuanConnection(): Promise<void> {
     this.siyuanConnectionStatus.set('正在检测思源连接…');
-    const result = await this.siyuanPreview.diagnoseConnection();
-    if (result.ok) {
-      this.siyuanConnectionStatus.set(result.mode === 'cache-only' ? '当前为仅缓存与深链模式' : '思源预览通道可用');
-      return;
+    try {
+      const result = await this.siyuanPreview.diagnoseConnection();
+      if (result.ok) {
+        this.siyuanConnectionStatus.set(result.mode === 'cache-only' ? '当前为仅缓存与深链模式' : '思源预览通道可用');
+        return;
+      }
+      const message = this.formatSiyuanDiagnosisMessage(result.errorCode);
+      this.siyuanConnectionStatus.set(message);
+    } catch (error) {
+      this.logger.warn('思源连接诊断失败', {
+        message: error instanceof Error ? error.message : 'unknown',
+      });
+      this.siyuanConnectionStatus.set('检测失败，请稍后重试');
     }
-    const message = SIYUAN_ERROR_MESSAGES[result.errorCode ?? 'unknown'] ?? SIYUAN_ERROR_MESSAGES.unknown;
-    this.siyuanConnectionStatus.set(message);
   }
 
   async clearSiyuanCache(): Promise<void> {
@@ -969,6 +984,11 @@ export class SettingsModalComponent {
     await this.siyuanCache.forgetConfig();
     await this.loadSiyuanConfig();
     this.siyuanConnectionStatus.set('已忘记本机思源授权');
+  }
+
+  private formatSiyuanDiagnosisMessage(errorCode?: string): string {
+    if (errorCode === 'extension-unavailable') return '扩展未安装或未注入当前页面，请刷新后重试';
+    return SIYUAN_ERROR_MESSAGES[errorCode ?? 'unknown'] ?? SIYUAN_ERROR_MESSAGES.unknown;
   }
   
   toggleAutoResolve() {

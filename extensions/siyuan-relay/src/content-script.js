@@ -1,9 +1,8 @@
 const BUILTIN_ALLOWED_ORIGINS = new Set([
   'https://nanoflow.app',
+  'https://www.nanoflow.app',
   'https://nanoflow.pages.dev',
   'https://dde-eight.vercel.app',
-  'http://localhost',
-  'http://127.0.0.1',
 ]);
 
 const ALLOWED_MESSAGE_TYPES = new Set([
@@ -15,15 +14,23 @@ const ALLOWED_MESSAGE_TYPES = new Set([
 function isAllowedOrigin(origin) {
   try {
     const url = new URL(origin);
-    return BUILTIN_ALLOWED_ORIGINS.has(url.origin);
+    if (BUILTIN_ALLOWED_ORIGINS.has(url.origin)) return true;
+    // 本地开发允许任意 localhost/127.0.0.1 端口（Vite/Angular/preview 端口可能变化）。
+    return url.protocol === 'http:' && (url.hostname === 'localhost' || url.hostname === '127.0.0.1');
   } catch {
     return false;
   }
 }
 
+function responseTypeFor(messageType) {
+  if (messageType === 'nanoflow.siyuan.ping') return 'nanoflow.siyuan.pong';
+  if (messageType === 'nanoflow.siyuan.test-connection') return 'nanoflow.siyuan.test-connection-result';
+  return 'nanoflow.siyuan.preview-result';
+}
+
 function buildErrorResponse(message, errorCode = 'unknown') {
   return {
-    type: 'nanoflow.siyuan.preview-result',
+    type: responseTypeFor(message?.type),
     requestId: typeof message?.requestId === 'string' ? message.requestId : '',
     ok: false,
     errorCode,

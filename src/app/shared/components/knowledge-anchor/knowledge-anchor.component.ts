@@ -3,6 +3,7 @@ import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { A11yModule } from '@angular/cdk/a11y';
 import { SIYUAN_ERROR_MESSAGES } from '../../../../config/siyuan.config';
+import { LoggerService } from '../../../../services/logger.service';
 import type { ExternalSourceLink, SiyuanPreviewResult } from '../../../core/external-sources/external-source.model';
 import { ExternalSourceLinkService } from '../../../core/external-sources/external-source-link.service';
 import { SiyuanPreviewService } from '../../../core/external-sources/siyuan/siyuan-preview.service';
@@ -116,6 +117,7 @@ function loadPopoverModule(): Promise<typeof import('./knowledge-anchor-popover.
 export class KnowledgeAnchorComponent implements OnDestroy {
   private readonly linkService = inject(ExternalSourceLinkService);
   private readonly previewService = inject(SiyuanPreviewService);
+  private readonly logger = inject(LoggerService).category('KnowledgeAnchor');
   private readonly envInjector = inject(EnvironmentInjector);
   private readonly host = inject(ElementRef<HTMLElement>);
 
@@ -169,12 +171,26 @@ export class KnowledgeAnchorComponent implements OnDestroy {
 
   onMouseEnter(event: MouseEvent, link: ExternalSourceLink): void {
     if (this.isMobile()) return;
-    void this.withPopover((p) => p.scheduleOpen(link, event.currentTarget as HTMLElement));
+    void this.withPopover((p) => p.scheduleOpen(link, event.currentTarget as HTMLElement))
+      .catch((error) => {
+        this.previewService.abortActive();
+        this.logger.debug('桌面预览浮层加载失败（mouseenter）', {
+          linkId: link.id,
+          message: error instanceof Error ? error.message : 'unknown',
+        });
+      });
   }
 
   onFocus(event: FocusEvent, link: ExternalSourceLink): void {
     if (this.isMobile()) return;
-    void this.withPopover((p) => p.scheduleOpen(link, event.currentTarget as HTMLElement));
+    void this.withPopover((p) => p.scheduleOpen(link, event.currentTarget as HTMLElement))
+      .catch((error) => {
+        this.previewService.abortActive();
+        this.logger.debug('桌面预览浮层加载失败（focus）', {
+          linkId: link.id,
+          message: error instanceof Error ? error.message : 'unknown',
+        });
+      });
   }
 
   onMouseLeave(): void {
@@ -217,7 +233,15 @@ export class KnowledgeAnchorComponent implements OnDestroy {
 
   async refreshSheet(link: ExternalSourceLink): Promise<void> {
     this.sheetResult.set({ status: 'loading' });
-    this.sheetResult.set(await this.previewService.preview(link, { forceRefresh: true }));
+    try {
+      this.sheetResult.set(await this.previewService.preview(link, { forceRefresh: true }));
+    } catch (error) {
+      this.logger.warn('移动端思源预览刷新失败，降级为安全错误态', {
+        linkId: link.id,
+        message: error instanceof Error ? error.message : 'unknown',
+      });
+      this.sheetResult.set(SHEET_PREVIEW_FALLBACK);
+    }
   }
 
   sheetErrorMessage(): string {
