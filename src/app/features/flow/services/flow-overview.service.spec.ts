@@ -529,6 +529,227 @@ describe('FlowOverviewService', () => {
     expect(diagramPosition.y).toBe(70);
   });
 
+  // ============ 2026-05-15 A1/A2/A4 根因修复回归（PR #64）============
+
+  it('A1：documentBounds 未就绪时初始化必须保持 overview.observed 为 null', () => {
+    // 销毁 beforeEach 创建的实例，重新走未就绪路径
+    service.destroyOverview();
+    container.remove();
+
+    container = document.createElement('div');
+    Object.defineProperty(container, 'clientWidth', { configurable: true, value: 180 });
+    Object.defineProperty(container, 'clientHeight', { configurable: true, value: 140 });
+    container.setPointerCapture = vi.fn();
+    container.releasePointerCapture = vi.fn();
+    document.body.appendChild(container);
+
+    // 让 documentBounds.isReal() 返回 false（width/height 为 NaN）
+    documentBounds = new go.Rect(0, 0, NaN, NaN);
+    const diagramMock = createDiagramMock();
+    service.setDiagram(diagramMock);
+    service.initializeOverview(container, false);
+    vi.runOnlyPendingTimers();
+
+    const overview = service.overviewInstance as unknown as { observed: unknown };
+    expect(overview).toBeTruthy();
+    // 未就绪：observed 必须不是 diagram
+    expect(overview.observed).not.toBe(diagramMock);
+  });
+
+  it('A1：documentBounds 就绪后通过 InitialLayoutCompleted 回填 observed', () => {
+    service.destroyOverview();
+    container.remove();
+    container = document.createElement('div');
+    Object.defineProperty(container, 'clientWidth', { configurable: true, value: 180 });
+    Object.defineProperty(container, 'clientHeight', { configurable: true, value: 140 });
+    container.setPointerCapture = vi.fn();
+    container.releasePointerCapture = vi.fn();
+    document.body.appendChild(container);
+
+    documentBounds = new go.Rect(0, 0, NaN, NaN);
+
+    // 自建 diagram，捕获 InitialLayoutCompleted listener 引用
+    let initialLayoutHandler: (() => void) | null = null;
+    const diagramMock = {
+      get documentBounds(): InstanceType<typeof go.Rect> {
+        return documentBounds;
+      },
+      model: { nodeDataArray: [{ key: 'a' }] },
+      skipsUndoManager: false,
+      requestUpdate: vi.fn(),
+      addDiagramListener: vi.fn((name: string, handler: () => void) => {
+        if (name === 'InitialLayoutCompleted') initialLayoutHandler = handler;
+        if (name === 'ViewportBoundsChanged') viewportListener = handler;
+      }),
+      removeDiagramListener: vi.fn(),
+      get position(): InstanceType<typeof go.Point> {
+        return diagramPosition;
+      },
+      set position(value: InstanceType<typeof go.Point>) {
+        diagramPosition = value.copy();
+        viewportListener?.();
+      },
+      get viewportBounds(): InstanceType<typeof go.Rect> {
+        return new go.Rect(0, 0, 800, 600);
+      },
+    } as unknown as go.Diagram;
+
+    service.setDiagram(diagramMock);
+    service.initializeOverview(container, false);
+    vi.runOnlyPendingTimers();
+
+    const overview = service.overviewInstance as unknown as { observed: unknown };
+    expect(overview.observed).not.toBe(diagramMock);
+    expect(initialLayoutHandler).toBeTruthy();
+
+    // 模拟首次布局完成
+    documentBounds = new go.Rect(0, 0, 400, 300);
+    initialLayoutHandler!();
+
+    expect(overview.observed).toBe(diagramMock);
+  });
+
+  it('A2：销毁后所有 setter 必须 no-op，不抛错', () => {
+    // 销毁后再调用任何 public 方法都不能抛错
+    service.destroyOverview();
+
+    expect(() => service.refreshOverview()).not.toThrow();
+    expect(() => service.updateTheme()).not.toThrow();
+    expect(service.overviewInstance).toBeNull();
+    expect(service.isOverviewInitialized).toBe(false);
+  });
+
+  it('A2：销毁时必须 observed=null 再 div=null，杜绝异步 tick 持有 stale 引用', () => {
+    const overview = service.overviewInstance as unknown as {
+      observed: unknown;
+      div: HTMLDivElement | null;
+    };
+    expect(overview.observed).toBeTruthy();
+    expect(overview.div).toBe(container);
+
+    service.destroyOverview();
+
+    // 销毁后 service 内部引用被释放，overviewInstance 应为 null
+    expect(service.overviewInstance).toBeNull();
+    // GoJS Overview 实例本身的 observed / div 应已被解除
+    expect(overview.observed).toBeNull();
+    expect(overview.div).toBeNull();
+  });
+
+  it('A4：注册全局自愈钩子 __NANOFLOW_OVERVIEW_HEAL__，调用时触发 requestUpdate', () => {
+    type HealWindow = Window & { __NANOFLOW_OVERVIEW_HEAL__?: () => void };
+    const heal = (window as HealWindow).__NANOFLOW_OVERVIEW_HEAL__;
+    expect(typeof heal).toBe('function');
+
+    const overview = service.overviewInstance as unknown as {
+      requestUpdate: ReturnType<typeof vi.fn>;
+    };
+    const before = overview.requestUpdate.mock.calls.length;
+
+    heal!();
+
+    expect(overview.requestUpdate.mock.calls.length).toBe(before + 1);
+  });
+
+  it('A4：销毁后调用自愈钩子必须 no-op（不能再触发 stale overview）', () => {
+    type HealWindow = Window & { __NANOFLOW_OVERVIEW_HEAL__?: () => void };
+    const heal = (window as HealWindow).__NANOFLOW_OVERVIEW_HEAL__;
+
+    service.destroyOverview();
+
+    // 销毁后自愈钩子应被卸载，或调用时安全 no-op
+    expect(() => heal?.()).not.toThrow();
+    expect((window as HealWindow).__NANOFLOW_OVERVIEW_HEAL__).toBeUndefined();
+  });
+
+  // ============ 2026-05-15 性能修复回归（PR #65）============
+
+  it('【2026-05-15 性能修复 P4】拖拽时 pointermove 必须 rAF 合流：同一帧内多次 pointermove 不同步写主图，且只保留最后一次坐标', () => {
+    dispatchPointer('pointerdown', 20, 20);
+    vi.runOnlyPendingTimers();
+    const positionBeforeMove = diagramPosition.copy();
+
+    // 同一帧（fake timers 未运行）内连续三次 pointermove
+    dispatchPointer('pointermove', 30, 30);
+    dispatchPointer('pointermove', 60, 50);
+    dispatchPointer('pointermove', 100, 80);
+
+    // rAF 尚未 flush：position 不应被同步写入（消除每个 pointermove 的同步主图重绘）
+    expect(diagramPosition.x).toBe(positionBeforeMove.x);
+    expect(diagramPosition.y).toBe(positionBeforeMove.y);
+
+    // 推进 rAF：3 次 pointermove 应合流为一次 apply，diagramPosition 直接跳到最后一次坐标
+    // （client 位移 100-20=80, 80-20=60，view→doc factor=1）
+    vi.runOnlyPendingTimers();
+    expect(diagramPosition.x).toBe(80);
+    expect(diagramPosition.y).toBe(60);
+
+    dispatchPointer('pointerup', 100, 80);
+    vi.runOnlyPendingTimers();
+  });
+
+  it('【2026-05-15 性能修复 P5】拖拽期间 updateAllTargetBindings 必须经过 16ms 节流（不再每帧调用）', () => {
+    const overview = service.overviewInstance as unknown as {
+      updateAllTargetBindings: ReturnType<typeof vi.fn>;
+    };
+
+    dispatchPointer('pointerdown', 20, 20);
+    vi.runOnlyPendingTimers();
+    const baseline = overview.updateAllTargetBindings.mock.calls.length;
+
+    // 在 16ms 节流窗口内触发多次 pointermove + rAF flush
+    for (let i = 0; i < 5; i += 1) {
+      dispatchPointer('pointermove', 30 + i * 10, 30 + i * 10);
+      vi.runOnlyPendingTimers(); // rAF flush + overview schedule
+    }
+
+    // 节流路径在 16ms 内最多触发 1 次 updateAllTargetBindings；
+    // 这里 fake timer 还没推进 16ms，断言 ≤ 1 次新增。
+    const dragCalls = overview.updateAllTargetBindings.mock.calls.length - baseline;
+    expect(dragCalls).toBeLessThanOrEqual(1);
+
+    dispatchPointer('pointerup', 100, 100);
+    vi.runOnlyPendingTimers();
+  });
+
+  it('【2026-05-15 性能修复 P6】worldBounds 不变时 setFixedBounds 必须被去重（避免每帧 documentBounds invalidate）', () => {
+    const overview = service.overviewInstance as unknown as {
+      fixedBounds: InstanceType<typeof go.Rect> | undefined;
+    };
+    // 包装 fixedBounds 的 setter 以计数
+    let fixedBoundsWriteCount = 0;
+    let stored: InstanceType<typeof go.Rect> | undefined = overview.fixedBounds;
+    Object.defineProperty(overview, 'fixedBounds', {
+      configurable: true,
+      get(): InstanceType<typeof go.Rect> | undefined {
+        return stored;
+      },
+      set(value: InstanceType<typeof go.Rect> | undefined) {
+        fixedBoundsWriteCount += 1;
+        stored = value;
+      },
+    });
+
+    // 触发多次 idle apply（documentBounds 不变）
+    viewportListener?.();
+    vi.runOnlyPendingTimers();
+    const firstWrite = fixedBoundsWriteCount;
+
+    viewportListener?.();
+    vi.runOnlyPendingTimers();
+    viewportListener?.();
+    vi.runOnlyPendingTimers();
+
+    // 后续 idle apply 因 worldBoundsKey 命中缓存而跳过 setFixedBounds
+    expect(fixedBoundsWriteCount).toBe(firstWrite);
+
+    // documentBounds 真实变化时必须重新写入
+    documentBounds = new go.Rect(0, 0, 800, 600);
+    viewportListener?.();
+    vi.runOnlyPendingTimers();
+    expect(fixedBoundsWriteCount).toBeGreaterThan(firstWrite);
+  });
+
   function createDiagramMock(): go.Diagram {
     const listeners = new Map<string, () => void>();
     const diagram = {
