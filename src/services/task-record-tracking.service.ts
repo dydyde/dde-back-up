@@ -479,9 +479,16 @@ export class TaskRecordTrackingService {
       const result = await this.syncCoordinator.softDeleteTasksBatch(projectId, justDeletedTaskIds, tombstoneTimestamps);
 
       if (result === -1) {
-        this.logger.warn('服务端拒绝批量删除，回滚本地状态', { projectId, taskIds: justDeletedTaskIds });
-        this.optimisticState.rollbackSnapshot(snapshotId);
-        this.toastService.warning('删除被服务端阻止', '批量删除超过安全限制，操作已回滚');
+        this.logger.warn('服务端拒绝批量删除，仅回滚被拒任务（保留其它回收站项）', { projectId, taskIds: justDeletedTaskIds });
+        // 【根因修复 2026-05-15】不再调用 rollbackSnapshot 整库回滚 ——
+        // 整库回滚会把所有"老的回收站项 / 期间新增的合法编辑"一起拖回快照状态，
+        // 表象就是"短时间删除大量任务后回收站全部消失"。
+        // 这里改为只把这次被服务端拒绝的任务还原回快照中的状态（deletedAt/stage/parking 等），
+        // 其它任务保持现状，回收站中既有的旧条目不受影响。
+        this.optimisticState.restoreTasksFromSnapshot(snapshotId, justDeletedTaskIds, {
+          showToast: false,
+        });
+        this.toastService.warning('删除被服务端阻止', '批量删除超过安全限制，本次涉及的任务已撤回，回收站中其他内容保持不变');
       }
     } catch (e) {
       this.logger.error('服务端删除保护调用失败', e);

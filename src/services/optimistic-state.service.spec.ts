@@ -233,6 +233,56 @@ describe('OptimisticStateService', () => {
       });
     });
 
+    describe('restoreTasksFromSnapshot（窄化回滚）', () => {
+      it('只把指定任务恢复到快照状态，其它任务保持现状', () => {
+        // 模拟"删除前快照"：task-1 没有 deletedAt，task-2 已经被早期删除了（带 deletedAt）
+        mockProjectsSignal.update(projects => projects.map(p => ({
+          ...p,
+          tasks: p.tasks.map(t => t.id === 'task-2'
+            ? { ...t, deletedAt: '2026-05-15T09:00:00.000Z' }
+            : t),
+        })));
+
+        const snapshot = service.createSnapshot('task-delete', '删除任务');
+
+        // 模拟乐观删除：把 task-1 标记为 deletedAt，并把 task-2 的 deletedAt 改成新值（模拟其他编辑）
+        mockProjectsSignal.update(projects => projects.map(p => ({
+          ...p,
+          tasks: p.tasks.map(t => {
+            if (t.id === 'task-1') return { ...t, deletedAt: '2026-05-15T10:00:00.000Z' };
+            if (t.id === 'task-2') return { ...t, deletedAt: '2026-05-15T10:00:00.000Z' };
+            return t;
+          }),
+        })));
+
+        // 服务端拒绝，只回滚 task-1
+        const ok = service.restoreTasksFromSnapshot(snapshot.id, ['task-1']);
+
+        expect(ok).toBe(true);
+        const after = mockProjectsSignal()[0].tasks;
+        // task-1 被还原（无 deletedAt）
+        expect(after.find(t => t.id === 'task-1')?.deletedAt).toBeUndefined();
+        // task-2 保持当前状态（不是快照中的旧时间，证明只动了 task-1）
+        expect(after.find(t => t.id === 'task-2')?.deletedAt).toBe('2026-05-15T10:00:00.000Z');
+        // 快照已删除
+        expect(service.hasSnapshot(snapshot.id)).toBe(false);
+      });
+
+      it('快照不存在时返回 false，不修改 state', () => {
+        const before = mockProjectsSignal();
+        const ok = service.restoreTasksFromSnapshot('missing', ['task-1']);
+        expect(ok).toBe(false);
+        expect(mockProjectsSignal()).toBe(before);
+      });
+
+      it('taskIds 为空时仅丢弃快照', () => {
+        const snapshot = service.createSnapshot('task-delete', '删除任务');
+        const ok = service.restoreTasksFromSnapshot(snapshot.id, []);
+        expect(ok).toBe(true);
+        expect(service.hasSnapshot(snapshot.id)).toBe(false);
+      });
+    });
+
     describe('快照数量限制', () => {
       it('超过最大数量时应该驱逐最旧的快照', () => {
         const maxSnapshots = OPTIMISTIC_CONFIG.MAX_SNAPSHOTS;

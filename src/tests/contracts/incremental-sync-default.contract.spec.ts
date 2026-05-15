@@ -45,4 +45,17 @@ describe('增量同步默认配置契约 (Incremental Sync Contract)', () => {
     expect(taskDetailFields).toContain('attachments');
     expect(taskFullFields).toContain('attachments');
   });
+
+  // 【根因防护 2026-05-15】回收站 UI 完全依赖 task.deletedAt（ProjectStateService.deletedTasks
+  // = tasks().filter(t => t.deletedAt)）。任意一条任务字段裁剪去掉 deleted_at 都会让本地"误以为"
+  // 远端把所有任务复活，从而回收站全部消失。这条断言锁死字段集合。
+  it('任务查询字段必须包含 deleted_at，避免增量同步把已删除任务复活、导致回收站消失', () => {
+    const taskListFields = FIELD_SELECT_CONFIG.TASK_LIST_FIELDS.split(',');
+    const taskDetailFields = FIELD_SELECT_CONFIG.TASK_DETAIL_FIELDS.split(',');
+    const taskFullFields = FIELD_SELECT_CONFIG.TASK_FULL_FIELDS.split(',');
+
+    expect(taskListFields).toContain('deleted_at');
+    expect(taskDetailFields).toContain('deleted_at');
+    expect(taskFullFields).toContain('deleted_at');
+  });
 });

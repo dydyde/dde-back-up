@@ -229,6 +229,86 @@ export class OptimisticStateService {
   }
   
   /**
+   * 仅恢复指定任务到快照状态（窄化回滚）
+   *
+   * 【根因修复 2026-05-15】批量删除被服务端 `safe_delete_tasks` 50/50% 熔断拒绝后，
+   * 原实现走 rollbackSnapshot 整库回滚（setProjects 全替换），副作用：
+   *   - 抹掉了所有在快照之后发生的合法编辑；
+   *   - 让"回收站中已存在的老 deleted 任务"也短暂回到删除前的状态；
+   *   - 用户主观感受是"回收站突然全部消失"。
+   *
+   * 本方法只把 `taskIds` 中每个任务还原成 snapshot 中的版本，其它任务保持现状，
+   * 同时丢弃快照。失败（快照不存在）时返回 false。
+   *
+   * @param snapshotId 快照 ID
+   * @param taskIds 需要被恢复的任务 ID 集合（通常是这次批量删除请求里的 ids）
+   * @param options.showToast 是否显示 toast，默认 true
+   * @param options.toastTitle/toastMessage 自定义 toast 内容
+   */
+  restoreTasksFromSnapshot(
+    snapshotId: string,
+    taskIds: readonly string[],
+    options: { showToast?: boolean; toastTitle?: string; toastMessage?: string } = {},
+  ): boolean {
+    const snapshot = this.snapshots.get(snapshotId);
+    if (!snapshot) {
+      this.logger.warn('快照不存在，无法定点恢复任务', { snapshotId, taskCount: taskIds.length });
+      return false;
+    }
+
+    const targetIds = new Set(taskIds);
+    if (targetIds.size > 0) {
+      const snapshotTaskById = this.indexSnapshotTasks(snapshot, targetIds);
+      this.applySnapshotTasksToProjects(targetIds, snapshotTaskById);
+    }
+
+    this.snapshots.delete(snapshotId);
+    this.updateSnapshotCount();
+    this.logger.info('定点恢复任务（已删除快照）', { snapshotId, requested: taskIds.length });
+
+    const { showToast = true, toastTitle, toastMessage } = options;
+    if (showToast && (snapshot.operationLabel || toastMessage)) {
+      this.toastService.warning(
+        toastTitle ?? '操作未完成',
+        toastMessage ?? `${snapshot.operationLabel}未完成，已恢复涉及任务`,
+      );
+    }
+    return true;
+  }
+
+  private indexSnapshotTasks(
+    snapshot: OptimisticSnapshot,
+    targetIds: Set<string>,
+  ): Map<string, Project['tasks'][number]> {
+    const result = new Map<string, Project['tasks'][number]>();
+    for (const project of snapshot.projectsSnapshot) {
+      for (const task of project.tasks) {
+        if (targetIds.has(task.id)) result.set(task.id, task);
+      }
+    }
+    return result;
+  }
+
+  private applySnapshotTasksToProjects(
+    targetIds: Set<string>,
+    snapshotTaskById: Map<string, Project['tasks'][number]>,
+  ): void {
+    this.projectState.updateProjects(projects =>
+      projects.map(project => {
+        let mutated = false;
+        const nextTasks = project.tasks.map(task => {
+          if (!targetIds.has(task.id)) return task;
+          const original = snapshotTaskById.get(task.id);
+          if (!original) return task;
+          mutated = true;
+          return { ...original };
+        });
+        return mutated ? { ...project, tasks: nextTasks } : project;
+      }),
+    );
+  }
+
+  /**
    * 检查快照是否存在
    */
   hasSnapshot(snapshotId: string): boolean {

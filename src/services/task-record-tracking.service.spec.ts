@@ -146,6 +146,7 @@ describe('TaskRecordTrackingService', () => {
       hasSnapshot: vi.fn().mockReturnValue(false),
       commitSnapshot: vi.fn(),
       rollbackSnapshot: vi.fn(),
+      restoreTasksFromSnapshot: vi.fn().mockReturnValue(true),
       snapshots: new Map(),
     };
 
@@ -542,7 +543,14 @@ describe('TaskRecordTrackingService', () => {
 
       await service.triggerServerSideDelete('proj-1', ['task-del'], 'snap-1');
 
-      expect(mockOptimisticState.rollbackSnapshot).toHaveBeenCalledWith('snap-1');
+      // 【根因修复 2026-05-15】不再调用 rollbackSnapshot 整库回滚，
+      // 改为 restoreTasksFromSnapshot 只回滚被拒任务，保留其它回收站项。
+      expect(mockOptimisticState.rollbackSnapshot).not.toHaveBeenCalled();
+      expect(mockOptimisticState.restoreTasksFromSnapshot).toHaveBeenCalledWith(
+        'snap-1',
+        ['task-del'],
+        expect.objectContaining({ showToast: false }),
+      );
       expect(mockToastService.warning).toHaveBeenCalled();
     });
 
