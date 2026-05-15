@@ -169,12 +169,14 @@ export class KnowledgeAnchorComponent implements OnDestroy {
 
   onMouseEnter(event: MouseEvent, link: ExternalSourceLink): void {
     if (this.isMobile()) return;
-    void this.withPopover((p) => p.scheduleOpen(link, event.currentTarget as HTMLElement));
+    void this.withPopover((p) => p.scheduleOpen(link, event.currentTarget as HTMLElement))
+      .catch(() => this.previewService.abortActive());
   }
 
   onFocus(event: FocusEvent, link: ExternalSourceLink): void {
     if (this.isMobile()) return;
-    void this.withPopover((p) => p.scheduleOpen(link, event.currentTarget as HTMLElement));
+    void this.withPopover((p) => p.scheduleOpen(link, event.currentTarget as HTMLElement))
+      .catch(() => this.previewService.abortActive());
   }
 
   onMouseLeave(): void {
@@ -217,7 +219,11 @@ export class KnowledgeAnchorComponent implements OnDestroy {
 
   async refreshSheet(link: ExternalSourceLink): Promise<void> {
     this.sheetResult.set({ status: 'loading' });
-    this.sheetResult.set(await this.previewService.preview(link, { forceRefresh: true }));
+    try {
+      this.sheetResult.set(await this.previewService.preview(link, { forceRefresh: true }));
+    } catch {
+      this.sheetResult.set(SHEET_PREVIEW_FALLBACK);
+    }
   }
 
   sheetErrorMessage(): string {

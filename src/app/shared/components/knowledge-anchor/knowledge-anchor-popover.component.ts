@@ -87,7 +87,11 @@ export class KnowledgeAnchorPopoverComponent {
 
   async load(forceRefresh: boolean): Promise<void> {
     this.result.set({ status: 'loading' });
-    this.result.set(await this.previewService.preview(this.link(), { forceRefresh }));
+    try {
+      this.result.set(await this.previewService.preview(this.link(), { forceRefresh }));
+    } catch {
+      this.result.set({ status: 'error', errorCode: 'unknown' });
+    }
   }
 
   open(): void {

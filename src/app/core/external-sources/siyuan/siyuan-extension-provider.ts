@@ -44,6 +44,19 @@ export class SiyuanExtensionProvider implements SiyuanPreviewProvider {
     return this.pingExtension();
   }
 
+  async diagnoseConnection(): Promise<{ ok: boolean; errorCode?: SiyuanPreviewErrorCode }> {
+    if (typeof window === 'undefined') return { ok: false, errorCode: 'runtime-not-supported' };
+    if (!await this.pingExtension()) return { ok: false, errorCode: 'extension-unavailable' };
+    try {
+      const response = await this.postConnectionTest();
+      if (response.ok === true) return { ok: true };
+      return { ok: false, errorCode: this.readErrorCode(response.errorCode) };
+    } catch (error) {
+      if (error instanceof SiyuanProviderError) return { ok: false, errorCode: error.code };
+      return { ok: false, errorCode: 'unknown' };
+    }
+  }
+
   async getBlockPreview(blockId: string, signal?: AbortSignal): Promise<SiyuanBlockPreview> {
     if (!isValidSiyuanBlockId(blockId)) throw new SiyuanProviderError('block-not-found');
     if (typeof window === 'undefined') throw new SiyuanProviderError('runtime-not-supported');
@@ -70,7 +83,6 @@ export class SiyuanExtensionProvider implements SiyuanPreviewProvider {
   private async pingExtension(): Promise<boolean> {
     try {
       const requestId = crypto.randomUUID();
-      window.postMessage({ type: 'nanoflow.siyuan.ping', requestId }, window.location.origin);
       return await new Promise<boolean>(resolve => {
         const timer = window.setTimeout(() => {
           window.removeEventListener('message', listener);
@@ -79,19 +91,51 @@ export class SiyuanExtensionProvider implements SiyuanPreviewProvider {
         const listener = (event: MessageEvent<unknown>) => {
           if (!this.isTrustedWindowMessage(event)) return;
           const message = event.data as ExtensionMessage;
-          if (message.type !== 'nanoflow.siyuan.pong' || message.requestId !== requestId) return;
-          window.clearTimeout(timer);
-          window.removeEventListener('message', listener);
-          resolve(true);
+          if (message.requestId !== requestId) return;
+          if (message.type === 'nanoflow.siyuan.pong') {
+            window.clearTimeout(timer);
+            window.removeEventListener('message', listener);
+            resolve(message.ok === true);
+            return;
+          }
+          if (message.type === 'nanoflow.siyuan.preview-result' && this.readErrorCode(message.errorCode) === 'extension-unavailable') {
+            window.clearTimeout(timer);
+            window.removeEventListener('message', listener);
+            resolve(false);
+          }
         };
         window.addEventListener('message', listener);
+        window.postMessage({ type: 'nanoflow.siyuan.ping', requestId }, window.location.origin);
       });
     } catch {
       return false;
     }
   }
 
+  private postConnectionTest(signal?: AbortSignal): Promise<ExtensionMessage> {
+    return this.postRelayRequest({
+      requestType: 'nanoflow.siyuan.test-connection',
+      responseType: 'nanoflow.siyuan.test-connection-result',
+      signal,
+    });
+  }
+
   private postRequest(blockId: string, signal?: AbortSignal): Promise<ExtensionMessage> {
+    return this.postRelayRequest({
+      requestType: 'nanoflow.siyuan.get-preview',
+      responseType: 'nanoflow.siyuan.preview-result',
+      payload: { blockId, includeChildren: true, maxChildren: SIYUAN_CONFIG.MAX_PREVIEW_CHILDREN, maxChars: SIYUAN_CONFIG.MAX_PREVIEW_CHARS },
+      signal,
+    });
+  }
+
+  private postRelayRequest(args: {
+    requestType: 'nanoflow.siyuan.get-preview' | 'nanoflow.siyuan.test-connection';
+    responseType: 'nanoflow.siyuan.preview-result' | 'nanoflow.siyuan.test-connection-result';
+    payload?: Record<string, unknown>;
+    signal?: AbortSignal;
+  }): Promise<ExtensionMessage> {
+    const { requestType, responseType, payload, signal } = args;
     const requestId = crypto.randomUUID();
     return new Promise<ExtensionMessage>((resolve, reject) => {
       // 提前返回：调用方在我们准备 timer/listener 之前就已 abort，避免无谓的事件订阅。
@@ -115,17 +159,15 @@ export class SiyuanExtensionProvider implements SiyuanPreviewProvider {
       const listener = (event: MessageEvent<unknown>) => {
         if (!this.isTrustedWindowMessage(event)) return;
         const message = event.data as ExtensionMessage;
-        if (message.type !== 'nanoflow.siyuan.preview-result' || message.requestId !== requestId) return;
+        if (message.type !== responseType || message.requestId !== requestId) return;
         cleanup();
         resolve(message);
       };
       signal?.addEventListener('abort', abortListener, { once: true });
       window.addEventListener('message', listener);
-      window.postMessage({
-        type: 'nanoflow.siyuan.get-preview',
-        requestId,
-        payload: { blockId, includeChildren: true, maxChildren: SIYUAN_CONFIG.MAX_PREVIEW_CHILDREN, maxChars: SIYUAN_CONFIG.MAX_PREVIEW_CHARS },
-      }, window.location.origin);
+      const request: Record<string, unknown> = { type: requestType, requestId };
+      if (payload) request.payload = payload;
+      window.postMessage(request, window.location.origin);
     });
   }
 

@@ -16,6 +16,7 @@
     {
       "matches": [
         "https://nanoflow.app/*",
+        "https://www.nanoflow.app/*",
         "https://nanoflow.pages.dev/*",
         "https://dde-eight.vercel.app/*",
         "http://localhost/*",
