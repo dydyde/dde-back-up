@@ -15,6 +15,7 @@ function isAllowedOrigin(origin) {
   try {
     const url = new URL(origin);
     if (BUILTIN_ALLOWED_ORIGINS.has(url.origin)) return true;
+    // 本地开发允许任意 localhost/127.0.0.1 端口（Vite/Angular/preview 端口可能变化）。
     return url.protocol === 'http:' && (url.hostname === 'localhost' || url.hostname === '127.0.0.1');
   } catch {
     return false;
