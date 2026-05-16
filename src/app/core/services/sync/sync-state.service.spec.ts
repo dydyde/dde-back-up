@@ -11,6 +11,7 @@ import { describe, expect, it, beforeEach, vi } from 'vitest';
 import { Injector, runInInjectionContext } from '@angular/core';
 import { SyncStateService, type ConflictData } from './sync-state.service';
 import type { Project } from '../../../../models';
+import { RECOVERABLE_SYNC_ERROR_MESSAGES } from '../../../../config/sync.config';
 
 function makeProject(overrides: Partial<Project> = {}): Project {
   return {
@@ -85,7 +86,7 @@ describe('SyncStateService', () => {
     it('scheduleRecoverableSyncError 应延迟落地并允许恢复路径取消', () => {
       vi.useFakeTimers();
       try {
-        service.scheduleRecoverableSyncError('部分同步失败，已进入重试队列', 3000);
+        service.scheduleRecoverableSyncError(RECOVERABLE_SYNC_ERROR_MESSAGES.PARTIAL_RETRY_HANDOFF, 3000);
         vi.advanceTimersByTime(2999);
         expect(service.syncState().syncError).toBeNull();
 
@@ -100,9 +101,9 @@ describe('SyncStateService', () => {
     it('scheduleRecoverableSyncError 超过宽限期后才写入 syncError', () => {
       vi.useFakeTimers();
       try {
-        service.scheduleRecoverableSyncError('部分同步失败，已进入重试队列', 3000);
+        service.scheduleRecoverableSyncError(RECOVERABLE_SYNC_ERROR_MESSAGES.PARTIAL_RETRY_HANDOFF, 3000);
         vi.advanceTimersByTime(3000);
-        expect(service.syncState().syncError).toBe('部分同步失败，已进入重试队列');
+        expect(service.syncState().syncError).toBe(RECOVERABLE_SYNC_ERROR_MESSAGES.PARTIAL_RETRY_HANDOFF);
       } finally {
         vi.useRealTimers();
       }

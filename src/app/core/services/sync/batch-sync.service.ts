@@ -23,7 +23,7 @@ import { Task, Project, Connection } from '../../../../models';
 import { nowISO } from '../../../../utils/date';
 import { isPermanentFailureError } from '../../../../utils/permanent-failure-error';
 import { classifySupabaseClientFailure, supabaseErrorToError } from '../../../../utils/supabase-error';
-import { AUTH_CONFIG, SYNC_CONFIG } from '../../../../config';
+import { AUTH_CONFIG, RECOVERABLE_SYNC_ERROR_MESSAGES, SYNC_CONFIG } from '../../../../config';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { SentryLazyLoaderService } from '../../../../services/sentry-lazy-loader.service';
 import {
@@ -35,6 +35,13 @@ import {
 interface RemoteExistingTaskIdsResult {
   existingIds: Set<string>;
   deferredBySuspension: boolean;
+}
+interface RecoverableSyncErrorState {
+  clearPendingRecoverableSyncError?: () => void;
+  scheduleRecoverableSyncError?: (syncError: string, delayMs?: number) => void;
+  setLastSyncTime?: (time: string) => void;
+  setSyncError?: (syncError: string) => void;
+  advanceLastSyncTimeIfIdle?: (time: string) => void;
 }
 /** 批量同步结果 */
 export interface BatchSyncResult {
@@ -348,11 +355,7 @@ export class BatchSyncService {
   }
 
   private markBatchSyncSuccess(): void {
-    const syncState = this.syncState as unknown as {
-      advanceLastSyncTimeIfIdle?: (time: string) => void;
-      setLastSyncTime?: (time: string) => void;
-      clearPendingRecoverableSyncError?: () => void;
-    };
+    const syncState = this.syncState as unknown as RecoverableSyncErrorState;
     syncState.clearPendingRecoverableSyncError?.();
     const syncTime = nowISO();
 
@@ -374,10 +377,7 @@ export class BatchSyncService {
       ...context,
       graceMs: SYNC_CONFIG.DEBOUNCE_DELAY,
     });
-    const syncState = this.syncState as unknown as {
-      scheduleRecoverableSyncError?: (syncError: string, delayMs?: number) => void;
-      setSyncError?: (syncError: string) => void;
-    };
+    const syncState = this.syncState as unknown as RecoverableSyncErrorState;
     if (typeof syncState.scheduleRecoverableSyncError === 'function') {
       syncState.scheduleRecoverableSyncError(message, SYNC_CONFIG.DEBOUNCE_DELAY);
       return;
@@ -1327,7 +1327,7 @@ export class BatchSyncService {
           if (hasTerminalConflicts) {
             this.syncState.setSyncError('部分同步失败，且存在版本冲突，请刷新后重试');
           } else {
-            this.schedulePartialRetryHandoffError('部分同步失败，已进入重试队列', {
+            this.schedulePartialRetryHandoffError(RECOVERABLE_SYNC_ERROR_MESSAGES.PARTIAL_RETRY_HANDOFF, {
               projectId: project.id,
               failedTaskCount: dedupedFailedTaskIds.length,
               failedConnectionCount: dedupedFailedConnectionIds.length,

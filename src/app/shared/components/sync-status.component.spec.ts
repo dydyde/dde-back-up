@@ -12,6 +12,7 @@ import { RetryQueueService } from '../../core/services/sync/retry-queue.service'
 import { ToastService } from '../../../services/toast.service';
 import { LoggerService } from '../../../services/logger.service';
 import type { QueuedAction, DeadLetterItem } from '../../../services/action-queue.types';
+import { RECOVERABLE_SYNC_ERROR_MESSAGES } from '../../../config/sync.config';
 
 function createQueuedAction(entityType: QueuedAction['entityType']): QueuedAction {
   const now = Date.now();
@@ -169,7 +170,7 @@ describe('SyncStatusComponent', () => {
     syncState.set({
       ...syncState(),
       pendingCount: 1,
-      syncError: '部分同步失败，已进入重试队列',
+      syncError: RECOVERABLE_SYNC_ERROR_MESSAGES.PARTIAL_RETRY_HANDOFF,
     });
     embeddedFixture.detectChanges();
 

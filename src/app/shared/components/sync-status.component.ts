@@ -9,7 +9,7 @@ import { ConflictStorageService } from '../../../services/conflict-storage.servi
 import { RetryQueueService } from '../../core/services/sync/retry-queue.service';
 import { ToastService } from '../../../services/toast.service';
 import { LoggerService } from '../../../services/logger.service';
-import { SYNC_CONFIG } from '../../../config/sync.config';
+import { RECOVERABLE_SYNC_ERROR_MESSAGES, SYNC_CONFIG } from '../../../config/sync.config';
 import type { QueuedAction } from '../../../services/action-queue.types';
 
 /**
@@ -593,8 +593,7 @@ export class SyncStatusComponent {
   }
 
   private isRecoverableRetryHandoffError(syncError: string): boolean {
-    return syncError.includes('部分同步失败，已进入重试队列')
-      || syncError.includes('同步队列已满，暂未写入重试队列');
+    return Object.values(RECOVERABLE_SYNC_ERROR_MESSAGES).some(message => syncError.includes(message));
   }
 
   /**

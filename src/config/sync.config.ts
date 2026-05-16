@@ -120,6 +120,11 @@ export const SYNC_CONFIG = {
   BLACKBOX_PULL_FRESHNESS_WINDOW: 30_000,
 } as const;
 
+export const RECOVERABLE_SYNC_ERROR_MESSAGES = {
+  PARTIAL_RETRY_HANDOFF: '部分同步失败，已进入重试队列',
+  RETRY_QUEUE_FULL: '同步队列已满，暂未写入重试队列',
+} as const;
+
 /**
  * 同步耐久策略配置（Durability-First）
  */

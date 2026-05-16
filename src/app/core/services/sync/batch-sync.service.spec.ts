@@ -11,6 +11,7 @@ import { SyncStateService } from './sync-state.service';
 import { RetryQueueService } from './retry-queue.service';
 import { SessionManagerService } from './session-manager.service';
 import { SentryLazyLoaderService } from '../../../../services/sentry-lazy-loader.service';
+import { RECOVERABLE_SYNC_ERROR_MESSAGES } from '../../../../config/sync.config';
 import type { Connection, Project, Task } from '../../../../models';
 import { PermanentFailureError } from '../../../../utils/permanent-failure-error';
 import {
@@ -1009,10 +1010,10 @@ describe('BatchSyncService owner isolation', () => {
       'project batch sync partially delegated; some failures did not enter retry queue',
     );
     expect(mockSyncState.scheduleRecoverableSyncError).toHaveBeenCalledWith(
-      '部分同步失败，已进入重试队列',
+      RECOVERABLE_SYNC_ERROR_MESSAGES.PARTIAL_RETRY_HANDOFF,
       expect.any(Number),
     );
-    expect(mockSyncState.setSyncError).not.toHaveBeenCalledWith('部分同步失败，已进入重试队列');
+    expect(mockSyncState.setSyncError).not.toHaveBeenCalledWith(RECOVERABLE_SYNC_ERROR_MESSAGES.PARTIAL_RETRY_HANDOFF);
   });
 
   it('saveProjectToCloud 在所有失败项均已入 RetryQueue 时应保持 fullyResolved 语义', async () => {

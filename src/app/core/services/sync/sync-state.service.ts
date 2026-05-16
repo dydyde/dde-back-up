@@ -235,14 +235,18 @@ export class SyncStateService {
   ): void {
     this.clearPendingRecoverableSyncError();
     this.pendingRecoverableSyncError = syncError;
-    this.recoverableSyncErrorTimer = setTimeout(() => {
+    const timer = setTimeout(() => {
       if (this.pendingRecoverableSyncError !== syncError) {
+        if (this.recoverableSyncErrorTimer === timer) {
+          this.recoverableSyncErrorTimer = null;
+        }
         return;
       }
       this.pendingRecoverableSyncError = null;
       this.recoverableSyncErrorTimer = null;
       this.writeSyncError(syncError);
     }, delayMs);
+    this.recoverableSyncErrorTimer = timer;
   }
 
   clearPendingRecoverableSyncError(): void {
