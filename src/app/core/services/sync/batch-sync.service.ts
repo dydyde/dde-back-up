@@ -23,7 +23,7 @@ import { Task, Project, Connection } from '../../../../models';
 import { nowISO } from '../../../../utils/date';
 import { isPermanentFailureError } from '../../../../utils/permanent-failure-error';
 import { classifySupabaseClientFailure, supabaseErrorToError } from '../../../../utils/supabase-error';
-import { AUTH_CONFIG, RECOVERABLE_SYNC_ERROR_MESSAGES, SYNC_CONFIG } from '../../../../config';
+import { AUTH_CONFIG, RECOVERABLE_SYNC_ERROR_MESSAGES } from '../../../../config';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { SentryLazyLoaderService } from '../../../../services/sentry-lazy-loader.service';
 import {
@@ -349,28 +349,27 @@ export class BatchSyncService {
 
   private markBatchSyncSuccess(): void {
     this.syncState.clearPendingRecoverableSyncError();
+    this.syncState.clearBackgroundSyncNotice();
     const syncTime = nowISO();
 
     this.syncState.advanceLastSyncTimeIfIdle(syncTime);
   }
 
   /**
-   * 为可自愈失败写入观察窗。
+   * 为可自愈失败写入后台同步状态通道。
    *
-   * 中文注释：partial handoff 常由 RetryQueue 随后成功回放收口。这里保留最小上下文日志，
-   * 便于线上确认失败项是否被重试队列消化，同时避免立即把可恢复状态显示成红错。
+   * 中文注释：partial handoff 是"系统已接管自愈"的状态信号，不是错误。
+   * 走 `backgroundSyncNotice` 通道，UI 渲染为信息条；RetryQueue 回放成功后由
+   * `markSyncRecoveredIfIdle` 配对清空，无需宽限期。
    */
-  private scheduleRecoverableSyncError(message: string, context: {
+  private notifyBackgroundSyncHandoff(message: string, context: {
     projectId: string;
     failedTaskCount: number;
     failedConnectionCount: number;
     retryEnqueuedCount: number;
   }): void {
-    this.logger.info('部分同步失败已进入宽限观察窗，等待 RetryQueue 自愈收口', {
-      ...context,
-      graceMs: SYNC_CONFIG.DEBOUNCE_DELAY,
-    });
-    this.syncState.scheduleRecoverableSyncError(message);
+    this.logger.info('部分同步失败已交接 RetryQueue 自愈，UI 进入后台同步态', context);
+    this.syncState.setBackgroundSyncNotice(message);
   }
 
   /**
@@ -1303,19 +1302,25 @@ export class BatchSyncService {
         this.markBatchSyncSuccess();
         this.syncState.setSyncError(null);
       } else {
-        // 【根因修复 2026-04-22】失败分支此前无条件写 syncError，即使所有失败项都已入
-        // RetryQueue（后续回放会推 markSyncRecoveredIfIdle 收口），红错条也会停留到下一
-        // 次成功 batch 为止。重新评估失败归宿：
-        //  - 所有失败（包括 project 自身）都进了 RetryQueue → 视为"已自愈"交接，不写
-        //    syncError（保留 pendingCount 提示足矣）；RetryQueue 回放成功后会自动清错。
-        //  - 存在未入队失败（RetryQueue 已满/存储冻结/project 重试入队失败）→ 才写红错。
+        // 【根因修复 2026-04-22 + 2026-05-16 二次根因修复】失败分支此前把 partial-handoff
+        // 通过 scheduleRecoverableSyncError 写入 `syncError`，UI 渲染为红色 critical，
+        // 与"系统已接管自愈"语义矛盾，且在 3s 宽限 < 5s RetryQueue 间隔的结构性时序下
+        // 几乎必然弹出至少 2s 红条，造成"严重滞后"用户感知。
+        //
+        // 改造：partial-handoff 改走独立的 backgroundSyncNotice 通道（信息级），
+        // 仅终态冲突 / 未入队失败才升级到红色 syncError。
         if (fullyResolved) {
-          this.syncState.setSyncError(hasTerminalConflicts ? '检测到版本冲突，请刷新后重试' : null);
+          if (hasTerminalConflicts) {
+            this.syncState.setSyncError('检测到版本冲突，请刷新后重试');
+          } else {
+            this.syncState.setSyncError(null);
+            this.syncState.clearBackgroundSyncNotice();
+          }
         } else {
           if (hasTerminalConflicts) {
             this.syncState.setSyncError('部分同步失败，且存在版本冲突，请刷新后重试');
           } else {
-            this.scheduleRecoverableSyncError(RECOVERABLE_SYNC_ERROR_MESSAGES.PARTIAL_RETRY_HANDOFF, {
+            this.notifyBackgroundSyncHandoff(RECOVERABLE_SYNC_ERROR_MESSAGES.PARTIAL_RETRY_HANDOFF, {
               projectId: project.id,
               failedTaskCount: dedupedFailedTaskIds.length,
               failedConnectionCount: dedupedFailedConnectionIds.length,

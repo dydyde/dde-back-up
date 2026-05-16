@@ -113,6 +113,8 @@ describe('BatchSyncService owner isolation', () => {
     setSyncError: vi.fn(),
     scheduleRecoverableSyncError: vi.fn(),
     clearPendingRecoverableSyncError: vi.fn(),
+    setBackgroundSyncNotice: vi.fn(),
+    clearBackgroundSyncNotice: vi.fn(),
     setSyncing: vi.fn(),
     advanceLastSyncTimeIfIdle: vi.fn(),
     setSessionExpired: vi.fn(),
@@ -1009,10 +1011,12 @@ describe('BatchSyncService owner isolation', () => {
     expect(result.failureReason).toBe(
       'project batch sync partially delegated; some failures did not enter retry queue',
     );
-    expect(mockSyncState.scheduleRecoverableSyncError).toHaveBeenCalledWith(
+    // 中文注释：partial-handoff 应走 backgroundSyncNotice 信息通道，不再污染 syncError 红错路径。
+    expect(mockSyncState.setBackgroundSyncNotice).toHaveBeenCalledWith(
       RECOVERABLE_SYNC_ERROR_MESSAGES.PARTIAL_RETRY_HANDOFF,
     );
     expect(mockSyncState.setSyncError).not.toHaveBeenCalledWith(RECOVERABLE_SYNC_ERROR_MESSAGES.PARTIAL_RETRY_HANDOFF);
+    expect(mockSyncState.scheduleRecoverableSyncError).not.toHaveBeenCalled();
   });
 
   it('saveProjectToCloud 在所有失败项均已入 RetryQueue 时应保持 fullyResolved 语义', async () => {
@@ -1040,5 +1044,7 @@ describe('BatchSyncService owner isolation', () => {
     expect(result.failureReason).toBe(
       'project batch sync delegated remaining work to retry queue',
     );
+    // 中文注释：fullyResolved 且非冲突 → 应配对清空 backgroundSyncNotice 信息条。
+    expect(mockSyncState.clearBackgroundSyncNotice).toHaveBeenCalled();
   });
 });

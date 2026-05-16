@@ -31,6 +31,18 @@ export interface SyncState {
   pendingCount: number;
   /** 同步错误信息 */
   syncError: string | null;
+  /**
+   * 后台同步状态提示（信息级，非错误）。
+   *
+   * 与 `syncError` 完全解耦：
+   * - `syncError`：用户必须知道、可能需要采取行动的真错误（终态冲突、队列已满、存储冻结等）
+   * - `backgroundSyncNotice`：系统已经接管的可自愈状态（partial-handoff 等），UI 渲染为信息条而非红错
+   *
+   * 【2026-05-16 根因修复】此前 partial-handoff 走 `scheduleRecoverableSyncError` 落到 `syncError`，
+   * 导致 UI 红条"部分同步失败，已进入重试队列"在 RetryQueue 自愈窗口里始终挂着，
+   * 与"系统已接管"的语义矛盾。改走独立通道，让 UI 可以用合适的视觉等级渲染。
+   */
+  backgroundSyncNotice: string | null;
   /** 是否存在冲突 */
   hasConflict: boolean;
   /** 冲突数据 */
@@ -75,6 +87,7 @@ export class SyncStateService {
     lastSyncTime: null,
     pendingCount: 0,
     syncError: null,
+    backgroundSyncNotice: null,
     hasConflict: false,
     conflictData: null
   });
@@ -91,6 +104,7 @@ export class SyncStateService {
   readonly hasConflict = computed(() => this.syncState().hasConflict);
   readonly sessionExpired = computed(() => this.syncState().sessionExpired);
   readonly pendingCount = computed(() => this.syncState().pendingCount);
+  readonly backgroundSyncNotice = computed(() => this.syncState().backgroundSyncNotice);
 
   /** 是否正在从远程加载（内部可写，外部只读）*/
   private readonly _isLoadingRemote = signal(false);
@@ -189,7 +203,7 @@ export class SyncStateService {
       return false;
     }
     this.clearPendingRecoverableSyncError();
-    this.update({ lastSyncTime, syncError: null });
+    this.update({ lastSyncTime, syncError: null, backgroundSyncNotice: null });
     return true;
   }
 
@@ -224,30 +238,48 @@ export class SyncStateService {
   }
 
   /**
-   * 延迟落地可自愈的同步错误。
+   * 设置后台同步状态提示（信息级，非错误）。
    *
-   * 使用场景：
-   * - 失败已安全转交 RetryQueue，后台回放有机会在短时间内自愈；
-   * - 这类错误不应像 `setSyncError()` 一样立即显示为红色错误。
+   * 此通道用于"系统已经接管自愈"的状态信号（如 partial-handoff），
+   * UI 应渲染为信息条而非红色 critical。与 `syncError` 互不影响。
    *
-   * `delayMs` 是观察窗口：窗口内若 `setSyncError(null)` 或 `markSyncRecoveredIfIdle()`
-   * 清理了状态，错误不会落地；窗口结束仍未恢复才写入 `syncError`。
+   * 传入 `null` 等价于 `clearBackgroundSyncNotice()`。
+   */
+  setBackgroundSyncNotice(notice: string | null): void {
+    this.update({ backgroundSyncNotice: notice });
+  }
+
+  /**
+   * 清空后台同步状态提示。
+   *
+   * 由成功路径（batch-sync 整体成功、markSyncRecoveredIfIdle）配对调用，
+   * 确保 notice 不会在自愈完成后继续残留。
+   */
+  clearBackgroundSyncNotice(): void {
+    if (this.syncState().backgroundSyncNotice === null) {
+      return;
+    }
+    this.update({ backgroundSyncNotice: null });
+  }
+
+  /**
+   * @deprecated 自 2026-05-16 起改为转发到 {@link setBackgroundSyncNotice}。
+   *
+   * 历史语义是"延迟落地可自愈的同步错误"，宽限期内可被恢复路径取消，否则写入 `syncError`。
+   * 但 partial-handoff 本质上不是错误而是后台自愈状态，写入 `syncError` 会被 UI 渲染成红色 critical，
+   * 与"系统已接管"的语义矛盾。新通道 `backgroundSyncNotice` 立即落地、不写入 `syncError`，
+   * 也无须宽限期（UI 已经按信息级渲染，不会误导用户）。
+   *
+   * 保留方法签名仅为避免 spec 改动爆炸。新代码请直接调用 `setBackgroundSyncNotice`。
    */
   scheduleRecoverableSyncError(
     syncError: string,
-    delayMs = SYNC_CONFIG.DEBOUNCE_DELAY,
+    _delayMs = SYNC_CONFIG.DEBOUNCE_DELAY,
   ): void {
+    // 中文注释：转发到新通道。原本的 pendingRecoverableSyncError 计时器机制不再需要
+    // —— 后台 notice 立即可见但视觉等级是信息条，不存在"先静默观察再升级为红错"的需求。
     this.clearPendingRecoverableSyncError();
-    this.pendingRecoverableSyncError = syncError;
-    const timer = setTimeout(() => {
-      if (this.pendingRecoverableSyncError !== syncError || this.recoverableSyncErrorTimer !== timer) {
-        return;
-      }
-      this.pendingRecoverableSyncError = null;
-      this.recoverableSyncErrorTimer = null;
-      this.writeSyncError(syncError);
-    }, delayMs);
-    this.recoverableSyncErrorTimer = timer;
+    this.setBackgroundSyncNotice(syncError);
   }
 
   clearPendingRecoverableSyncError(): void {
