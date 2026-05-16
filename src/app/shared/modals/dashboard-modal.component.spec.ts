@@ -63,7 +63,8 @@ describe('DashboardModalComponent conflict resolution', () => {
   const syncState = signal({
     isOnline: true,
     isSyncing: false,
-    syncError: null,
+    syncError: null as string | null,
+    backgroundSyncNotice: null as string | null,
     offlineMode: false,
   });
 
@@ -302,5 +303,39 @@ describe('DashboardModalComponent conflict resolution', () => {
       actionQueueMock.processQueue.mock.invocationCallOrder[0],
     );
     expect(toastMock.success).toHaveBeenCalledOnce();
+  });
+
+  describe('backgroundSyncNotice 通道（partial-handoff UI 修复）', () => {
+    it('backgroundSyncNotice 信号应从 syncState 转发', () => {
+      // 中文注释：partial-handoff 写到 backgroundSyncNotice 后，模板独立绑定的 signal 必须取到值。
+      syncState.set({
+        ...syncState(),
+        backgroundSyncNotice: '部分同步失败，已进入重试队列',
+      });
+      expect(component.backgroundSyncNotice()).toBe('部分同步失败，已进入重试队列');
+      expect(component.syncError()).toBeNull();
+    });
+
+    it('syncError 与 backgroundSyncNotice 通道互不干扰', () => {
+      syncState.set({
+        ...syncState(),
+        syncError: '检测到版本冲突，请刷新后重试',
+        backgroundSyncNotice: '部分同步失败，已进入重试队列',
+      });
+      // 中文注释：两个通道独立运作，模板会分别渲染红条 + 信息条。
+      expect(component.syncError()).toBe('检测到版本冲突，请刷新后重试');
+      expect(component.backgroundSyncNotice()).toBe('部分同步失败，已进入重试队列');
+    });
+
+    it('清空 backgroundSyncNotice 后信号回退为 null（不影响 syncError）', () => {
+      syncState.set({
+        ...syncState(),
+        syncError: '真错误',
+        backgroundSyncNotice: 'notice',
+      });
+      syncState.set({ ...syncState(), backgroundSyncNotice: null });
+      expect(component.backgroundSyncNotice()).toBeNull();
+      expect(component.syncError()).toBe('真错误');
+    });
   });
 });
