@@ -198,6 +198,14 @@ export class RetryQueueService {
   private queueViewGeneration = 0;
   /** 最近一次 onProcessingStateChange(false) 是否由成功回放见底触发 */
   private lastDrainCompletedBySuccess = false;
+  /**
+   * 最近一次 drain 是否包含终态拒绝（版本冲突、tombstone 等）。
+   *
+   * 【Layer 5 根因修复 2026-05-16】此前 `drainCompletedBySuccessfulReplay` 依赖 `!hadTerminalRemoval`，
+   * 导致"5 成功 + 1 终态"混合场景永远不能 drain，UI 红条永久残留。
+   * 拆分语义：成功 drain 只看队列见底 + 真实 replay，终态独立标记走 syncError 真错误通道。
+   */
+  private lastDrainHadTerminalConflict = false;
   /** 队列内存态代次；本地新增/删除/切账号后用于作废晚到的存储加载结果 */
   private queueStateGeneration = 0;
   private lastProcessTime = 0;
@@ -1250,6 +1258,26 @@ export class RetryQueueService {
     this.lastDrainCompletedBySuccess = false;
   }
 
+  /**
+   * 读取并消费"最近一次 drain 是否包含终态拒绝"标记。
+   *
+   * 【Layer 5】用于让上层决定是否写入红色 syncError（"部分同步失败，且存在版本冲突..."），
+   * 与 `consumeSuccessfulDrainFlag` 互不影响：混合场景下两者可以同时为 true。
+   */
+  consumeTerminalConflictDrainFlag(): boolean {
+    const had = this.lastDrainHadTerminalConflict;
+    this.lastDrainHadTerminalConflict = false;
+    return had;
+  }
+
+  hasTerminalConflictDrainFlag(): boolean {
+    return this.lastDrainHadTerminalConflict;
+  }
+
+  clearTerminalConflictDrainFlag(): void {
+    this.lastDrainHadTerminalConflict = false;
+  }
+
   private getLegacyReviewStorageKey(ownerUserId = this.authService.currentUserId() ?? AUTH_CONFIG.LOCAL_MODE_USER_ID): string {
     return `${this.LEGACY_REVIEW_STORAGE_KEY_PREFIX}${ownerUserId}`;
   }
@@ -1994,8 +2022,11 @@ export class RetryQueueService {
       drainCompletedBySuccessfulReplay =
         this.queue.length === 0 &&
         successfulReplayCount > 0 &&
-        !hadTerminalRemoval &&
         !stoppedByBudget;
+
+      // 【Layer 5 根因修复 2026-05-16】终态移除（版本冲突、tombstone）独立追踪：
+      // 不再阻断成功路径的清理；混合场景（N 成功 + M 终态）走 syncError 真错误通道并行显示。
+      this.lastDrainHadTerminalConflict = hadTerminalRemoval;
 
       this.saveToStorage();
       this.checkCapacityWarning();

@@ -530,6 +530,53 @@ describe('RetryQueueService', () => {
     expect(service.hasSuccessfulDrainFlag()).toBe(false);
   });
 
+  it('Layer 5: 混合"成功 + 终态拒绝"场景应同时记录 success 与 terminal-conflict 双标记', async () => {
+    // 中文注释：构造 5 成功 + 1 终态混合场景：
+    //   - 1 个合法 project（pushProject 成功）
+    //   - 1 个 task 入队时 projectId=undefined，processQueueSlice 内会被识别为终态并移除
+    // 期望：drain 见底后 hasSuccessfulDrainFlag === true（不再被 hadTerminalRemoval 阻断），
+    //       hasTerminalConflictDrainFlag === true（终态独立追踪走 syncError 真错误通道）。
+    const project = createProject('layer5-mixed-success');
+    const orphanTask = createTask('layer5-mixed-terminal');
+
+    service.add('project', 'upsert', project, undefined, 'test-user');
+    // 注意：故意省略 projectId 触发 line 1826 终态分支（task 必须带 projectId 才合法）。
+    service.add('task', 'upsert', orphanTask, undefined, 'test-user');
+    online = true;
+
+    const result = await service.processQueueSlice({ maxItems: 10, maxDurationMs: 1000 });
+
+    expect(result.completed).toBe(true);
+    expect(handler.pushProject).toHaveBeenCalledWith(project, 'test-user', undefined);
+    // 中文注释：两个 flag 互不影响，且不被对方阻断。
+    expect(service.hasSuccessfulDrainFlag()).toBe(true);
+    expect(service.hasTerminalConflictDrainFlag()).toBe(true);
+  });
+
+  it('Layer 5: consumeTerminalConflictDrainFlag 读取后应自动复位', async () => {
+    const orphanTask = createTask('layer5-consume-terminal');
+    service.add('task', 'upsert', orphanTask, undefined, 'test-user');
+    online = true;
+
+    await service.processQueueSlice({ maxItems: 1, maxDurationMs: 1000 });
+    expect(service.hasTerminalConflictDrainFlag()).toBe(true);
+    expect(service.consumeTerminalConflictDrainFlag()).toBe(true);
+    // 中文注释：读取后必须复位为 false，否则下一轮 drain 会重复触发 syncError 写入。
+    expect(service.hasTerminalConflictDrainFlag()).toBe(false);
+  });
+
+  it('Layer 5: 纯终态拒绝场景（无成功 replay）不应触发 successful drain，但应触发 terminal-conflict', async () => {
+    // 中文注释：单一 orphan task —— 队列见底但没有成功 replay，successful 标志保持 false。
+    const orphanTask = createTask('layer5-only-terminal');
+    service.add('task', 'upsert', orphanTask, undefined, 'test-user');
+    online = true;
+
+    await service.processQueueSlice({ maxItems: 1, maxDurationMs: 1000 });
+
+    expect(service.hasSuccessfulDrainFlag()).toBe(false);
+    expect(service.hasTerminalConflictDrainFlag()).toBe(true);
+  });
+
   it('切账号后清空当前视图并保存，不应覆盖其它账号的持久化重试项', async () => {
     loadFromStorageSpy.mockRestore();
     initDbSpy.mockResolvedValue(null);
