@@ -1221,18 +1221,18 @@ export class RetryQueueService {
   /** 设置操作处理器（由 SimpleSyncService 调用） */
   setOperationHandler(handler: RetryOperationHandler): void {
     this.operationHandler = handler;
-    
-    // 【Bug Fix 2026-03-22】设置处理器后，同步已加载的队列长度到 SyncState
-    // 原因：loadFromStorage 在构造函数中异步执行，可能在 handler 设置前完成，
-    // 导致 SyncState.pendingCount 与 RetryQueue.length 不一致，UI 在同步中/待同步间闪烁
-    if (this.queue.length > 0) {
-      this.lastDrainCompletedBySuccess = false;
-      try {
-        handler.onProcessingStateChange(false, this.queue.length);
-        this.logger.debug('setOperationHandler: 同步队列长度到 SyncState', { queueLength: this.queue.length });
-      } catch (error) {
-        this.logger.warn('setOperationHandler: 同步队列长度失败', error);
-      }
+
+    // 【Bug Fix 2026-03-22 + 2026-05-16 加固】无条件同步队列长度到 SyncState。
+    // 原 if (queue.length > 0) 守卫存在 stale 漂移窗口：切账号 / clearCurrentView 之后
+    // 再 setOperationHandler 时，SyncState 可能仍残留旧账号的 pendingCount，
+    // 导致 UI 永远显示 "X 待同步"。无条件回写可以把 SyncState 强制对齐到当前 queue.length，
+    // 哪怕 queue.length === 0 也能把上游漂移清零。
+    this.lastDrainCompletedBySuccess = false;
+    try {
+      handler.onProcessingStateChange(false, this.queue.length);
+      this.logger.debug('setOperationHandler: 同步队列长度到 SyncState', { queueLength: this.queue.length });
+    } catch (error) {
+      this.logger.warn('setOperationHandler: 同步队列长度失败', error);
     }
   }
 

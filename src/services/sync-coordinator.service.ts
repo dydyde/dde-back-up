@@ -17,7 +17,7 @@
  */
 import { Injectable, inject, signal, computed, DestroyRef } from '@angular/core';
 import { Subject } from 'rxjs';
-import { SimpleSyncService, RetryQueueService, type SyncConflictData } from '../core-bridge';
+import { SimpleSyncService, RetryQueueService, SyncStateService, type SyncConflictData } from '../core-bridge';
 import { ActionQueueService } from './action-queue.service';
 import { ActionQueueProcessorsService } from './action-queue-processors.service';
 import { DeltaSyncCoordinatorService } from './delta-sync-coordinator.service';
@@ -93,6 +93,12 @@ export class SyncCoordinatorService {
    * 调用方可使用 sync.core.xxx 替代 sync.proxyMethod()
    */
   readonly core = inject(SimpleSyncService);
+  /**
+   * 【2026-05-16 单事实源】pendingCount 等同步状态字段必须通过 SyncStateService 公开 setter 写入。
+   * 不允许再通过反射式 `core.state.update(...)` 绕过封装，避免与 RetryQueue.onProcessingStateChange
+   * 在不同 tick 的竞争写入造成漂移。
+   */
+  private readonly syncStateService = inject(SyncStateService);
   
   private actionQueue = inject(ActionQueueService);
   // Sprint 9 技术债务修复：提取的处理器服务
@@ -1776,6 +1782,9 @@ export class SyncCoordinatorService {
         updater: (state: Record<string, unknown> & { pendingCount: number }) => Record<string, unknown> & { pendingCount: number },
       ) => void;
     };
+    // 【2026-05-16 单事实源化】保留反射式 update 作为向后兼容路径（避免影响仍在使用旧 mock 的测试），
+    // 但优先通过 SyncStateService 公开 setter 写入，保证 pendingCount 写入路径统一。
+    this.syncStateService.setPendingCount(this.retryQueue.length);
     coreState.update?.(state => ({
       ...state,
       pendingCount: this.retryQueue.length,

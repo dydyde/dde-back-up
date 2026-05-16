@@ -14,6 +14,9 @@
 export { SimpleSyncService } from './app/core/services/simple-sync.service';
 export type { ConflictData as SyncConflictData } from './app/core/services/sync/sync-state.service';
 
+// SyncStateService — 被 sync-coordinator 使用以收敛 pendingCount 单一事实源
+export { SyncStateService } from './app/core/services/sync/sync-state.service';
+
 // RetryQueueService + RetryableEntityType — 被 sync-coordinator, action-queue 使用
 export { RetryQueueService } from './app/core/services/sync/retry-queue.service';
 export type { RetryableEntityType } from './app/core/services/sync/retry-queue.service';

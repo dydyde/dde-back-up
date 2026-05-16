@@ -16,6 +16,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Injector, runInInjectionContext, DestroyRef, signal } from '@angular/core';
 import { SyncCoordinatorService } from './sync-coordinator.service';
 import { SimpleSyncService } from '../app/core/services/simple-sync.service';
+import { SyncStateService } from '../app/core/services/sync/sync-state.service';
 import { RetryQueueService } from '../app/core/services/sync/retry-queue.service';
 import { SentryLazyLoaderService } from './sentry-lazy-loader.service';
 import { mockSentryLazyLoaderService } from '../test-setup.mocks';
@@ -459,6 +460,10 @@ describe('SyncCoordinatorService', () => {
         { provide: ProjectSyncOperationsService, useValue: mockProjectSyncOperationsService },
         { provide: DestroyRef, useValue: mockDestroyRef },
         { provide: SentryLazyLoaderService, useValue: mockSentryLazyLoaderService },
+        {
+          provide: SyncStateService,
+          useValue: { setPendingCount: vi.fn() },
+        },
       ],
     });
 
@@ -2056,6 +2061,10 @@ describe('SyncCoordinatorService 集成场景', () => {
         { provide: ProjectSyncOperationsService, useValue: mockProjectSyncOperationsService },
         { provide: DestroyRef, useValue: mockDestroyRef },
         { provide: SentryLazyLoaderService, useValue: mockSentryLazyLoaderService },
+        {
+          provide: SyncStateService,
+          useValue: { setPendingCount: vi.fn() },
+        },
       ],
     });
 
