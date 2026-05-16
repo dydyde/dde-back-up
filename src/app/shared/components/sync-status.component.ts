@@ -9,7 +9,7 @@ import { ConflictStorageService } from '../../../services/conflict-storage.servi
 import { RetryQueueService } from '../../core/services/sync/retry-queue.service';
 import { ToastService } from '../../../services/toast.service';
 import { LoggerService } from '../../../services/logger.service';
-import { RECOVERABLE_SYNC_ERROR_MESSAGES, SYNC_CONFIG } from '../../../config/sync.config';
+import { SYNC_CONFIG } from '../../../config/sync.config';
 import type { QueuedAction } from '../../../services/action-queue.types';
 
 /**
@@ -442,8 +442,6 @@ import type { QueuedAction } from '../../../services/action-queue.types';
   `
 })
 export class SyncStatusComponent {
-  private static readonly RECOVERABLE_SYNC_ERROR_MESSAGE_VALUES = Object.values(RECOVERABLE_SYNC_ERROR_MESSAGES);
-
   /**
    * 不计入"X 待同步"用户可见计数的后台实体类型。
    *
@@ -514,9 +512,20 @@ export class SyncStatusComponent {
     this.actionQueue.pendingActions().filter(action => this.isUserVisiblePendingAction(action)).length
   );
   readonly retryQueuePendingCount = computed(() => this.syncService.syncState().pendingCount);
-  readonly isBackgroundRetrying = computed(() =>
-    this.actionQueuePendingCount() === 0 && this.retryQueuePendingCount() > 0
-  );
+  /**
+   * 是否处于后台重试态。
+   *
+   * 触发条件：
+   * 1. 用户不可见的待同步 (actionQueuePendingCount === 0) + RetryQueue 有积压
+   * 2. 或：`backgroundSyncNotice` 非空（partial-handoff 已交接 RetryQueue）
+   *
+   * 第二条覆盖"RetryQueue 排空但终态项导致 notice 未清"的兜底显示，
+   * 避免 partial-handoff notice 仍然显示但状态点错误地变绿。
+   */
+  readonly isBackgroundRetrying = computed(() => {
+    if (this.actionQueuePendingCount() > 0) return false;
+    return this.retryQueuePendingCount() > 0 || this.backgroundSyncNotice() !== null;
+  });
   readonly pendingCount = signal(0);
   readonly deadLetterCount = this.actionQueue.deadLetterSize;
   readonly deadLetters = this.actionQueue.deadLetterQueue;
@@ -594,10 +603,6 @@ export class SyncStatusComponent {
     return !SyncStatusComponent.BACKGROUND_PENDING_ENTITY_TYPES.has(action.entityType);
   }
 
-  private isRecoverableSyncError(syncError: string): boolean {
-    return SyncStatusComponent.RECOVERABLE_SYNC_ERROR_MESSAGE_VALUES.some(message => syncError === message);
-  }
-
   /**
    * 队列是否正在处理（原型方法）
    *
@@ -620,16 +625,22 @@ export class SyncStatusComponent {
   readonly isOnline = computed(() => this.syncService.syncState().isOnline);
   readonly isSyncing = computed(() => this.syncService.syncState().isSyncing);
   readonly syncError = computed(() => this.syncService.syncState().syncError);
-  readonly visibleSyncError = computed(() => {
-    const syncError = this.syncError();
-    if (!syncError) {
-      return null;
-    }
-    if (this.isRecoverableSyncError(syncError) && this.retryQueuePendingCount() > 0) {
-      return null;
-    }
-    return syncError;
-  });
+  /**
+   * 后台同步提示（信息级，非错误）。
+   *
+   * 【根因修复 2026-05-16】partial-handoff 不再写入 `syncError` 红错通道，
+   * 改走 `backgroundSyncNotice`。状态点不再因 partial-handoff 变红，
+   * 详细状态显示"后台同步中..."。
+   */
+  readonly backgroundSyncNotice = computed(() => this.syncService.syncState().backgroundSyncNotice);
+  /**
+   * visibleSyncError 现在直接等于 syncError。
+   *
+   * 历史背景：原实现做了 partial-handoff 白名单过滤，避免红条立即显示。
+   * 现在 partial-handoff 已经分流到 `backgroundSyncNotice`，`syncError`
+   * 本身只承载真错误，无需再过滤。保留 visibleSyncError 别名以保持现有模板/computed 兼容。
+   */
+  readonly visibleSyncError = computed(() => this.syncError());
   readonly offlineMode = computed(() => this.syncService.syncState().offlineMode);
 
   /** 状态点颜色（互斥优先级：同步中 > 失败 > 警告 > 正常） */

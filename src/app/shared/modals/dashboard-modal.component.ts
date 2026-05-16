@@ -202,6 +202,24 @@ interface ConflictItem {
                 </div>
               </div>
             }
+
+            <!-- 后台同步提示（信息级，非错误） -->
+            <!--
+              【根因修复 2026-05-16】partial-handoff 不再写入 syncError 红错通道，
+              改走 backgroundSyncNotice 信息通道，避免 3s 宽限期内必然弹出红条造成"严重滞后"误判。
+            -->
+            @if (backgroundSyncNotice() && !syncError()) {
+              <div data-testid="background-sync-notice"
+                   class="p-3 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800/40 rounded-lg flex items-start gap-2">
+                <svg class="w-4 h-4 text-amber-500 flex-shrink-0 mt-0.5 animate-spin" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+                </svg>
+                <div>
+                  <h3 class="text-xs font-semibold text-amber-800 dark:text-amber-200 mb-0.5">后台同步中</h3>
+                  <p class="text-[11px] text-amber-700 dark:text-amber-300">{{ backgroundSyncNotice() }}</p>
+                </div>
+              </div>
+            }
           }
 
           <!-- ========== Tab: 冲突解决 ========== -->
@@ -483,6 +501,7 @@ export class DashboardModalComponent implements OnInit {
   readonly isOnline = computed(() => this.syncService.syncState().isOnline);
   readonly isSyncing = computed(() => this.syncService.syncState().isSyncing);
   readonly syncError = computed(() => this.syncService.syncState().syncError);
+  readonly backgroundSyncNotice = computed(() => this.syncService.syncState().backgroundSyncNotice);
   readonly offlineMode = computed(() => this.syncService.syncState().offlineMode);
   readonly hasIssues = computed(() =>
     this.deadLetterCount() > 0 || this.pendingCount() > 0 || !!this.syncError() || this.offlineMode() || this.conflictCount() > 0

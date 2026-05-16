@@ -42,6 +42,7 @@ describe('SyncStatusComponent', () => {
     lastSyncTime: null as string | null,
     pendingCount: 0,
     syncError: null as string | null,
+    backgroundSyncNotice: null as string | null,
     hasConflict: false,
     conflictData: null,
   });
@@ -79,6 +80,7 @@ describe('SyncStatusComponent', () => {
       lastSyncTime: null,
       pendingCount: 0,
       syncError: null,
+      backgroundSyncNotice: null,
       hasConflict: false,
       conflictData: null,
     });
@@ -164,14 +166,15 @@ describe('SyncStatusComponent', () => {
     expect(fixture.componentInstance.detailedStatus()).toBe('后台同步中...');
   });
 
-  it('可自愈的 retry handoff 错误在 RetryQueue 仍有积压时应降级为后台同步提示', () => {
+  it('可自愈的 retry handoff 应通过 backgroundSyncNotice 通道显示为后台同步态而非红色', () => {
     const embeddedFixture = TestBed.createComponent(SyncStatusComponent);
     // sync-status-indicator 仅在 embedded 模式渲染；现有 spec 统一用信号替换方式设置 input()。
     (embeddedFixture.componentInstance as unknown as { embedded: ReturnType<typeof signal<boolean>> }).embedded = signal(true);
+    // 中文注释：partial-handoff 现在走独立的 backgroundSyncNotice 通道（非 syncError 红错路径）。
     syncState.set({
       ...syncState(),
       pendingCount: 1,
-      syncError: RECOVERABLE_SYNC_ERROR_MESSAGES.PARTIAL_RETRY_HANDOFF,
+      backgroundSyncNotice: RECOVERABLE_SYNC_ERROR_MESSAGES.PARTIAL_RETRY_HANDOFF,
     });
     embeddedFixture.detectChanges();
 
@@ -182,6 +185,19 @@ describe('SyncStatusComponent', () => {
     expect(indicator?.classList.contains('bg-stone-400')).toBe(true);
     expect(text).toContain('后台同步中');
     expect(text).not.toContain('同步错误');
+  });
+
+  it('backgroundSyncNotice 非空但 RetryQueue 已空时仍应保持后台同步态（兜底）', () => {
+    // 中文注释：覆盖"RetryQueue 排空但 notice 未清"的兜底场景，确保状态点不会错误地变绿。
+    syncState.set({
+      ...syncState(),
+      pendingCount: 0,
+      backgroundSyncNotice: RECOVERABLE_SYNC_ERROR_MESSAGES.PARTIAL_RETRY_HANDOFF,
+    });
+    fixture.detectChanges();
+
+    expect(fixture.componentInstance.isBackgroundRetrying()).toBe(true);
+    expect(fixture.componentInstance.detailedStatus()).toBe('后台同步中...');
   });
 
   it('在用户可见待同步 0↔1 高频震荡时应在重置阈值后强制收口，避免 "1 待同步" 永不归零', () => {
