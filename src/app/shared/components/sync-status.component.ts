@@ -442,7 +442,7 @@ import type { QueuedAction } from '../../../services/action-queue.types';
   `
 })
 export class SyncStatusComponent {
-  private static readonly RECOVERABLE_SYNC_ERROR_TEXTS = Object.values(RECOVERABLE_SYNC_ERROR_MESSAGES);
+  private static readonly RECOVERABLE_SYNC_ERROR_TEXT_SET = Object.values(RECOVERABLE_SYNC_ERROR_MESSAGES);
 
   /**
    * 不计入"X 待同步"用户可见计数的后台实体类型。
@@ -594,8 +594,8 @@ export class SyncStatusComponent {
     return !SyncStatusComponent.BACKGROUND_PENDING_ENTITY_TYPES.has(action.entityType);
   }
 
-  private isRecoverableRetryHandoffError(syncError: string): boolean {
-    return SyncStatusComponent.RECOVERABLE_SYNC_ERROR_TEXTS.some(message => syncError.includes(message));
+  private isRecoverableSyncError(syncError: string): boolean {
+    return SyncStatusComponent.RECOVERABLE_SYNC_ERROR_TEXT_SET.some(message => syncError.includes(message));
   }
 
   /**
@@ -625,7 +625,7 @@ export class SyncStatusComponent {
     if (!syncError) {
       return null;
     }
-    if (this.isRecoverableRetryHandoffError(syncError) && this.retryQueuePendingCount() > 0) {
+    if (this.isRecoverableSyncError(syncError) && this.retryQueuePendingCount() > 0) {
       return null;
     }
     return syncError;

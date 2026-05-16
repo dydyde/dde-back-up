@@ -36,14 +36,6 @@ interface RemoteExistingTaskIdsResult {
   existingIds: Set<string>;
   deferredBySuspension: boolean;
 }
-type RecoverableSyncErrorState = Partial<Pick<
-  SyncStateService,
-  | 'advanceLastSyncTimeIfIdle'
-  | 'clearPendingRecoverableSyncError'
-  | 'scheduleRecoverableSyncError'
-  | 'setLastSyncTime'
-  | 'setSyncError'
->>;
 /** 批量同步结果 */
 export interface BatchSyncResult {
   success: boolean;
@@ -356,19 +348,13 @@ export class BatchSyncService {
   }
 
   private markBatchSyncSuccess(): void {
-    const syncState = this.syncState as unknown as RecoverableSyncErrorState;
-    syncState.clearPendingRecoverableSyncError?.();
+    this.syncState.clearPendingRecoverableSyncError();
     const syncTime = nowISO();
 
-    if (typeof syncState.advanceLastSyncTimeIfIdle === 'function') {
-      syncState.advanceLastSyncTimeIfIdle(syncTime);
-      return;
-    }
-
-    syncState.setLastSyncTime?.(syncTime);
+    this.syncState.advanceLastSyncTimeIfIdle(syncTime);
   }
 
-  private schedulePartialRetryHandoffError(message: string, context: {
+  private scheduleRecoverableSyncError(message: string, context: {
     projectId: string;
     failedTaskCount: number;
     failedConnectionCount: number;
@@ -378,12 +364,7 @@ export class BatchSyncService {
       ...context,
       graceMs: SYNC_CONFIG.DEBOUNCE_DELAY,
     });
-    const syncState = this.syncState as unknown as RecoverableSyncErrorState;
-    if (typeof syncState.scheduleRecoverableSyncError === 'function') {
-      syncState.scheduleRecoverableSyncError(message, SYNC_CONFIG.DEBOUNCE_DELAY);
-      return;
-    }
-    syncState.setSyncError?.(message);
+    this.syncState.scheduleRecoverableSyncError(message, SYNC_CONFIG.DEBOUNCE_DELAY);
   }
 
   /**
@@ -1328,7 +1309,7 @@ export class BatchSyncService {
           if (hasTerminalConflicts) {
             this.syncState.setSyncError('部分同步失败，且存在版本冲突，请刷新后重试');
           } else {
-            this.schedulePartialRetryHandoffError(RECOVERABLE_SYNC_ERROR_MESSAGES.PARTIAL_RETRY_HANDOFF, {
+            this.scheduleRecoverableSyncError(RECOVERABLE_SYNC_ERROR_MESSAGES.PARTIAL_RETRY_HANDOFF, {
               projectId: project.id,
               failedTaskCount: dedupedFailedTaskIds.length,
               failedConnectionCount: dedupedFailedConnectionIds.length,

@@ -114,7 +114,7 @@ describe('BatchSyncService owner isolation', () => {
     scheduleRecoverableSyncError: vi.fn(),
     clearPendingRecoverableSyncError: vi.fn(),
     setSyncing: vi.fn(),
-    setLastSyncTime: vi.fn(),
+    advanceLastSyncTimeIfIdle: vi.fn(),
     setSessionExpired: vi.fn(),
   };
 
