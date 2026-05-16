@@ -203,6 +203,11 @@ export class SyncStateService {
       return false;
     }
     this.clearPendingRecoverableSyncError();
+    // 中文注释：成功见底收口时必须同时清空两个状态通道：
+    //   - syncError：如果上一轮存在真错误，被新一轮成功 drain 覆盖，应一并清除。
+    //   - backgroundSyncNotice：partial-handoff 转交 RetryQueue 后的"后台同步中"信息条
+    //     正是靠这里收口——drain 见底意味着自愈完成，notice 必须随之消失，否则 UI 会
+    //     "RetryQueue 已空但琥珀条不消失"，与"已经自愈"语义矛盾。
     this.update({ lastSyncTime, syncError: null, backgroundSyncNotice: null });
     return true;
   }

@@ -522,10 +522,10 @@ export class SyncStatusComponent {
    * 第二条覆盖"RetryQueue 排空但终态项导致 notice 未清"的兜底显示，
    * 避免 partial-handoff notice 仍然显示但状态点错误地变绿。
    */
-  readonly isBackgroundRetrying = computed(() => {
-    if (this.actionQueuePendingCount() > 0) return false;
-    return this.retryQueuePendingCount() > 0 || this.backgroundSyncNotice() !== null;
-  });
+  readonly isBackgroundRetrying = computed(() =>
+    this.actionQueuePendingCount() === 0 &&
+    (this.retryQueuePendingCount() > 0 || this.backgroundSyncNotice() !== null)
+  );
   readonly pendingCount = signal(0);
   readonly deadLetterCount = this.actionQueue.deadLetterSize;
   readonly deadLetters = this.actionQueue.deadLetterQueue;
