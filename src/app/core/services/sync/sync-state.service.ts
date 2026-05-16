@@ -226,8 +226,12 @@ export class SyncStateService {
   /**
    * 延迟落地可自愈的同步错误。
    *
-   * 中文注释：部分失败已进入 RetryQueue 时，几秒内通常会被后台回放收口。
-   * 先给 RetryQueue 一个观察窗口，避免 UI 在"待同步 → 红错 → 已保存"之间闪烁。
+   * 使用场景：
+   * - 失败已安全转交 RetryQueue，后台回放有机会在短时间内自愈；
+   * - 这类错误不应像 `setSyncError()` 一样立即显示为红色错误。
+   *
+   * `delayMs` 是观察窗口：窗口内若 `setSyncError(null)` 或 `markSyncRecoveredIfIdle()`
+   * 清理了状态，错误不会落地；窗口结束仍未恢复才写入 `syncError`。
    */
   scheduleRecoverableSyncError(
     syncError: string,
@@ -235,14 +239,15 @@ export class SyncStateService {
   ): void {
     this.clearPendingRecoverableSyncError();
     this.pendingRecoverableSyncError = syncError;
-    this.recoverableSyncErrorTimer = setTimeout(() => {
-      if (this.pendingRecoverableSyncError !== syncError) {
+    const timer = setTimeout(() => {
+      if (this.pendingRecoverableSyncError !== syncError || this.recoverableSyncErrorTimer !== timer) {
         return;
       }
       this.pendingRecoverableSyncError = null;
       this.recoverableSyncErrorTimer = null;
       this.writeSyncError(syncError);
     }, delayMs);
+    this.recoverableSyncErrorTimer = timer;
   }
 
   clearPendingRecoverableSyncError(): void {

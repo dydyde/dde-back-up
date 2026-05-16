@@ -442,7 +442,7 @@ import type { QueuedAction } from '../../../services/action-queue.types';
   `
 })
 export class SyncStatusComponent {
-  private static readonly RECOVERABLE_SYNC_ERROR_TEXT_SET = Object.values(RECOVERABLE_SYNC_ERROR_MESSAGES);
+  private static readonly RECOVERABLE_SYNC_ERROR_MESSAGE_VALUES = Object.values(RECOVERABLE_SYNC_ERROR_MESSAGES);
 
   /**
    * 不计入"X 待同步"用户可见计数的后台实体类型。
@@ -595,7 +595,7 @@ export class SyncStatusComponent {
   }
 
   private isRecoverableSyncError(syncError: string): boolean {
-    return SyncStatusComponent.RECOVERABLE_SYNC_ERROR_TEXT_SET.some(message => syncError.includes(message));
+    return SyncStatusComponent.RECOVERABLE_SYNC_ERROR_MESSAGE_VALUES.some(message => syncError === message);
   }
 
   /**

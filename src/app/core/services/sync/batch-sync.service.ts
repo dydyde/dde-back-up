@@ -354,6 +354,12 @@ export class BatchSyncService {
     this.syncState.advanceLastSyncTimeIfIdle(syncTime);
   }
 
+  /**
+   * 为可自愈失败写入观察窗。
+   *
+   * 中文注释：partial handoff 常由 RetryQueue 随后成功回放收口。这里保留最小上下文日志，
+   * 便于线上确认失败项是否被重试队列消化，同时避免立即把可恢复状态显示成红错。
+   */
   private scheduleRecoverableSyncError(message: string, context: {
     projectId: string;
     failedTaskCount: number;
