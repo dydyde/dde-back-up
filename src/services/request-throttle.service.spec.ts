@@ -244,11 +244,13 @@ describe('RequestThrottleService', () => {
 
       let rejected = false;
       let errorMessage = '';
+      let errorName = '';
       
       const resultPromise = service.execute('slow-request', neverResolves, { timeout: 50 })
-        .catch(e => {
+        .catch((e: Error) => {
           rejected = true;
           errorMessage = e.message;
+          errorName = e.name;
         });
       
       // 快进到超时点之后
@@ -261,6 +263,10 @@ describe('RequestThrottleService', () => {
       // 验证请求因超时被拒绝
       expect(rejected).toBe(true);
       expect(errorMessage).toMatch(/超时/);
+      // 【2026-05-16 根因修复回归】超时 Error 必须携带 name='TimeoutError'，
+      // 否则下游 supabaseErrorToError 会落入 fallback 把它误判为 isRetryable=false，
+      // 导致 ConnectionSyncOps / TaskSyncOps 把同步超时静默丢弃而非入 RetryQueue。
+      expect(errorName).toBe('TimeoutError');
       
       // 清理
       service.clearAll();

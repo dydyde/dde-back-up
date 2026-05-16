@@ -1490,7 +1490,7 @@ export class RetryQueueService {
 
     const msg = (error.message || '').toLowerCase();
     if (msg.includes('failed to fetch') || msg.includes('network')) return 'NetworkError';
-    if (msg.includes('timeout') || msg.includes('timed out')) return 'NetworkTimeoutError';
+    if (msg.includes('timeout') || msg.includes('timed out') || msg.includes('超时')) return 'NetworkTimeoutError';
     if (msg.includes('504')) return 'GatewayError';
     if (msg.includes('503')) return 'ServiceUnavailableError';
     if (msg.includes('offline') || msg.includes('no connection')) return 'NetworkError';

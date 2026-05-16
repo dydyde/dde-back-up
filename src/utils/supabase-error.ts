@@ -97,7 +97,11 @@ export function supabaseErrorToError(error: unknown): EnhancedError {
     } else if (lowerMsg.includes('network error') || lowerMsg.includes('networkerror')) {
       enhanced.errorType = 'NetworkError';
       enhanced.isRetryable = true;
-    } else if (lowerMsg.includes('timeout') || lowerMsg.includes('timed out')) {
+    } else if (lowerMsg.includes('timeout') || lowerMsg.includes('timed out') || lowerMsg.includes('超时')) {
+      // 【2026-05-16】中文 '超时' 防御层
+      // RequestThrottleService.withTimeout 历史上抛 message 含中文的 Error，
+      // 现已在源头修复 name='TimeoutError'，此处保留作为兜底，覆盖 auth.service /
+      // unsaved-changes.guard / modal-loader 等其他中文超时错误源。
       enhanced.errorType = 'TimeoutError';
       enhanced.isRetryable = true;
     } else if (lowerMsg.includes('offline') || lowerMsg.includes('no connection')) {
@@ -186,7 +190,7 @@ export function supabaseErrorToError(error: unknown): EnhancedError {
     const lowerMsg = message.toLowerCase();
     if (lowerMsg.includes('network_io_suspended') || lowerMsg.includes('network io suspended')) {
       errorType = 'BrowserNetworkSuspendedError';
-    } else if (lowerMsg.includes('timeout') || lowerMsg.includes('timed out')) {
+    } else if (lowerMsg.includes('timeout') || lowerMsg.includes('timed out') || lowerMsg.includes('超时')) {
       errorType = 'TimeoutError';
     } else if (lowerMsg.includes('network') || lowerMsg.includes('fetch')) {
       errorType = 'NetworkError';

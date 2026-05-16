@@ -319,7 +319,17 @@ export class RequestThrottleService {
           return;
         }
 
-        reject(new Error(`请求超时 (${timeout}ms): ${key}`));
+        // 【2026-05-16 根因修复】
+        // 必须设置 name='TimeoutError'，否则下游 supabaseErrorToError 会因
+        // 中文 message 不匹配英文 'timeout' 模式而落入 fallback 分支，把超时
+        // 误判为 isRetryable=false，导致 ConnectionSyncOps/TaskSyncOps 把超时
+        // 走到「不可重试的错误，不加入重试队列」分支 — 数据直到下次手动编辑
+        // 才会重试同步（用户截图复现）。
+        // name='TimeoutError' 命中 supabase-error.ts RETRYABLE_ERROR_TYPES 与
+        // utils/timeout.ts isRetryableError 的正向集合。
+        const timeoutError = new Error(`请求超时 (${timeout}ms): ${key}`);
+        timeoutError.name = 'TimeoutError';
+        reject(timeoutError);
       }, timeout);
       
       promise
