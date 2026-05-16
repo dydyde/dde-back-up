@@ -50,6 +50,7 @@ type ProjectSyncResult = {
   retryEnqueued?: string[];
   failureReason?: string;
   terminal?: boolean;
+  partialRetryHandoff?: boolean;
 };
 
 type ProjectMutationContext = {
@@ -449,6 +450,19 @@ export class ActionQueueProcessorsService {
           this.actionQueue.moveToDeadLetter(action, result.failureReason ?? '项目同步失败');
           return true;
         }
+        if (result.partialRetryHandoff) {
+          // 中文注释：部分失败未全部转交 RetryQueue（容量已满 / purge 部分失败 / 浏览器挂起
+          // continue 等）。这是设计内的预期路径，不是异常：保留 ActionQueue 项以便下一轮回放，
+          // 但走 info 级日志，避免控制台 ERROR 红条与 Sentry breadcrumb 噪声。
+          this.logger.info('project:update 部分转交 RetryQueue，等待下一轮回放', {
+            projectId: payload.project.id,
+            retryEnqueued: result.retryEnqueued,
+            failedTaskIds: result.failedTaskIds,
+            failedConnectionIds: result.failedConnectionIds,
+            failureReason: result.failureReason,
+          });
+          return false;
+        }
         if (failureTransferred) {
           this.logger.info('project:update 已转交 RetryQueue，当前 ActionQueue 项视为完成', {
             projectId: payload.project.id,
@@ -563,6 +577,17 @@ export class ActionQueueProcessorsService {
           });
           this.actionQueue.moveToDeadLetter(action, result.failureReason ?? '项目同步失败');
           return true;
+        }
+        if (result.partialRetryHandoff) {
+          // 中文注释：部分失败未全部转交 RetryQueue —— 与 project:update 同义，info 级日志即可。
+          this.logger.info('project:create 部分转交 RetryQueue，等待下一轮回放', {
+            projectId: payload.project.id,
+            retryEnqueued: result.retryEnqueued,
+            failedTaskIds: result.failedTaskIds,
+            failedConnectionIds: result.failedConnectionIds,
+            failureReason: result.failureReason,
+          });
+          return false;
         }
         if (failureTransferred) {
           this.logger.info('project:create 已转交 RetryQueue，当前 ActionQueue 项视为完成', {

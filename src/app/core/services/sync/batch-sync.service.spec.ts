@@ -978,4 +978,60 @@ describe('BatchSyncService owner isolation', () => {
       [],
     );
   });
+
+  it('saveProjectToCloud 在 purgeTasksFromCloud 部分失败且未全部入队时应标注 partialRetryHandoff', async () => {
+    const project = createProject({ id: 'project-partial-retry-handoff' });
+    mockChangeTracker.getProjectChanges.mockReturnValueOnce({
+      taskIdsToDelete: ['task-delete-a', 'task-delete-b'],
+      taskUpdateFieldsById: {},
+    });
+    mockClient.auth.getSession.mockResolvedValue({
+      data: { session: { user: { id: 'user-a' } } },
+    });
+    // 中文注释：purge 失败但 RPC 只回放了 task-delete-a；task-delete-b 没进 RetryQueue。
+    callbacks.purgeTasksFromCloud = vi.fn().mockResolvedValue({
+      success: false,
+      retriedTaskIds: ['task-delete-a'],
+    });
+    service.setCallbacks(callbacks);
+
+    const result = await service.saveProjectToCloud(project, 'user-a');
+
+    expect(result.success).toBe(false);
+    expect(result.failedTaskIds).toEqual(['task-delete-a', 'task-delete-b']);
+    // 中文注释：task-delete-a 已入队，task-delete-b 未入队 —— 部分交接。
+    expect(result.retryEnqueued).toContain('task:task-delete-a');
+    expect(result.retryEnqueued).not.toContain('task:task-delete-b');
+    expect(result.partialRetryHandoff).toBe(true);
+    expect(result.failureReason).toBe(
+      'project batch sync partially delegated; some failures did not enter retry queue',
+    );
+  });
+
+  it('saveProjectToCloud 在所有失败项均已入 RetryQueue 时应保持 fullyResolved 语义', async () => {
+    const project = createProject({ id: 'project-fully-resolved-handoff' });
+    mockChangeTracker.getProjectChanges.mockReturnValueOnce({
+      taskIdsToDelete: ['task-delete-a'],
+      taskUpdateFieldsById: {},
+    });
+    mockClient.auth.getSession.mockResolvedValue({
+      data: { session: { user: { id: 'user-a' } } },
+    });
+    // 中文注释：purge 失败但所有失败任务都已回放入队 —— fullyResolved 路径。
+    callbacks.purgeTasksFromCloud = vi.fn().mockResolvedValue({
+      success: false,
+      retriedTaskIds: ['task-delete-a'],
+    });
+    service.setCallbacks(callbacks);
+
+    const result = await service.saveProjectToCloud(project, 'user-a');
+
+    expect(result.success).toBe(false);
+    expect(result.failedTaskIds).toEqual(['task-delete-a']);
+    expect(result.retryEnqueued).toContain('task:task-delete-a');
+    expect(result.partialRetryHandoff).toBe(false);
+    expect(result.failureReason).toBe(
+      'project batch sync delegated remaining work to retry queue',
+    );
+  });
 });

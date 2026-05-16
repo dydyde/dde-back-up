@@ -618,6 +618,37 @@ describe('ActionQueueProcessorsService', () => {
     expect(mockLoggerCategory.error).toHaveBeenCalled();
   });
 
+  it('project:update should log info (not error) and return false when partialRetryHandoff is set', async () => {
+    mockSyncService.saveProjectSmart.mockResolvedValueOnce({
+      success: false,
+      projectPushed: true,
+      failedTaskIds: ['task-a', 'task-b'],
+      // 中文注释：仅 task-a 入队，task-b 没进 RetryQueue —— batch-sync 把这种情况标注为 partial。
+      retryEnqueued: ['task:task-a'],
+      partialRetryHandoff: true,
+      failureReason: 'project batch sync partially delegated; some failures did not enter retry queue',
+    });
+    const handler = getProcessor('project:update');
+
+    const result = await handler({
+      payload: {
+        project: { id: 'p-partial-handoff', syncSource: 'synced' },
+        sourceUserId: 'test-user',
+      },
+    } as QueuedAction);
+
+    expect(result).toBe(false);
+    expect(mockLoggerCategory.info).toHaveBeenCalledWith(
+      'project:update 部分转交 RetryQueue，等待下一轮回放',
+      expect.objectContaining({
+        projectId: 'p-partial-handoff',
+        retryEnqueued: ['task:task-a'],
+        failedTaskIds: ['task-a', 'task-b'],
+      }),
+    );
+    expect(mockLoggerCategory.error).not.toHaveBeenCalled();
+  });
+
   it('project:update should not acknowledge project metadata failures when pushProject did not enqueue RetryQueue', async () => {
     mockSyncService.saveProjectSmart.mockResolvedValueOnce({
       success: false,
@@ -976,6 +1007,36 @@ describe('ActionQueueProcessorsService', () => {
     } as QueuedAction);
 
     expect(result).toBe(false);
+  });
+
+  it('project:create should log info (not error) and return false when partialRetryHandoff is set', async () => {
+    mockSyncService.saveProjectSmart.mockResolvedValueOnce({
+      success: false,
+      projectPushed: true,
+      failedTaskIds: ['task-a', 'task-b'],
+      retryEnqueued: ['task:task-a'],
+      partialRetryHandoff: true,
+      failureReason: 'project batch sync partially delegated; some failures did not enter retry queue',
+    });
+    const handler = getProcessor('project:create');
+
+    const result = await handler({
+      payload: {
+        project: { id: 'p-create-partial-handoff', syncSource: 'synced' },
+        sourceUserId: 'test-user',
+      },
+    } as QueuedAction);
+
+    expect(result).toBe(false);
+    expect(mockLoggerCategory.info).toHaveBeenCalledWith(
+      'project:create 部分转交 RetryQueue，等待下一轮回放',
+      expect.objectContaining({
+        projectId: 'p-create-partial-handoff',
+        retryEnqueued: ['task:task-a'],
+        failedTaskIds: ['task-a', 'task-b'],
+      }),
+    );
+    expect(mockLoggerCategory.error).not.toHaveBeenCalled();
   });
 
   it('project:create should not acknowledge project metadata failures when pushProject did not enqueue RetryQueue', async () => {

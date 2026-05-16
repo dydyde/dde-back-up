@@ -120,6 +120,7 @@ type ProjectSaveResult = {
   retryEnqueued?: string[];
   failureReason?: string;
   terminal?: boolean;
+  partialRetryHandoff?: boolean;
 };
 
 interface QueuedProjectSaveRequest {
@@ -2603,7 +2604,7 @@ export class SimpleSyncService {
     return this.saveProjectToCloudSingleFlight(project, userId, taskIdsToDelete);
   }
 
-  async saveProjectSmart(project: Project, userId: string, taskIdsToDelete?: string[]): Promise<{ success: boolean; conflict?: boolean; remoteData?: Project; newVersion?: number; validationWarnings?: string[]; projectPushed?: boolean; failedTaskIds?: string[]; failedConnectionIds?: string[]; retryEnqueued?: string[]; failureReason?: string; terminal?: boolean }> {
+  async saveProjectSmart(project: Project, userId: string, taskIdsToDelete?: string[]): Promise<{ success: boolean; conflict?: boolean; remoteData?: Project; newVersion?: number; validationWarnings?: string[]; projectPushed?: boolean; failedTaskIds?: string[]; failedConnectionIds?: string[]; retryEnqueued?: string[]; failureReason?: string; terminal?: boolean; partialRetryHandoff?: boolean }> {
     const result = await this.saveProjectToCloud(project, userId, taskIdsToDelete);
     return { ...result, newVersion: result.newVersion ?? project.version };
   }

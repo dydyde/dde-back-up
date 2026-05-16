@@ -48,6 +48,14 @@ export interface BatchSyncResult {
   retryEnqueued?: string[];
   failureReason?: string;
   terminal?: boolean;
+  /**
+   * 中文注释：部分失败但未全部转交 RetryQueue 的语义标记。
+   * - true：存在被记入 failedTaskIds / failedConnectionIds 的项未进入 RetryQueue（容量已满 /
+   *   purge 部分失败 / 浏览器挂起 continue 等），下游不应以 "已转交" 视之，也不应抛 ERROR。
+   * - false / undefined：要么完全成功，要么所有失败项都已转交 RetryQueue（"fullyResolved"）。
+   * 引入该字段是为了避免下游通过匹配 failureReason 字符串来推断同步事实。
+   */
+  partialRetryHandoff?: boolean;
 }
 
 /** 批量同步回调函数类型 */
@@ -1268,6 +1276,17 @@ export class BatchSyncService {
         dedupedFailedTaskIds.some(id => terminalTaskIds.has(id)) ||
         dedupedFailedConnectionIds.some(id => terminalConnectionIds.has(id));
       
+      const retryEnqueuedSet = new Set(dedupedRetryEnqueued);
+      const allTasksResolved = dedupedFailedTaskIds.every(
+        id => retryEnqueuedSet.has(`task:${id}`) || terminalTaskIds.has(id)
+      );
+      const allConnectionsResolved = dedupedFailedConnectionIds.every(
+        id => retryEnqueuedSet.has(`connection:${id}`) || terminalConnectionIds.has(id)
+      );
+      const projectHandedOff = projectPushed || retryEnqueuedSet.has(`project:${project.id}`);
+      const fullyResolved =
+        projectHandedOff && allTasksResolved && allConnectionsResolved;
+
       this.syncState.setSyncing(false);
       if (success) {
         this.markBatchSyncSuccess();
@@ -1279,17 +1298,6 @@ export class BatchSyncService {
         //  - 所有失败（包括 project 自身）都进了 RetryQueue → 视为"已自愈"交接，不写
         //    syncError（保留 pendingCount 提示足矣）；RetryQueue 回放成功后会自动清错。
         //  - 存在未入队失败（RetryQueue 已满/存储冻结/project 重试入队失败）→ 才写红错。
-        const retryEnqueuedSet = new Set(dedupedRetryEnqueued);
-        const allTasksResolved = dedupedFailedTaskIds.every(
-          id => retryEnqueuedSet.has(`task:${id}`) || terminalTaskIds.has(id)
-        );
-        const allConnectionsResolved = dedupedFailedConnectionIds.every(
-          id => retryEnqueuedSet.has(`connection:${id}`) || terminalConnectionIds.has(id)
-        );
-        const projectHandedOff = projectPushed || retryEnqueuedSet.has(`project:${project.id}`);
-        const fullyResolved =
-          projectHandedOff && allTasksResolved && allConnectionsResolved;
-
         if (fullyResolved) {
           this.syncState.setSyncError(hasTerminalConflicts ? '检测到版本冲突，请刷新后重试' : null);
         } else {
@@ -1311,11 +1319,16 @@ export class BatchSyncService {
         failedTaskIds: dedupedFailedTaskIds,
         failedConnectionIds: dedupedFailedConnectionIds,
         retryEnqueued: dedupedRetryEnqueued,
+        partialRetryHandoff: success ? undefined : !fullyResolved,
         failureReason: success
           ? undefined
           : hasTerminalConflicts
-            ? 'project batch sync finished with terminal conflicts'
-            : 'project batch sync delegated remaining work to retry queue'
+            ? fullyResolved
+              ? 'project batch sync finished with terminal conflicts'
+              : 'project batch sync finished with terminal conflicts and partial retry handoff'
+            : fullyResolved
+              ? 'project batch sync delegated remaining work to retry queue'
+              : 'project batch sync partially delegated; some failures did not enter retry queue'
       };
     } catch (e) {
       if (!retryEnqueued.includes(`project:${project.id}`)) {
