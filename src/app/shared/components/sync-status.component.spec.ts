@@ -166,6 +166,7 @@ describe('SyncStatusComponent', () => {
 
   it('可自愈的 retry handoff 错误在 RetryQueue 仍有积压时应降级为后台同步提示', () => {
     const embeddedFixture = TestBed.createComponent(SyncStatusComponent);
+    // sync-status-indicator 仅在 embedded 模式渲染，用于断言状态点颜色。
     (embeddedFixture.componentInstance as unknown as { embedded: ReturnType<typeof signal<boolean>> }).embedded = signal(true);
     syncState.set({
       ...syncState(),

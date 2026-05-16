@@ -364,7 +364,7 @@ export class BatchSyncService {
       ...context,
       graceMs: SYNC_CONFIG.DEBOUNCE_DELAY,
     });
-    this.syncState.scheduleRecoverableSyncError(message, SYNC_CONFIG.DEBOUNCE_DELAY);
+    this.syncState.scheduleRecoverableSyncError(message);
   }
 
   /**

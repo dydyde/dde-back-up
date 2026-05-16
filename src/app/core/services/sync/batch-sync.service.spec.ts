@@ -1011,7 +1011,6 @@ describe('BatchSyncService owner isolation', () => {
     );
     expect(mockSyncState.scheduleRecoverableSyncError).toHaveBeenCalledWith(
       RECOVERABLE_SYNC_ERROR_MESSAGES.PARTIAL_RETRY_HANDOFF,
-      expect.any(Number),
     );
     expect(mockSyncState.setSyncError).not.toHaveBeenCalledWith(RECOVERABLE_SYNC_ERROR_MESSAGES.PARTIAL_RETRY_HANDOFF);
   });
