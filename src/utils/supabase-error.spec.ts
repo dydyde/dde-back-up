@@ -133,6 +133,31 @@ describe('supabase-error', () => {
       expect(result.errorType).toBe('TimeoutError');
       expect(result.isRetryable).toBe(true);
     });
+
+    it('应该识别 Error 实例中的中文「超时」错误（RequestThrottle 历史错误兜底）', () => {
+      // 【2026-05-16 根因修复回归】
+      // RequestThrottleService.withTimeout 历史上抛 message 为
+      // '请求超时 (30000ms): push-connection:xxx' 的裸 Error。即便已在源头修复
+      // name='TimeoutError'，此处的中文 message 识别仍是其他中文超时错误源
+      // （auth.service / unsaved-changes.guard / modal-loader 等）的兜底。
+      const error = new Error('请求超时 (30000ms): push-connection:abc');
+      const result = supabaseErrorToError(error);
+
+      expect(result.errorType).toBe('TimeoutError');
+      expect(result.isRetryable).toBe(true);
+    });
+
+    it('应该把 name=TimeoutError 的 Error 识别为可重试（throttle 根因修复路径）', () => {
+      // RequestThrottle 修复后抛的真实形态：name='TimeoutError' + 中文 message。
+      // 必须命中 RETRYABLE_ERROR_TYPES，让 ConnectionSyncOps/TaskSyncOps 把它
+      // 入 RetryQueue 而非走 "不可重试的错误，不加入重试队列" 分支。
+      const error = new Error('请求超时 (30000ms): push-connection:abc');
+      error.name = 'TimeoutError';
+      const result = supabaseErrorToError(error);
+
+      expect(result.errorType).toBe('TimeoutError');
+      expect(result.isRetryable).toBe(true);
+    });
     
     it('应该识别 Error 实例中的 "Unknown Supabase error"（504 回退场景）', () => {
       // 【关键测试】Supabase 客户端在无法解析 504 Gateway Timeout 等非 JSON 响应时
