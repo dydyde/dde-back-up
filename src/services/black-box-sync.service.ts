@@ -118,6 +118,8 @@ export class BlackBoxSyncService {
   private readonly BLACKBOX_PULL_PAGE_SIZE = 200;
   private readonly BLACKBOX_PULL_MAX_PAGES = 10;
   private readonly BLACKBOX_PULL_MAX_DURATION_MS = 20_000;
+  private readonly BLACKBOX_ENTRY_SELECT_COLUMNS =
+    'id, project_id, user_id, content, focus_meta, date, created_at, updated_at, is_read, is_completed, is_archived, snooze_until, snooze_count, deleted_at';
   private initIndexedDBPromise: Promise<void> | null = null;
   private realtimeChannel: RealtimeChannel | null = null;
   private realtimeSubscribedUserId: string | null = null;
@@ -1633,6 +1635,8 @@ export class BlackBoxSyncService {
         this.clockSync.recordServerTimestamp(serverUpdatedAt, entry.id);
       }
 
+      // stale_payload 由 sync_upsert_blackbox_entry 在 applied 结果中返回：
+      // 表示写入已被接收，但服务端保留了远端权威状态，客户端必须先对账再清 pending。
       if (result.stalePayload) {
         const reconciled = await this.reconcileAuthoritativeRemoteEntry(
           client,
@@ -1747,7 +1751,7 @@ export class BlackBoxSyncService {
     try {
       let query = client
         .from('black_box_entries')
-        .select('*');
+        .select(this.BLACKBOX_ENTRY_SELECT_COLUMNS);
       const userEqQuery = this.getOptionalQueryMethod<[string, string]>(query, 'eq');
       if (!userEqQuery) {
         this.logger.warn('黑匣子远端权威对账缺少 eq 查询能力，保留 pending 状态', {

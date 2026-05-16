@@ -1403,22 +1403,32 @@ export class RetryQueueService {
     });
   }
 
+  private isPendingBlackBoxEntrySnapshot(value: unknown): value is BlackBoxEntry {
+    if (!value || typeof value !== 'object') {
+      return false;
+    }
+
+    const entry = value as Partial<BlackBoxEntry>;
+    return typeof entry.id === 'string'
+      && typeof entry.userId === 'string'
+      && entry.syncStatus === 'pending';
+  }
+
   private async markBlackBoxTerminalConflict(item: RetryQueueItem, reason: string): Promise<void> {
     if (item.type !== 'blackbox') {
       return;
     }
 
-    const entry = item.data as BlackBoxEntry;
-    if (!entry?.id || entry.syncStatus !== 'pending') {
+    if (!this.isPendingBlackBoxEntrySnapshot(item.data)) {
       return;
     }
 
     try {
-      await this.blackBoxSync.markEntrySyncConflict(entry);
+      await this.blackBoxSync.markEntrySyncConflict(item.data);
     } catch (error) {
       this.logger.warn('黑匣子终止态重试项本地 conflict 修复失败', {
         queueItemId: item.id,
-        entryId: entry.id,
+        entryId: item.data.id,
         reason,
         error: error instanceof Error ? error.message : String(error),
       });
