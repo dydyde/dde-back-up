@@ -423,8 +423,9 @@ export class SimpleSyncService {
               entryId: entry.id,
               error: error instanceof Error ? error.message : String(error),
             });
-            // 返回 false 会让 RetryQueue 保留该项，按既有指数退避等待下一轮处理；
-            // 若持续失败，最终由 MAX_RETRIES 终止态 cleanup 标记 conflict，避免直接丢弃后 UI 永久 pending。
+            // IndexedDB 不可用、存储配额耗尽等会导致 conflict 修复失败。返回 false 会让
+            // RetryQueue 保留该项，按既有指数退避等待下一轮处理；若持续失败，最终由
+            // MAX_RETRIES 终止态 cleanup 标记 conflict，避免直接丢弃后 UI 永久 pending。
             return false;
           }
         }

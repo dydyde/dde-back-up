@@ -56,6 +56,12 @@ interface BlackBoxSyncCursor {
   id: string;
 }
 
+interface BlackBoxMaybeSingleResult {
+  data: unknown | null;
+  error: unknown;
+}
+type BlackBoxSupabaseClient = NonNullable<Awaited<ReturnType<SupabaseClientService['clientAsync']>>>;
+
 /**
  * RetryQueue 回调接口
  * 由 SimpleSyncService 通过 setRetryQueueHandler 注入
@@ -1343,7 +1349,7 @@ export class BlackBoxSyncService {
   }
 
   private async reconcilePendingEntriesWithServer(
-    client: Awaited<ReturnType<SupabaseClientService['clientAsync']>>,
+    client: BlackBoxSupabaseClient,
     preferRemoteForSyncedLocalDuringPull: boolean,
     repairingFutureCursor: boolean,
     expectedUserId?: string,
@@ -1631,7 +1637,7 @@ export class BlackBoxSyncService {
   private async handleBlackBoxSyncRpcResult(
     result: SyncRpcResult,
     entry: BlackBoxEntry,
-    client: Awaited<ReturnType<SupabaseClientService['clientAsync']>>,
+    client: BlackBoxSupabaseClient,
     sessionUserId: string,
   ): Promise<boolean> {
     if (result.status === 'applied' || result.status === 'idempotent-replay') {
@@ -1719,7 +1725,7 @@ export class BlackBoxSyncService {
   }
 
   private async reconcileAuthoritativeRemoteEntry(
-    client: Awaited<ReturnType<SupabaseClientService['clientAsync']>>,
+    client: BlackBoxSupabaseClient,
     entry: BlackBoxEntry,
     sessionUserId: string,
     reason: BlackBoxRemoteReconcileReason,
@@ -1749,43 +1755,13 @@ export class BlackBoxSyncService {
     sessionUserId: string,
     reason: string,
   ): Promise<BlackBoxEntry | null> {
-    if (!client) {
-      return null;
-    }
-
     try {
-      let query = client
-        .from('black_box_entries')
-        .select(this.BLACKBOX_ENTRY_SELECT_COLUMNS);
-      const userEqQuery = this.getOptionalQueryMethod<[string, string]>(query, 'eq');
-      if (!userEqQuery) {
-        this.logger.warn('黑匣子远端权威对账缺少 eq 查询能力，保留 pending 状态', {
-          entryId,
-          reason,
-        });
-        return null;
-      }
-      query = userEqQuery('user_id', sessionUserId) as typeof query;
-      const idEqQuery = this.getOptionalQueryMethod<[string, string]>(query, 'eq');
-      if (!idEqQuery) {
-        this.logger.warn('黑匣子远端权威对账缺少 id 查询能力，保留 pending 状态', {
-          entryId,
-          reason,
-        });
-        return null;
-      }
-      query = idEqQuery('id', entryId) as typeof query;
-
-      const maybeSingle = this.getOptionalQueryMethod<[]>(query, 'maybeSingle');
-      if (!maybeSingle) {
-        this.logger.warn('黑匣子远端权威对账缺少 maybeSingle 查询能力，保留 pending 状态', {
-          entryId,
-          reason,
-        });
+      const query = this.buildRemoteEntryByIdQuery(client, entryId, sessionUserId, reason);
+      if (!query) {
         return null;
       }
 
-      const { data, error } = await maybeSingle() as { data: unknown | null; error: unknown };
+      const { data, error } = await query.maybeSingle();
       if (error) {
         this.logger.warn('黑匣子远端权威对账失败，保留 pending 状态', {
           entryId,
@@ -1811,6 +1787,47 @@ export class BlackBoxSyncService {
       });
       return null;
     }
+  }
+
+  private buildRemoteEntryByIdQuery(
+    client: Awaited<ReturnType<SupabaseClientService['clientAsync']>>,
+    entryId: string,
+    sessionUserId: string,
+    reason: string,
+  ): { maybeSingle: () => Promise<BlackBoxMaybeSingleResult> } | null {
+    let query = client
+      .from('black_box_entries')
+      .select(this.BLACKBOX_ENTRY_SELECT_COLUMNS);
+    const userEqQuery = this.getOptionalQueryMethod<[string, string]>(query, 'eq');
+    if (!userEqQuery) {
+      this.logger.warn('黑匣子远端权威对账缺少 eq 查询能力，保留 pending 状态', {
+        entryId,
+        reason,
+      });
+      return null;
+    }
+
+    query = userEqQuery('user_id', sessionUserId) as typeof query;
+    const idEqQuery = this.getOptionalQueryMethod<[string, string]>(query, 'eq');
+    if (!idEqQuery) {
+      this.logger.warn('黑匣子远端权威对账缺少 id 查询能力，保留 pending 状态', {
+        entryId,
+        reason,
+      });
+      return null;
+    }
+
+    query = idEqQuery('id', entryId) as typeof query;
+    const maybeSingle = this.getOptionalQueryMethod<[]>(query, 'maybeSingle');
+    if (!maybeSingle) {
+      this.logger.warn('黑匣子远端权威对账缺少 maybeSingle 查询能力，保留 pending 状态', {
+        entryId,
+        reason,
+      });
+      return null;
+    }
+
+    return { maybeSingle };
   }
 
   /**

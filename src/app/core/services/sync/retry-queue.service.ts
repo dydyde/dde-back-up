@@ -1411,6 +1411,14 @@ export class RetryQueueService {
     const entry = value as Partial<BlackBoxEntry>;
     return typeof entry.id === 'string'
       && typeof entry.userId === 'string'
+      && typeof entry.content === 'string'
+      && typeof entry.date === 'string'
+      && typeof entry.createdAt === 'string'
+      && typeof entry.updatedAt === 'string'
+      && typeof entry.isRead === 'boolean'
+      && typeof entry.isCompleted === 'boolean'
+      && typeof entry.isArchived === 'boolean'
+      && (typeof entry.deletedAt === 'string' || entry.deletedAt === null)
       && entry.syncStatus === 'pending';
   }
 
