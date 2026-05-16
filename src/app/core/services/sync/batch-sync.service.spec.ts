@@ -11,6 +11,7 @@ import { SyncStateService } from './sync-state.service';
 import { RetryQueueService } from './retry-queue.service';
 import { SessionManagerService } from './session-manager.service';
 import { SentryLazyLoaderService } from '../../../../services/sentry-lazy-loader.service';
+import { RECOVERABLE_SYNC_ERROR_MESSAGES } from '../../../../config/sync.config';
 import type { Connection, Project, Task } from '../../../../models';
 import { PermanentFailureError } from '../../../../utils/permanent-failure-error';
 import {
@@ -110,8 +111,10 @@ describe('BatchSyncService owner isolation', () => {
 
   const mockSyncState = {
     setSyncError: vi.fn(),
+    scheduleRecoverableSyncError: vi.fn(),
+    clearPendingRecoverableSyncError: vi.fn(),
     setSyncing: vi.fn(),
-    setLastSyncTime: vi.fn(),
+    advanceLastSyncTimeIfIdle: vi.fn(),
     setSessionExpired: vi.fn(),
   };
 
@@ -1006,6 +1009,10 @@ describe('BatchSyncService owner isolation', () => {
     expect(result.failureReason).toBe(
       'project batch sync partially delegated; some failures did not enter retry queue',
     );
+    expect(mockSyncState.scheduleRecoverableSyncError).toHaveBeenCalledWith(
+      RECOVERABLE_SYNC_ERROR_MESSAGES.PARTIAL_RETRY_HANDOFF,
+    );
+    expect(mockSyncState.setSyncError).not.toHaveBeenCalledWith(RECOVERABLE_SYNC_ERROR_MESSAGES.PARTIAL_RETRY_HANDOFF);
   });
 
   it('saveProjectToCloud 在所有失败项均已入 RetryQueue 时应保持 fullyResolved 语义', async () => {

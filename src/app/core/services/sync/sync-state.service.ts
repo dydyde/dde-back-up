@@ -11,6 +11,7 @@
 
 import { Injectable, signal, computed } from '@angular/core';
 import { Project } from '../../../../models';
+import { SYNC_CONFIG } from '../../../../config/sync.config';
 
 /**
  * 同步状态
@@ -62,6 +63,8 @@ export interface ConflictData {
 })
 export class SyncStateService {
   private syncErrorListener: ((syncError: string | null) => void) | null = null;
+  private pendingRecoverableSyncError: string | null = null;
+  private recoverableSyncErrorTimer: ReturnType<typeof setTimeout> | null = null;
   
   /** 同步状态 Signal（内部可写，外部只读）*/
   private readonly _syncState = signal<SyncState>({
@@ -185,6 +188,7 @@ export class SyncStateService {
     if (!this.isSyncStateIdle()) {
       return false;
     }
+    this.clearPendingRecoverableSyncError();
     this.update({ lastSyncTime, syncError: null });
     return true;
   }
@@ -215,6 +219,46 @@ export class SyncStateService {
    * 设置同步错误
    */
   setSyncError(syncError: string | null): void {
+    this.clearPendingRecoverableSyncError();
+    this.writeSyncError(syncError);
+  }
+
+  /**
+   * 延迟落地可自愈的同步错误。
+   *
+   * 使用场景：
+   * - 失败已安全转交 RetryQueue，后台回放有机会在短时间内自愈；
+   * - 这类错误不应像 `setSyncError()` 一样立即显示为红色错误。
+   *
+   * `delayMs` 是观察窗口：窗口内若 `setSyncError(null)` 或 `markSyncRecoveredIfIdle()`
+   * 清理了状态，错误不会落地；窗口结束仍未恢复才写入 `syncError`。
+   */
+  scheduleRecoverableSyncError(
+    syncError: string,
+    delayMs = SYNC_CONFIG.DEBOUNCE_DELAY,
+  ): void {
+    this.clearPendingRecoverableSyncError();
+    this.pendingRecoverableSyncError = syncError;
+    const timer = setTimeout(() => {
+      if (this.pendingRecoverableSyncError !== syncError || this.recoverableSyncErrorTimer !== timer) {
+        return;
+      }
+      this.pendingRecoverableSyncError = null;
+      this.recoverableSyncErrorTimer = null;
+      this.writeSyncError(syncError);
+    }, delayMs);
+    this.recoverableSyncErrorTimer = timer;
+  }
+
+  clearPendingRecoverableSyncError(): void {
+    if (this.recoverableSyncErrorTimer) {
+      clearTimeout(this.recoverableSyncErrorTimer);
+      this.recoverableSyncErrorTimer = null;
+    }
+    this.pendingRecoverableSyncError = null;
+  }
+
+  private writeSyncError(syncError: string | null): void {
     this.update({ syncError });
     this.syncErrorListener?.(syncError);
   }

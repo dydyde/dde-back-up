@@ -73,7 +73,7 @@ import {
   failure,
   success,
 } from '../../../utils/result';
-import { SYNC_CONFIG, FIELD_SELECT_CONFIG, CACHE_CONFIG } from '../../../config/sync.config';
+import { SYNC_CONFIG, FIELD_SELECT_CONFIG, CACHE_CONFIG, RECOVERABLE_SYNC_ERROR_MESSAGES } from '../../../config/sync.config';
 import { APP_LIFECYCLE_CONFIG } from '../../../config/app-lifecycle.config';
 import { FEATURE_FLAGS } from '../../../config/feature-flags.config';
 import type { SupabaseClient } from '@supabase/supabase-js';
@@ -1802,7 +1802,7 @@ export class SimpleSyncService {
     if (enqueued) {
       this.syncStateService.update({ pendingCount: this.retryQueueService.length });
     } else {
-      this.syncStateService.setSyncError('同步队列已满，暂未写入重试队列');
+      this.syncStateService.setSyncError(RECOVERABLE_SYNC_ERROR_MESSAGES.RETRY_QUEUE_FULL);
     }
 
     return enqueued;
@@ -1830,7 +1830,7 @@ export class SimpleSyncService {
     if (enqueued) {
       this.syncStateService.update({ pendingCount: this.retryQueueService.length });
     } else {
-      this.syncStateService.setSyncError('同步队列已满，暂未写入重试队列');
+      this.syncStateService.setSyncError(RECOVERABLE_SYNC_ERROR_MESSAGES.RETRY_QUEUE_FULL);
     }
 
     return enqueued;

@@ -23,7 +23,7 @@ import { Task, Project, Connection } from '../../../../models';
 import { nowISO } from '../../../../utils/date';
 import { isPermanentFailureError } from '../../../../utils/permanent-failure-error';
 import { classifySupabaseClientFailure, supabaseErrorToError } from '../../../../utils/supabase-error';
-import { AUTH_CONFIG } from '../../../../config';
+import { AUTH_CONFIG, RECOVERABLE_SYNC_ERROR_MESSAGES, SYNC_CONFIG } from '../../../../config';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { SentryLazyLoaderService } from '../../../../services/sentry-lazy-loader.service';
 import {
@@ -348,18 +348,29 @@ export class BatchSyncService {
   }
 
   private markBatchSyncSuccess(): void {
-    const syncState = this.syncState as unknown as {
-      advanceLastSyncTimeIfIdle?: (time: string) => void;
-      setLastSyncTime?: (time: string) => void;
-    };
+    this.syncState.clearPendingRecoverableSyncError();
     const syncTime = nowISO();
 
-    if (typeof syncState.advanceLastSyncTimeIfIdle === 'function') {
-      syncState.advanceLastSyncTimeIfIdle(syncTime);
-      return;
-    }
+    this.syncState.advanceLastSyncTimeIfIdle(syncTime);
+  }
 
-    syncState.setLastSyncTime?.(syncTime);
+  /**
+   * 为可自愈失败写入观察窗。
+   *
+   * 中文注释：partial handoff 常由 RetryQueue 随后成功回放收口。这里保留最小上下文日志，
+   * 便于线上确认失败项是否被重试队列消化，同时避免立即把可恢复状态显示成红错。
+   */
+  private scheduleRecoverableSyncError(message: string, context: {
+    projectId: string;
+    failedTaskCount: number;
+    failedConnectionCount: number;
+    retryEnqueuedCount: number;
+  }): void {
+    this.logger.info('部分同步失败已进入宽限观察窗，等待 RetryQueue 自愈收口', {
+      ...context,
+      graceMs: SYNC_CONFIG.DEBOUNCE_DELAY,
+    });
+    this.syncState.scheduleRecoverableSyncError(message);
   }
 
   /**
@@ -1301,11 +1312,16 @@ export class BatchSyncService {
         if (fullyResolved) {
           this.syncState.setSyncError(hasTerminalConflicts ? '检测到版本冲突，请刷新后重试' : null);
         } else {
-          this.syncState.setSyncError(
-            hasTerminalConflicts
-              ? '部分同步失败，且存在版本冲突，请刷新后重试'
-              : '部分同步失败，已进入重试队列'
-          );
+          if (hasTerminalConflicts) {
+            this.syncState.setSyncError('部分同步失败，且存在版本冲突，请刷新后重试');
+          } else {
+            this.scheduleRecoverableSyncError(RECOVERABLE_SYNC_ERROR_MESSAGES.PARTIAL_RETRY_HANDOFF, {
+              projectId: project.id,
+              failedTaskCount: dedupedFailedTaskIds.length,
+              failedConnectionCount: dedupedFailedConnectionIds.length,
+              retryEnqueuedCount: dedupedRetryEnqueued.length,
+            });
+          }
         }
       }
       

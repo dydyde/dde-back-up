@@ -7,10 +7,11 @@
  * - 冲突生命周期（set/clear）
  * - idleChecker 门禁：advance/markRecovered 仅在空闲时推进 lastSyncTime
  */
-import { describe, expect, it, beforeEach } from 'vitest';
+import { describe, expect, it, beforeEach, vi } from 'vitest';
 import { Injector, runInInjectionContext } from '@angular/core';
 import { SyncStateService, type ConflictData } from './sync-state.service';
 import type { Project } from '../../../../models';
+import { RECOVERABLE_SYNC_ERROR_MESSAGES } from '../../../../config/sync.config';
 
 function makeProject(overrides: Partial<Project> = {}): Project {
   return {
@@ -80,6 +81,32 @@ describe('SyncStateService', () => {
       expect(service.syncState().syncError).toBe('boom');
       service.setSyncError(null);
       expect(service.syncState().syncError).toBeNull();
+    });
+
+    it('scheduleRecoverableSyncError 应延迟落地并允许恢复路径取消', () => {
+      vi.useFakeTimers();
+      try {
+        service.scheduleRecoverableSyncError(RECOVERABLE_SYNC_ERROR_MESSAGES.PARTIAL_RETRY_HANDOFF, 3000);
+        vi.advanceTimersByTime(2999);
+        expect(service.syncState().syncError).toBeNull();
+
+        expect(service.markSyncRecoveredIfIdle('2026-05-16T00:00:00Z')).toBe(true);
+        vi.advanceTimersByTime(1);
+        expect(service.syncState().syncError).toBeNull();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('scheduleRecoverableSyncError 超过宽限期后才写入 syncError', () => {
+      vi.useFakeTimers();
+      try {
+        service.scheduleRecoverableSyncError(RECOVERABLE_SYNC_ERROR_MESSAGES.PARTIAL_RETRY_HANDOFF, 3000);
+        vi.advanceTimersByTime(3000);
+        expect(service.syncState().syncError).toBe(RECOVERABLE_SYNC_ERROR_MESSAGES.PARTIAL_RETRY_HANDOFF);
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it('setLoadingRemote 更新独立 signal', () => {
