@@ -46,12 +46,14 @@ import { AUTH_CONFIG } from '../../../../../config/auth.config';
         <!-- 同步状态指示 -->
         @if (shouldShowSyncPendingIndicator()) {
           <span class="text-[9px]" [class]="syncPendingClass()"
-                data-testid="sync-pending-indicator">
+                data-testid="sync-pending-indicator"
+                [attr.data-sync-debug]="syncDebugAttribute()">
             ⏳ 待同步
           </span>
         } @else if (shouldShowSyncConflictIndicator()) {
           <span class="text-[9px]" [class]="syncConflictClass()"
-                data-testid="sync-conflict-indicator">
+                data-testid="sync-conflict-indicator"
+                [attr.data-sync-debug]="syncDebugAttribute()">
             需确认
           </span>
         }
@@ -214,6 +216,16 @@ export class BlackBoxEntryComponent {
 
   shouldShowSyncConflictIndicator(): boolean {
     return this.entry().syncStatus === 'conflict';
+  }
+
+  /**
+   * 调试用属性：把当前条目的 syncStatus 与 updatedAt 暴露到 DOM，
+   * 便于真机/远程截图直接读取真实同步状态，定位"UI 显示待同步但实际已 synced"类问题。
+   * 仅作为非语义化的 data-* 属性，不影响渲染。
+   */
+  syncDebugAttribute(): string {
+    const current = this.entry();
+    return `${current.syncStatus ?? 'unknown'}|${current.updatedAt ?? ''}`;
   }
 
   readBadgeClass(): string {

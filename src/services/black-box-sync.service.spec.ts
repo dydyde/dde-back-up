@@ -2066,4 +2066,113 @@ describe('BlackBoxSyncService', () => {
     await expect(service.pushToServer(entry)).resolves.toBe(false);
     expect(update).toHaveBeenCalled();
   });
+
+  // ============= 2026-05-16 回归：B4 非等价 latestLocal 必须主动入队，避免孤儿 pending =============
+
+  it('pushToServer 直接 upsert 完成、latestLocalAfterPush 业务字段不等价时，应主动入队 latestLocal 避免孤儿 pending', async () => {
+    const entryId = crypto.randomUUID();
+    const entry = createEntry({
+      id: entryId,
+      content: '初稿',
+      updatedAt: '2026-03-04T00:00:00.000Z',
+      isCompleted: false,
+      syncStatus: 'pending',
+    });
+    // 并发路径在 upsert 期间把 content 改了——业务字段不等价
+    const concurrentlyEditedNotEquivalent: BlackBoxEntry = {
+      ...entry,
+      content: '增补内容',
+      updatedAt: '2026-03-04T00:00:02.000Z',
+      syncStatus: 'pending',
+    };
+    const serverUpdatedAt = '2026-03-04T00:00:03.000Z';
+
+    const preflightQuery = createPreflightQuery(vi.fn(async () => ({ data: null, error: null })));
+    const from = vi.fn(() => ({
+      select: vi.fn(() => preflightQuery),
+      insert: vi.fn(() => ({
+        select: vi.fn(() => ({
+          single: vi.fn(async () => {
+            // 在 upsert 返回前把内存 Map 升到不等价的更晚快照
+            setBlackBoxEntries([concurrentlyEditedNotEquivalent]);
+            return {
+              data: { updated_at: serverUpdatedAt },
+              error: null,
+            };
+          }),
+        })),
+      })),
+      update: vi.fn(),
+    }));
+    const supabase = TestBed.inject(SupabaseClientService) as unknown as {
+      clientAsync: ReturnType<typeof vi.fn>;
+    };
+    vi.spyOn(service, 'saveToLocal').mockResolvedValue(undefined);
+    const enqueue = vi.fn();
+    (service as unknown as {
+      retryQueueHandler: ((entry: BlackBoxEntry) => void) | null;
+    }).retryQueueHandler = enqueue;
+
+    setBlackBoxEntries([entry]);
+    supabase.clientAsync.mockResolvedValue({ from });
+
+    await expect(service.pushToServer(entry)).resolves.toBe(true);
+
+    // 关键断言：业务字段不等价的更晚本地快照必须被显式重新入队，
+    // 否则会成为孤儿 pending（UI 永远显示 待同步）。
+    expect(enqueue).toHaveBeenCalledTimes(1);
+    expect(enqueue).toHaveBeenCalledWith(expect.objectContaining({
+      id: entryId,
+      content: '增补内容',
+      syncStatus: 'pending',
+    }));
+    // 内存里不应被回写成 synced（业务字段不等价时仅保留 pending）
+    const inMemory = blackBoxEntriesMap().get(entryId);
+    expect(inMemory?.syncStatus).toBe('pending');
+    expect(inMemory?.content).toBe('增补内容');
+  });
+
+  it('upgradeEquivalentLatestLocalToSynced 非等价分支在缺少 retryQueueHandler 时应降级为内联 pushToServer', async () => {
+    const entryId = crypto.randomUUID();
+    const pushedEntry = createEntry({
+      id: entryId,
+      content: '旧',
+      updatedAt: '2026-03-04T00:00:00.000Z',
+      syncStatus: 'pending',
+    });
+    const latestLocal = createEntry({
+      id: entryId,
+      content: '新内容',
+      updatedAt: '2026-03-04T00:00:02.000Z',
+      syncStatus: 'pending',
+    });
+
+    (service as unknown as {
+      retryQueueHandler: ((entry: BlackBoxEntry) => void) | null;
+    }).retryQueueHandler = null;
+    const pushSpy = vi.spyOn(service, 'pushToServer').mockResolvedValue(true);
+
+    await (service as unknown as {
+      upgradeEquivalentLatestLocalToSynced: (
+        latestLocal: BlackBoxEntry,
+        pushedEntry: BlackBoxEntry,
+        serverUpdatedAt: string,
+        pushPath: 'rpc' | 'upsert',
+      ) => Promise<void>;
+    }).upgradeEquivalentLatestLocalToSynced(
+      latestLocal,
+      pushedEntry,
+      '2026-03-04T00:00:03.000Z',
+      'upsert',
+    );
+
+    // 微任务结算（ensureLatestLocalEnqueued 走 void this.pushToServer().catch(...)）
+    await flushMicrotasks();
+
+    expect(pushSpy).toHaveBeenCalledTimes(1);
+    expect(pushSpy).toHaveBeenCalledWith(expect.objectContaining({
+      id: entryId,
+      content: '新内容',
+    }));
+  });
 });
