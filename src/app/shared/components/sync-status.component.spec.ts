@@ -155,7 +155,7 @@ describe('SyncStatusComponent', () => {
     expect(fixture.componentInstance.detailedStatus()).toBe('1 个操作待同步');
   });
 
-  it('后台 RetryQueue 待重试不应显示为用户可见的 "1 待同步"', () => {
+  it('syncState 中的 RetryQueue pendingCount 不应显示为用户可见的 "1 待同步"', () => {
     syncState.set({ ...syncState(), pendingCount: 1 });
     fixture.detectChanges();
 
