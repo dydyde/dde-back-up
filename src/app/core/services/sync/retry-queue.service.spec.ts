@@ -951,6 +951,34 @@ describe('RetryQueueService', () => {
     expect(service.length).toBe(0);
   });
 
+  it('blackbox 重试超过上限时应把本地 pending 标记为 conflict', async () => {
+    const entry = createBlackBoxEntry('max-retry-blackbox', {
+      syncStatus: 'pending',
+    });
+    (service as unknown as {
+      queue: Array<Record<string, unknown>>;
+      MAX_RETRIES: number;
+    }).queue = [
+      {
+        id: crypto.randomUUID(),
+        type: 'blackbox',
+        operation: 'upsert',
+        data: entry,
+        retryCount: (service as unknown as { MAX_RETRIES: number }).MAX_RETRIES - 1,
+        createdAt: Date.now(),
+        sourceUserId: 'test-user',
+      },
+    ];
+    (handler.pushBlackBoxEntry as ReturnType<typeof vi.fn>).mockResolvedValueOnce(false);
+    online = true;
+
+    await service.processQueue();
+
+    expect(handler.pushBlackBoxEntry).toHaveBeenCalledWith(entry, 'test-user');
+    expect(blackBoxSyncMock.markEntrySyncConflict).toHaveBeenCalledWith(entry);
+    expect(service.length).toBe(0);
+  });
+
   it('应修复历史 legacy review 中遗留的 blackbox pending 状态', () => {
     const entry = createBlackBoxEntry('legacy-review-blackbox', {
       syncStatus: 'pending',

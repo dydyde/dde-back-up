@@ -401,7 +401,7 @@ export class SimpleSyncService {
       },
       // 重试连接时保留 tombstone + 任务存在性校验，避免陈旧连接重放与 23503 外键错误风暴
       pushConnection: (conn, pid, sourceUserId) => this.pushConnection(conn, pid, false, false, true, sourceUserId),
-      pushBlackBoxEntry: (entry: BlackBoxEntry, sourceUserId?: string) => {
+      pushBlackBoxEntry: async (entry: BlackBoxEntry, sourceUserId?: string) => {
         if (!sourceUserId) {
           this.logger.warn('BlackBox retry deferred: missing queued owner', {
             entryId: entry.id,
@@ -415,7 +415,19 @@ export class SimpleSyncService {
             hasSourceUserId: !!sourceUserId,
             hasEntryUserId: !!entry.userId,
           });
-          return Promise.resolve(true);
+          try {
+            await this.blackBoxSync.markEntrySyncConflict(entry);
+            return true;
+          } catch (error) {
+            this.logger.warn('BlackBox retry owner mismatch repair failed', {
+              entryId: entry.id,
+              error: error instanceof Error ? error.message : String(error),
+            });
+            // IndexedDB 不可用、存储配额耗尽等会导致 conflict 修复失败。返回 false 会让
+            // RetryQueue 保留该项，按既有指数退避等待下一轮处理；若持续失败，最终由
+            // MAX_RETRIES 终止态 cleanup 标记 conflict，避免直接丢弃后 UI 永久 pending。
+            return false;
+          }
         }
         return this.blackBoxSync.pushToServer(entry, sourceUserId);
       },

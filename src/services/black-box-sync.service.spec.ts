@@ -649,19 +649,37 @@ describe('BlackBoxSyncService', () => {
     }));
   });
 
-  it('should keep black box retry intent when sync RPC reports remote-newer', async () => {
+  it('should reconcile local pending state when sync RPC reports remote-newer', async () => {
     const entry = createEntry({
       id: crypto.randomUUID(),
       updatedAt: '2026-03-04T00:00:00.000Z',
       syncStatus: 'pending',
     });
+    const remoteRow = {
+      id: entry.id,
+      project_id: null,
+      user_id: 'user-1',
+      content: 'entry',
+      focus_meta: null,
+      date: '2026-03-04',
+      created_at: '2026-03-04T00:00:00.000Z',
+      updated_at: '2026-03-04T00:00:05.000Z',
+      is_read: false,
+      is_completed: true,
+      is_archived: false,
+      snooze_until: null,
+      snooze_count: 0,
+      deleted_at: null,
+    };
     mockSyncRpcClient.isFeatureEnabled.mockReturnValue(true);
     mockSyncRpcClient.upsertBlackboxEntry.mockResolvedValueOnce({
       status: 'remote-newer',
       remoteUpdatedAt: '2026-03-04T00:00:05.000Z',
       raw: {},
     });
-    const maybeSingle = vi.fn(async () => ({ data: null, error: null }));
+    const maybeSingle = vi.fn()
+      .mockResolvedValueOnce({ data: null, error: null })
+      .mockResolvedValueOnce({ data: remoteRow, error: null });
     const preflightQuery = createPreflightQuery(maybeSingle);
     const upsert = vi.fn();
     const from = vi.fn(() => ({
@@ -671,16 +689,87 @@ describe('BlackBoxSyncService', () => {
     const supabase = TestBed.inject(SupabaseClientService) as unknown as {
       clientAsync: ReturnType<typeof vi.fn>;
     };
+    const saveToLocalSpy = vi.spyOn(service, 'saveToLocal').mockResolvedValue(undefined);
     setBlackBoxEntries([entry]);
     supabase.clientAsync.mockResolvedValue({ from });
 
-    await expect(service.pushToServer(entry)).resolves.toBe(false);
+    await expect(service.pushToServer(entry)).resolves.toBe(true);
 
     expect(upsert).not.toHaveBeenCalled();
+    expect(saveToLocalSpy).toHaveBeenCalledWith(expect.objectContaining({
+      id: entry.id,
+      isCompleted: true,
+      syncStatus: 'synced',
+    }));
+    expect(blackBoxEntriesMap().get(entry.id)).toEqual(expect.objectContaining({
+      isCompleted: true,
+      syncStatus: 'synced',
+    }));
     expect(mockSentry.captureMessage).toHaveBeenCalledWith(
       'sync_rpc_blackbox_remote_newer',
       expect.objectContaining({ level: 'warning' }),
     );
+  });
+
+  it('should reconcile server authority instead of marking stale RPC payload as synced', async () => {
+    const entry = createEntry({
+      id: crypto.randomUUID(),
+      updatedAt: '2026-03-04T00:00:00.000Z',
+      isCompleted: false,
+      syncStatus: 'pending',
+    });
+    const remoteRow = {
+      id: entry.id,
+      project_id: null,
+      user_id: 'user-1',
+      content: 'entry',
+      focus_meta: null,
+      date: '2026-03-04',
+      created_at: '2026-03-04T00:00:00.000Z',
+      updated_at: '2026-03-04T00:00:08.000Z',
+      is_read: false,
+      is_completed: true,
+      is_archived: false,
+      snooze_until: null,
+      snooze_count: 0,
+      deleted_at: null,
+    };
+    mockSyncRpcClient.isFeatureEnabled.mockReturnValue(true);
+    mockSyncRpcClient.upsertBlackboxEntry.mockResolvedValueOnce({
+      status: 'applied',
+      serverUpdatedAt: '2026-03-04T00:00:08.000Z',
+      stalePayload: true,
+      raw: { stale_payload: true },
+    });
+    const maybeSingle = vi.fn()
+      .mockResolvedValueOnce({ data: null, error: null })
+      .mockResolvedValueOnce({ data: remoteRow, error: null });
+    const preflightQuery = createPreflightQuery(maybeSingle);
+    const upsert = vi.fn();
+    const from = vi.fn(() => ({
+      select: vi.fn(() => preflightQuery),
+      upsert,
+    }));
+    const supabase = TestBed.inject(SupabaseClientService) as unknown as {
+      clientAsync: ReturnType<typeof vi.fn>;
+    };
+    const saveToLocalSpy = vi.spyOn(service, 'saveToLocal').mockResolvedValue(undefined);
+    setBlackBoxEntries([entry]);
+    supabase.clientAsync.mockResolvedValue({ from });
+
+    await expect(service.pushToServer(entry)).resolves.toBe(true);
+
+    expect(upsert).not.toHaveBeenCalled();
+    expect(saveToLocalSpy).toHaveBeenCalledWith(expect.objectContaining({
+      id: entry.id,
+      isCompleted: true,
+      syncStatus: 'synced',
+    }));
+    expect(saveToLocalSpy).not.toHaveBeenCalledWith(expect.objectContaining({
+      id: entry.id,
+      isCompleted: false,
+      syncStatus: 'synced',
+    }));
   });
 
   it('should defer push when preflight cannot be scoped by user id', async () => {

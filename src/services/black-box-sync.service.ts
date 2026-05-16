@@ -56,11 +56,18 @@ interface BlackBoxSyncCursor {
   id: string;
 }
 
+type BlackBoxSupabaseClient = NonNullable<Awaited<ReturnType<SupabaseClientService['clientAsync']>>>;
+
 /**
  * RetryQueue 回调接口
  * 由 SimpleSyncService 通过 setRetryQueueHandler 注入
  */
 type RetryQueueHandler = (entry: BlackBoxEntry) => void;
+const BLACKBOX_RPC_REMOTE_NEWER_RECONCILE_REASON = 'rpc-remote-newer';
+const BLACKBOX_RPC_STALE_PAYLOAD_RECONCILE_REASON = 'rpc-stale-payload';
+type BlackBoxRemoteReconcileReason =
+  | typeof BLACKBOX_RPC_REMOTE_NEWER_RECONCILE_REASON
+  | typeof BLACKBOX_RPC_STALE_PAYLOAD_RECONCILE_REASON;
 
 export interface PullChangesOptions {
   reason?: 'startup' | 'resume' | 'manual' | 'panel-open' | 'gate-review';
@@ -118,6 +125,8 @@ export class BlackBoxSyncService {
   private readonly BLACKBOX_PULL_PAGE_SIZE = 200;
   private readonly BLACKBOX_PULL_MAX_PAGES = 10;
   private readonly BLACKBOX_PULL_MAX_DURATION_MS = 20_000;
+  private readonly BLACKBOX_ENTRY_SELECT_COLUMNS =
+    'id, project_id, user_id, content, focus_meta, date, created_at, updated_at, is_read, is_completed, is_archived, snooze_until, snooze_count, deleted_at';
   private initIndexedDBPromise: Promise<void> | null = null;
   private realtimeChannel: RealtimeChannel | null = null;
   private realtimeSubscribedUserId: string | null = null;
@@ -1336,7 +1345,7 @@ export class BlackBoxSyncService {
   }
 
   private async reconcilePendingEntriesWithServer(
-    client: Awaited<ReturnType<SupabaseClientService['clientAsync']>>,
+    client: BlackBoxSupabaseClient,
     preferRemoteForSyncedLocalDuringPull: boolean,
     repairingFutureCursor: boolean,
     expectedUserId?: string,
@@ -1624,11 +1633,31 @@ export class BlackBoxSyncService {
   private async handleBlackBoxSyncRpcResult(
     result: SyncRpcResult,
     entry: BlackBoxEntry,
+    client: BlackBoxSupabaseClient,
+    sessionUserId: string,
   ): Promise<boolean> {
     if (result.status === 'applied' || result.status === 'idempotent-replay') {
       const serverUpdatedAt = result.serverUpdatedAt ?? entry.updatedAt;
       if (serverUpdatedAt) {
         this.clockSync.recordServerTimestamp(serverUpdatedAt, entry.id);
+      }
+
+      // stale_payload 由 sync_upsert_blackbox_entry 在 applied 结果中返回：
+      // 表示写入已被接收，但服务端保留了远端权威状态，客户端必须先对账再清 pending。
+      if (result.stalePayload) {
+        const reconciled = await this.reconcileAuthoritativeRemoteEntry(
+          client,
+          entry,
+          sessionUserId,
+          BLACKBOX_RPC_STALE_PAYLOAD_RECONCILE_REASON,
+        );
+        if (reconciled) {
+          return true;
+        }
+        this.logger.warn('黑匣子 RPC stale payload 已应用但远端权威状态未能对账，保留 pending 等待重试', {
+          entryId: entry.id,
+        });
+        return false;
       }
 
       const latestLocalAfterPush = await this.resolveLatestLocalEntry(entry.id);
@@ -1669,7 +1698,12 @@ export class BlackBoxSyncService {
         tags: { operation: 'pushBlackBoxEntry', entityType: 'blackbox', status: result.status },
         extra: { entryId: entry.id, remoteUpdatedAt: result.remoteUpdatedAt, reason: result.reason },
       });
-      return false;
+      return await this.reconcileAuthoritativeRemoteEntry(
+        client,
+        entry,
+        sessionUserId,
+        BLACKBOX_RPC_REMOTE_NEWER_RECONCILE_REASON,
+      );
     }
 
     this.logger.warn('黑匣子 RPC 拒绝写入', {
@@ -1684,6 +1718,71 @@ export class BlackBoxSyncService {
       extra: { entryId: entry.id, reason: result.reason, minProtocolVersion: result.minProtocolVersion },
     });
     return false;
+  }
+
+  private async reconcileAuthoritativeRemoteEntry(
+    client: BlackBoxSupabaseClient,
+    entry: BlackBoxEntry,
+    sessionUserId: string,
+    reason: BlackBoxRemoteReconcileReason,
+  ): Promise<boolean> {
+    const remoteEntry = await this.fetchRemoteEntryById(client, entry.id, sessionUserId, reason);
+    if (!remoteEntry) {
+      return false;
+    }
+
+    await this.mergeWithLocal(remoteEntry, false, false);
+    const latestLocal = await this.resolveLatestLocalEntry(entry.id);
+    const clearedPending = latestLocal?.syncStatus !== 'pending';
+    if (!clearedPending) {
+      this.logger.debug('黑匣子远端权威对账后仍保留 pending，等待最新本地快照续推', {
+        entryId: entry.id,
+        reason,
+        localUpdatedAt: latestLocal?.updatedAt,
+        remoteUpdatedAt: remoteEntry.updatedAt,
+      });
+    }
+    return clearedPending;
+  }
+
+  private async fetchRemoteEntryById(
+    client: BlackBoxSupabaseClient,
+    entryId: string,
+    sessionUserId: string,
+    reason: string,
+  ): Promise<BlackBoxEntry | null> {
+    try {
+      const { data, error } = await client
+        .from('black_box_entries')
+        .select(this.BLACKBOX_ENTRY_SELECT_COLUMNS)
+        .eq('user_id', sessionUserId)
+        .eq('id', entryId)
+        .maybeSingle();
+      if (error) {
+        this.logger.warn('黑匣子远端权威对账失败，保留 pending 状态', {
+          entryId,
+          reason,
+          message: supabaseErrorToError(error).message,
+        });
+        return null;
+      }
+      if (!data) {
+        this.logger.warn('黑匣子远端权威对账未找到服务端行，保留 pending 状态', {
+          entryId,
+          reason,
+        });
+        return null;
+      }
+
+      return this.mapRowToEntry(data as Record<string, unknown>);
+    } catch (error) {
+      this.logger.warn('黑匣子远端权威对账异常，保留 pending 状态', {
+        entryId,
+        reason,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
   }
 
   /**
@@ -1941,7 +2040,7 @@ export class BlackBoxSyncService {
           entry,
           baseUpdatedAt: syncRpcBaseUpdatedAt,
         });
-        return await this.handleBlackBoxSyncRpcResult(result, entry);
+        return await this.handleBlackBoxSyncRpcResult(result, entry, client, sessionUserId);
       }
 
       // 让数据库触发器生成权威 updated_at，避免客户端时钟偏差把跨设备完成状态盖回去。
