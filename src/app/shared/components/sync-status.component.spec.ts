@@ -154,18 +154,45 @@ describe('SyncStatusComponent', () => {
     expect(fixture.componentInstance.detailedStatus()).toBe('1 个操作待同步');
   });
 
-  it('在 retryQueue 0↔1 高频震荡时应在重置阈值后强制收口，避免 "1 待同步" 永不归零', () => {
+  it('后台 RetryQueue 待重试不应显示为用户可见的 "1 待同步"', () => {
+    syncState.set({ ...syncState(), pendingCount: 1 });
+    fixture.detectChanges();
+
+    expect(fixture.componentInstance.pendingCount()).toBe(0);
+    expect(fixture.componentInstance.isBackgroundRetrying()).toBe(true);
+    expect(fixture.componentInstance.detailedStatus()).toBe('后台同步中...');
+  });
+
+  it('可自愈的 retry handoff 错误在 RetryQueue 仍有积压时应降级为后台同步提示', () => {
+    const embeddedFixture = TestBed.createComponent(SyncStatusComponent);
+    (embeddedFixture.componentInstance as unknown as { embedded: ReturnType<typeof signal<boolean>> }).embedded = signal(true);
+    syncState.set({
+      ...syncState(),
+      pendingCount: 1,
+      syncError: '部分同步失败，已进入重试队列',
+    });
+    embeddedFixture.detectChanges();
+
+    const indicator = embeddedFixture.nativeElement.querySelector('[data-testid="sync-status-indicator"]') as HTMLDivElement | null;
+    const text = embeddedFixture.nativeElement.textContent as string;
+
+    expect(indicator?.classList.contains('bg-red-500')).toBe(false);
+    expect(indicator?.classList.contains('bg-stone-400')).toBe(true);
+    expect(text).toContain('后台同步中');
+    expect(text).not.toContain('同步错误');
+  });
+
+  it('在用户可见待同步 0↔1 高频震荡时应在重置阈值后强制收口，避免 "1 待同步" 永不归零', () => {
     vi.useFakeTimers();
     try {
       // 先让 pendingCount 进入 "1" 稳定态。
-      syncState.set({ ...syncState(), pendingCount: 1 });
+      pendingActions.set([createQueuedAction('project')]);
       fixture.detectChanges();
-      vi.advanceTimersByTime(1300); // > 1200ms show delay
       expect(fixture.componentInstance.pendingCount()).toBe(1);
 
       // 在 1500ms clear 窗口内频繁震荡 0↔1，pendingClearTimer 会被反复重置。
       // 第 1 次下行：1 -> 0，启动 clearTimer，resetCount=0。
-      syncState.set({ ...syncState(), pendingCount: 0 });
+      pendingActions.set([]);
       fixture.detectChanges();
       vi.advanceTimersByTime(200);
 
@@ -174,10 +201,10 @@ describe('SyncStatusComponent', () => {
       //   - 0：下行 next<current，clearResetCount 自增
       // 要触发兜底，需让 clearResetCount 达到 PENDING_CLEAR_MAX_RESETS=3。
       for (let i = 0; i < 3; i++) {
-        syncState.set({ ...syncState(), pendingCount: 1 });
+        pendingActions.set([createQueuedAction('project')]);
         fixture.detectChanges();
-        vi.advanceTimersByTime(100); // 不到 show delay，不会真正抬升 pendingCount
-        syncState.set({ ...syncState(), pendingCount: 0 });
+        vi.advanceTimersByTime(100);
+        pendingActions.set([]);
         fixture.detectChanges();
         vi.advanceTimersByTime(100);
       }

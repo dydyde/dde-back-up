@@ -110,6 +110,8 @@ describe('BatchSyncService owner isolation', () => {
 
   const mockSyncState = {
     setSyncError: vi.fn(),
+    scheduleRecoverableSyncError: vi.fn(),
+    clearPendingRecoverableSyncError: vi.fn(),
     setSyncing: vi.fn(),
     setLastSyncTime: vi.fn(),
     setSessionExpired: vi.fn(),
@@ -1006,6 +1008,11 @@ describe('BatchSyncService owner isolation', () => {
     expect(result.failureReason).toBe(
       'project batch sync partially delegated; some failures did not enter retry queue',
     );
+    expect(mockSyncState.scheduleRecoverableSyncError).toHaveBeenCalledWith(
+      '部分同步失败，已进入重试队列',
+      expect.any(Number),
+    );
+    expect(mockSyncState.setSyncError).not.toHaveBeenCalledWith('部分同步失败，已进入重试队列');
   });
 
   it('saveProjectToCloud 在所有失败项均已入 RetryQueue 时应保持 fullyResolved 语义', async () => {

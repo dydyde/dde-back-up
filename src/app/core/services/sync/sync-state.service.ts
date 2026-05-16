@@ -11,6 +11,7 @@
 
 import { Injectable, signal, computed } from '@angular/core';
 import { Project } from '../../../../models';
+import { SYNC_CONFIG } from '../../../../config/sync.config';
 
 /**
  * 同步状态
@@ -62,6 +63,8 @@ export interface ConflictData {
 })
 export class SyncStateService {
   private syncErrorListener: ((syncError: string | null) => void) | null = null;
+  private pendingRecoverableSyncError: string | null = null;
+  private recoverableSyncErrorTimer: ReturnType<typeof setTimeout> | null = null;
   
   /** 同步状态 Signal（内部可写，外部只读）*/
   private readonly _syncState = signal<SyncState>({
@@ -185,6 +188,7 @@ export class SyncStateService {
     if (!this.isSyncStateIdle()) {
       return false;
     }
+    this.clearPendingRecoverableSyncError();
     this.update({ lastSyncTime, syncError: null });
     return true;
   }
@@ -215,6 +219,41 @@ export class SyncStateService {
    * 设置同步错误
    */
   setSyncError(syncError: string | null): void {
+    this.clearPendingRecoverableSyncError();
+    this.writeSyncError(syncError);
+  }
+
+  /**
+   * 延迟落地可自愈的同步错误。
+   *
+   * 中文注释：部分失败已进入 RetryQueue 时，几秒内通常会被后台回放收口。
+   * 先给 RetryQueue 一个观察窗口，避免 UI 在"待同步 → 红错 → 已保存"之间闪烁。
+   */
+  scheduleRecoverableSyncError(
+    syncError: string,
+    delayMs = SYNC_CONFIG.DEBOUNCE_DELAY,
+  ): void {
+    this.clearPendingRecoverableSyncError();
+    this.pendingRecoverableSyncError = syncError;
+    this.recoverableSyncErrorTimer = setTimeout(() => {
+      if (this.pendingRecoverableSyncError !== syncError) {
+        return;
+      }
+      this.pendingRecoverableSyncError = null;
+      this.recoverableSyncErrorTimer = null;
+      this.writeSyncError(syncError);
+    }, delayMs);
+  }
+
+  clearPendingRecoverableSyncError(): void {
+    if (this.recoverableSyncErrorTimer) {
+      clearTimeout(this.recoverableSyncErrorTimer);
+      this.recoverableSyncErrorTimer = null;
+    }
+    this.pendingRecoverableSyncError = null;
+  }
+
+  private writeSyncError(syncError: string | null): void {
     this.update({ syncError });
     this.syncErrorListener?.(syncError);
   }

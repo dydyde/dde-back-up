@@ -55,8 +55,10 @@ import type { QueuedAction } from '../../../services/action-queue.types';
               队列冻结
             } @else if (deadLetterCount() > 0) {
               {{ deadLetterCount() }} 失败
-            } @else if (syncError()) {
+            } @else if (visibleSyncError()) {
               同步错误
+            } @else if (isBackgroundRetrying()) {
+              后台同步...
             } @else if (conflictCount() > 0) {
               <button
                 type="button"
@@ -122,8 +124,10 @@ import type { QueuedAction } from '../../../services/action-queue.types';
                 队列冻结
               } @else if (deadLetterCount() > 0) {
                 {{ deadLetterCount() }} 个同步失败
-              } @else if (syncError()) {
+              } @else if (visibleSyncError()) {
                 同步错误
+              } @else if (isBackgroundRetrying()) {
+                后台同步中...
               } @else if (conflictCount() > 0) {
                 <button
                   type="button"
@@ -199,9 +203,9 @@ import type { QueuedAction } from '../../../services/action-queue.types';
         </div>
         
         <!-- 错误信息 -->
-        @if (syncError()) {
+        @if (visibleSyncError()) {
           <div class="p-1.5 bg-red-50 dark:bg-red-900/20 border border-red-100 dark:border-red-800 rounded text-[10px] text-red-600 dark:text-red-400 line-clamp-2">
-            {{ syncError() }}
+            {{ visibleSyncError() }}
           </div>
         }
         
@@ -334,13 +338,13 @@ import type { QueuedAction } from '../../../services/action-queue.types';
         <!-- 状态概览 -->
         <div class="p-3 space-y-2">
           <!-- 同步错误 -->
-          @if (syncError()) {
+          @if (visibleSyncError()) {
             <div class="p-2 bg-red-50 border border-red-100 rounded-lg">
               <div class="flex items-start gap-2">
                 <svg class="w-3 h-3 text-red-500 mt-0.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
                   <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
                 </svg>
-                <div class="text-[10px] text-red-600 line-clamp-2">{{ syncError() }}</div>
+                <div class="text-[10px] text-red-600 line-clamp-2">{{ visibleSyncError() }}</div>
               </div>
             </div>
           }
@@ -475,9 +479,7 @@ export class SyncStatusComponent {
   private toastService = inject(ToastService);
   private readonly logger = inject(LoggerService);
   private readonly destroyRef = inject(DestroyRef);
-  private readonly RETRY_PENDING_SHOW_DELAY_MS = 1200;
   private readonly PENDING_CLEAR_DELAY_MS = 1500;
-  private pendingShowTimer: ReturnType<typeof setTimeout> | null = null;
   private pendingClearTimer: ReturnType<typeof setTimeout> | null = null;
   /** 当前 pendingClearTimer 已被重置的次数，达到 PENDING_CLEAR_MAX_RESETS 后强制落地 */
   private pendingClearResetCount = 0;
@@ -510,8 +512,8 @@ export class SyncStatusComponent {
     this.actionQueue.pendingActions().filter(action => this.isUserVisiblePendingAction(action)).length
   );
   readonly retryQueuePendingCount = computed(() => this.syncService.syncState().pendingCount);
-  readonly rawPendingCount = computed(() =>
-    this.actionQueuePendingCount() + this.retryQueuePendingCount()
+  readonly isBackgroundRetrying = computed(() =>
+    this.actionQueuePendingCount() === 0 && this.retryQueuePendingCount() > 0
   );
   readonly pendingCount = signal(0);
   readonly deadLetterCount = this.actionQueue.deadLetterSize;
@@ -536,9 +538,8 @@ export class SyncStatusComponent {
    */
   private reconcilePendingCount(): void {
     const actionPending = this.actionQueuePendingCount();
-    const retryPending = this.retryQueuePendingCount();
     const current = this.pendingCount();
-    const next = actionPending + retryPending;
+    const next = actionPending;
 
     if (next === current) {
       return;
@@ -550,26 +551,7 @@ export class SyncStatusComponent {
       return;
     }
 
-    if (next > current) {
-      this.scheduleRetryShowTimer();
-      return;
-    }
-
     this.schedulePendingClearTimer(next);
-  }
-
-  private scheduleRetryShowTimer(): void {
-    if (this.pendingShowTimer) {
-      clearTimeout(this.pendingShowTimer);
-    }
-    this.pendingShowTimer = setTimeout(() => {
-      this.pendingShowTimer = null;
-      const latestActionPending = this.actionQueuePendingCount();
-      const latestRetryPending = this.retryQueuePendingCount();
-      if (latestActionPending === 0 && latestRetryPending > 0) {
-        this.pendingCount.set(latestActionPending + latestRetryPending);
-      }
-    }, this.RETRY_PENDING_SHOW_DELAY_MS);
   }
 
   private schedulePendingClearTimer(next: number): void {
@@ -591,7 +573,7 @@ export class SyncStatusComponent {
     this.pendingClearTimer = setTimeout(() => {
       this.pendingClearTimer = null;
       this.pendingClearResetCount = 0;
-      const latest = this.rawPendingCount();
+      const latest = this.actionQueuePendingCount();
       if (latest === 0) {
         this.pendingCount.set(0);
       }
@@ -599,10 +581,6 @@ export class SyncStatusComponent {
   }
 
   private clearPendingTimers(): void {
-    if (this.pendingShowTimer) {
-      clearTimeout(this.pendingShowTimer);
-      this.pendingShowTimer = null;
-    }
     if (this.pendingClearTimer) {
       clearTimeout(this.pendingClearTimer);
       this.pendingClearTimer = null;
@@ -612,6 +590,11 @@ export class SyncStatusComponent {
 
   private isUserVisiblePendingAction(action: QueuedAction): boolean {
     return !SyncStatusComponent.BACKGROUND_PENDING_ENTITY_TYPES.has(action.entityType);
+  }
+
+  private isRecoverableRetryHandoffError(syncError: string): boolean {
+    return syncError.includes('部分同步失败，已进入重试队列')
+      || syncError.includes('同步队列已满，暂未写入重试队列');
   }
 
   /**
@@ -636,6 +619,16 @@ export class SyncStatusComponent {
   readonly isOnline = computed(() => this.syncService.syncState().isOnline);
   readonly isSyncing = computed(() => this.syncService.syncState().isSyncing);
   readonly syncError = computed(() => this.syncService.syncState().syncError);
+  readonly visibleSyncError = computed(() => {
+    const syncError = this.syncError();
+    if (!syncError) {
+      return null;
+    }
+    if (this.isRecoverableRetryHandoffError(syncError) && this.retryQueuePendingCount() > 0) {
+      return null;
+    }
+    return syncError;
+  });
   readonly offlineMode = computed(() => this.syncService.syncState().offlineMode);
 
   /** 状态点颜色（互斥优先级：同步中 > 失败 > 警告 > 正常） */
@@ -645,11 +638,12 @@ export class SyncStatusComponent {
       this.deadLetterCount() > 0
       || this.queueFrozen()
       || this.legacyReviewCount() > 0
-      || !!this.syncError()
+      || !!this.visibleSyncError()
       || this.conflictCount() > 0
     ) {
       return 'bg-red-500';
     }
+    if (this.isBackgroundRetrying()) return 'bg-stone-400';
     if (!this.isOnline() || this.offlineMode() || this.pendingCount() > 0 || !this.isLoggedIn()) return 'bg-amber-500';
     return 'bg-green-500';
   });
@@ -666,7 +660,7 @@ export class SyncStatusComponent {
     this.pendingCount() > 0 ||
     this.queueFrozen() ||
     this.legacyReviewCount() > 0 ||
-    !!this.syncError() ||
+    !!this.visibleSyncError() ||
     this.offlineMode() ||
     this.conflictCount() > 0
   );
@@ -676,7 +670,7 @@ export class SyncStatusComponent {
     (this.pendingCount() > 0 ? 1 : 0) +
     (this.queueFrozen() ? 1 : 0) +
     (this.legacyReviewCount() > 0 ? 1 : 0) +
-    (this.syncError() ? 1 : 0) +
+    (this.visibleSyncError() ? 1 : 0) +
     (this.offlineMode() ? 1 : 0) +
     this.conflictCount()
   );
@@ -734,8 +728,11 @@ export class SyncStatusComponent {
     if (this.deadLetterCount() > 0) {
       return `${this.deadLetterCount()} 个操作失败`;
     }
-    if (this.syncError()) {
+    if (this.visibleSyncError()) {
       return '同步错误';
+    }
+    if (this.isBackgroundRetrying()) {
+      return '后台同步中...';
     }
     if (this.conflictCount() > 0) {
       return `${this.conflictCount()} 个冲突待处理`;

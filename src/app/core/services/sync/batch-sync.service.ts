@@ -23,7 +23,7 @@ import { Task, Project, Connection } from '../../../../models';
 import { nowISO } from '../../../../utils/date';
 import { isPermanentFailureError } from '../../../../utils/permanent-failure-error';
 import { classifySupabaseClientFailure, supabaseErrorToError } from '../../../../utils/supabase-error';
-import { AUTH_CONFIG } from '../../../../config';
+import { AUTH_CONFIG, SYNC_CONFIG } from '../../../../config';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { SentryLazyLoaderService } from '../../../../services/sentry-lazy-loader.service';
 import {
@@ -351,7 +351,9 @@ export class BatchSyncService {
     const syncState = this.syncState as unknown as {
       advanceLastSyncTimeIfIdle?: (time: string) => void;
       setLastSyncTime?: (time: string) => void;
+      clearPendingRecoverableSyncError?: () => void;
     };
+    syncState.clearPendingRecoverableSyncError?.();
     const syncTime = nowISO();
 
     if (typeof syncState.advanceLastSyncTimeIfIdle === 'function') {
@@ -360,6 +362,27 @@ export class BatchSyncService {
     }
 
     syncState.setLastSyncTime?.(syncTime);
+  }
+
+  private schedulePartialRetryHandoffError(message: string, context: {
+    projectId: string;
+    failedTaskCount: number;
+    failedConnectionCount: number;
+    retryEnqueuedCount: number;
+  }): void {
+    this.logger.info('部分同步失败已进入宽限观察窗，等待 RetryQueue 自愈收口', {
+      ...context,
+      graceMs: SYNC_CONFIG.DEBOUNCE_DELAY,
+    });
+    const syncState = this.syncState as unknown as {
+      scheduleRecoverableSyncError?: (syncError: string, delayMs?: number) => void;
+      setSyncError?: (syncError: string) => void;
+    };
+    if (typeof syncState.scheduleRecoverableSyncError === 'function') {
+      syncState.scheduleRecoverableSyncError(message, SYNC_CONFIG.DEBOUNCE_DELAY);
+      return;
+    }
+    syncState.setSyncError?.(message);
   }
 
   /**
@@ -1301,11 +1324,16 @@ export class BatchSyncService {
         if (fullyResolved) {
           this.syncState.setSyncError(hasTerminalConflicts ? '检测到版本冲突，请刷新后重试' : null);
         } else {
-          this.syncState.setSyncError(
-            hasTerminalConflicts
-              ? '部分同步失败，且存在版本冲突，请刷新后重试'
-              : '部分同步失败，已进入重试队列'
-          );
+          if (hasTerminalConflicts) {
+            this.syncState.setSyncError('部分同步失败，且存在版本冲突，请刷新后重试');
+          } else {
+            this.schedulePartialRetryHandoffError('部分同步失败，已进入重试队列', {
+              projectId: project.id,
+              failedTaskCount: dedupedFailedTaskIds.length,
+              failedConnectionCount: dedupedFailedConnectionIds.length,
+              retryEnqueuedCount: dedupedRetryEnqueued.length,
+            });
+          }
         }
       }
       
