@@ -1762,20 +1762,16 @@ export class RetryQueueService {
 
       const now = Date.now();
       const expiredIds = new Set<string>();
-      const expiredItems: RetryQueueItem[] = [];
       const validItems: RetryQueueItem[] = [];
       for (const item of sortedItems) {
         if (now - item.createdAt > this.MAX_ITEM_AGE) {
+          await this.markBlackBoxTerminalConflict(item, 'expired');
           expiredIds.add(item.id);
-          expiredItems.push(item);
         } else {
           validItems.push(item);
         }
       }
       if (expiredIds.size > 0) {
-        for (const item of expiredItems) {
-          await this.markBlackBoxTerminalConflict(item, 'expired');
-        }
         this.queue = this.queue.filter(item => !expiredIds.has(item.id));
         this.touchQueueState();
         this.saveToStorage();
