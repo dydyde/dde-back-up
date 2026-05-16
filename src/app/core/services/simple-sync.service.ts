@@ -423,8 +423,8 @@ export class SimpleSyncService {
               entryId: entry.id,
               error: error instanceof Error ? error.message : String(error),
             });
-            // 修复失败时保留队列项，由 RetryQueue 的 retry budget / terminal cleanup
-            // 继续兜底，避免直接丢弃后 UI 永久停在 pending。
+            // 返回 false 会让 RetryQueue 保留该项，按既有指数退避等待下一轮处理；
+            // 若持续失败，最终由 MAX_RETRIES 终止态 cleanup 标记 conflict，避免直接丢弃后 UI 永久 pending。
             return false;
           }
         }

@@ -61,6 +61,11 @@ interface BlackBoxSyncCursor {
  * 由 SimpleSyncService 通过 setRetryQueueHandler 注入
  */
 type RetryQueueHandler = (entry: BlackBoxEntry) => void;
+const BLACKBOX_RPC_REMOTE_NEWER_RECONCILE_REASON = 'rpc-remote-newer';
+const BLACKBOX_RPC_STALE_PAYLOAD_RECONCILE_REASON = 'rpc-stale-payload';
+type BlackBoxRemoteReconcileReason =
+  | typeof BLACKBOX_RPC_REMOTE_NEWER_RECONCILE_REASON
+  | typeof BLACKBOX_RPC_STALE_PAYLOAD_RECONCILE_REASON;
 
 export interface PullChangesOptions {
   reason?: 'startup' | 'resume' | 'manual' | 'panel-open' | 'gate-review';
@@ -1642,7 +1647,7 @@ export class BlackBoxSyncService {
           client,
           entry,
           sessionUserId,
-          'rpc-stale-payload',
+          BLACKBOX_RPC_STALE_PAYLOAD_RECONCILE_REASON,
         );
         if (reconciled) {
           return true;
@@ -1695,7 +1700,7 @@ export class BlackBoxSyncService {
         client,
         entry,
         sessionUserId,
-        'rpc-remote-newer',
+        BLACKBOX_RPC_REMOTE_NEWER_RECONCILE_REASON,
       );
     }
 
@@ -1717,7 +1722,7 @@ export class BlackBoxSyncService {
     client: Awaited<ReturnType<SupabaseClientService['clientAsync']>>,
     entry: BlackBoxEntry,
     sessionUserId: string,
-    reason: 'rpc-remote-newer' | 'rpc-stale-payload',
+    reason: BlackBoxRemoteReconcileReason,
   ): Promise<boolean> {
     const remoteEntry = await this.fetchRemoteEntryById(client, entry.id, sessionUserId, reason);
     if (!remoteEntry) {

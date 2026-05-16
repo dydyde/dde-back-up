@@ -1403,7 +1403,7 @@ export class RetryQueueService {
     });
   }
 
-  private isPendingBlackBoxEntrySnapshot(value: unknown): value is BlackBoxEntry {
+  private isPendingBlackBoxEntry(value: unknown): value is BlackBoxEntry {
     if (!value || typeof value !== 'object') {
       return false;
     }
@@ -1419,7 +1419,7 @@ export class RetryQueueService {
       return;
     }
 
-    if (!this.isPendingBlackBoxEntrySnapshot(item.data)) {
+    if (!this.isPendingBlackBoxEntry(item.data)) {
       return;
     }
 
