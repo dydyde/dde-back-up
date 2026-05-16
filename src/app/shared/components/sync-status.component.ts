@@ -442,6 +442,8 @@ import type { QueuedAction } from '../../../services/action-queue.types';
   `
 })
 export class SyncStatusComponent {
+  private static readonly RECOVERABLE_SYNC_ERROR_TEXTS = Object.values(RECOVERABLE_SYNC_ERROR_MESSAGES);
+
   /**
    * 不计入"X 待同步"用户可见计数的后台实体类型。
    *
@@ -593,7 +595,7 @@ export class SyncStatusComponent {
   }
 
   private isRecoverableRetryHandoffError(syncError: string): boolean {
-    return Object.values(RECOVERABLE_SYNC_ERROR_MESSAGES).some(message => syncError.includes(message));
+    return SyncStatusComponent.RECOVERABLE_SYNC_ERROR_TEXTS.some(message => syncError.includes(message));
   }
 
   /**

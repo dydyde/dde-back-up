@@ -36,13 +36,14 @@ interface RemoteExistingTaskIdsResult {
   existingIds: Set<string>;
   deferredBySuspension: boolean;
 }
-interface RecoverableSyncErrorState {
-  clearPendingRecoverableSyncError?: () => void;
-  scheduleRecoverableSyncError?: (syncError: string, delayMs?: number) => void;
-  setLastSyncTime?: (time: string) => void;
-  setSyncError?: (syncError: string) => void;
-  advanceLastSyncTimeIfIdle?: (time: string) => void;
-}
+type RecoverableSyncErrorState = Partial<Pick<
+  SyncStateService,
+  | 'advanceLastSyncTimeIfIdle'
+  | 'clearPendingRecoverableSyncError'
+  | 'scheduleRecoverableSyncError'
+  | 'setLastSyncTime'
+  | 'setSyncError'
+>>;
 /** 批量同步结果 */
 export interface BatchSyncResult {
   success: boolean;
