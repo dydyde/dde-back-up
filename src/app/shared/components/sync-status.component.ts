@@ -438,9 +438,32 @@ import type { QueuedAction } from '../../../services/action-queue.types';
   `
 })
 export class SyncStatusComponent {
+  /**
+   * 不计入"X 待同步"用户可见计数的后台实体类型。
+   *
+   * 这些类型由系统在后台自动同步（无用户显式"保存"动作）：
+   * - `focus-session`：专注模式后台快照
+   * - `preference`：用户偏好/设置自动持久化
+   * - `routine-task` / `routine-completion`：例行任务静默同步
+   *
+   * 真正应被用户感知的"待同步"只剩 `task / project`（连接 `connection` 走 RetryQueue 路径）。
+   *
+   * 【2026-05-16 根因修复】之前仅过滤 `focus-session` 导致 preference / routine-* 卡死的同步项
+   * 会让侧边栏长期显示 "1 待同步"，用户无法理解来源。
+   */
   private static readonly BACKGROUND_PENDING_ENTITY_TYPES = new Set<QueuedAction['entityType']>([
     'focus-session',
+    'preference',
+    'routine-task',
+    'routine-completion',
   ]);
+
+  /**
+   * `pendingClearTimer` 在窗口内被频繁重置时的兜底阈值。
+   * 1.5s 内反复 0↔1 震荡会让 clear timer 永远不到期，UI 卡在 "1 待同步"。
+   * 当窗口内重置次数达到该阈值时，强制按最新值落地以打破死锁。
+   */
+  private static readonly PENDING_CLEAR_MAX_RESETS = 3;
 
   private actionQueue = inject(ActionQueueService);
   private syncService = inject(SimpleSyncService);
@@ -456,6 +479,8 @@ export class SyncStatusComponent {
   private readonly PENDING_CLEAR_DELAY_MS = 1500;
   private pendingShowTimer: ReturnType<typeof setTimeout> | null = null;
   private pendingClearTimer: ReturnType<typeof setTimeout> | null = null;
+  /** 当前 pendingClearTimer 已被重置的次数，达到 PENDING_CLEAR_MAX_RESETS 后强制落地 */
+  private pendingClearResetCount = 0;
   
   // 输入属性 - 是否使用紧凑模式
   compact = input(false);
@@ -495,52 +520,82 @@ export class SyncStatusComponent {
   readonly legacyReviewCount = this.retryQueue.legacyReviewCount;
 
   constructor() {
-    effect(() => {
-      const actionPending = this.actionQueuePendingCount();
-      const retryPending = this.retryQueuePendingCount();
-      const current = this.pendingCount();
-      const next = actionPending + retryPending;
+    effect(() => this.reconcilePendingCount());
 
-      if (next === current) {
-        return;
+    this.destroyRef.onDestroy(() => this.clearPendingTimers());
+  }
+
+  /**
+   * 同步 actionQueue / retryQueue 的当前状态到 `pendingCount` 信号。
+   *
+   * 防抖策略：
+   * - 用户本地操作（actionPending > 0）立即反馈，无防抖。
+   * - 上行（retryQueue 临时增加）走 1.2s show-timer，过滤短促波动。
+   * - 下行（归零）走 1.5s clear-timer；若窗口内被重置 ≥ N 次，强制按当前 next 落地，
+   *   打破 0↔1 高频震荡导致的"1 待同步永不归零"死锁。
+   */
+  private reconcilePendingCount(): void {
+    const actionPending = this.actionQueuePendingCount();
+    const retryPending = this.retryQueuePendingCount();
+    const current = this.pendingCount();
+    const next = actionPending + retryPending;
+
+    if (next === current) {
+      return;
+    }
+
+    if (actionPending > 0) {
+      this.clearPendingTimers();
+      this.pendingCount.set(next);
+      return;
+    }
+
+    if (next > current) {
+      this.scheduleRetryShowTimer();
+      return;
+    }
+
+    this.schedulePendingClearTimer(next);
+  }
+
+  private scheduleRetryShowTimer(): void {
+    if (this.pendingShowTimer) {
+      clearTimeout(this.pendingShowTimer);
+    }
+    this.pendingShowTimer = setTimeout(() => {
+      this.pendingShowTimer = null;
+      const latestActionPending = this.actionQueuePendingCount();
+      const latestRetryPending = this.retryQueuePendingCount();
+      if (latestActionPending === 0 && latestRetryPending > 0) {
+        this.pendingCount.set(latestActionPending + latestRetryPending);
       }
+    }, this.RETRY_PENDING_SHOW_DELAY_MS);
+  }
 
-      // 用户本地操作产生的待同步应立即反馈，避免交互延迟感。
-      if (actionPending > 0) {
-        this.clearPendingTimers();
+  private schedulePendingClearTimer(next: number): void {
+    // 【2026-05-16 根因修复】防止 0↔1 高频震荡导致 clearTimer 永远被重置：
+    // 当窗口内重置次数达到 PENDING_CLEAR_MAX_RESETS 时，立即按当前 next 落地，
+    // 由后续 effect 重新驱动状态收敛，确保 UI 不会永久卡在 "1 待同步"。
+    if (this.pendingClearTimer) {
+      clearTimeout(this.pendingClearTimer);
+      this.pendingClearResetCount += 1;
+      if (this.pendingClearResetCount >= SyncStatusComponent.PENDING_CLEAR_MAX_RESETS) {
+        this.pendingClearTimer = null;
+        this.pendingClearResetCount = 0;
         this.pendingCount.set(next);
         return;
       }
-
-      // 后台重试队列的短促 0/1 波动会导致状态文案来回跳，做轻量防抖。
-      if (next > current) {
-        if (this.pendingShowTimer) {
-          clearTimeout(this.pendingShowTimer);
-        }
-        this.pendingShowTimer = setTimeout(() => {
-          this.pendingShowTimer = null;
-          const latestActionPending = this.actionQueuePendingCount();
-          const latestRetryPending = this.retryQueuePendingCount();
-          if (latestActionPending === 0 && latestRetryPending > 0) {
-            this.pendingCount.set(latestActionPending + latestRetryPending);
-          }
-        }, this.RETRY_PENDING_SHOW_DELAY_MS);
-        return;
+    } else {
+      this.pendingClearResetCount = 0;
+    }
+    this.pendingClearTimer = setTimeout(() => {
+      this.pendingClearTimer = null;
+      this.pendingClearResetCount = 0;
+      const latest = this.rawPendingCount();
+      if (latest === 0) {
+        this.pendingCount.set(0);
       }
-
-      if (this.pendingClearTimer) {
-        clearTimeout(this.pendingClearTimer);
-      }
-      this.pendingClearTimer = setTimeout(() => {
-        this.pendingClearTimer = null;
-        const latest = this.rawPendingCount();
-        if (latest === 0) {
-          this.pendingCount.set(0);
-        }
-      }, this.PENDING_CLEAR_DELAY_MS);
-    });
-
-    this.destroyRef.onDestroy(() => this.clearPendingTimers());
+    }, this.PENDING_CLEAR_DELAY_MS);
   }
 
   private clearPendingTimers(): void {
@@ -552,6 +607,7 @@ export class SyncStatusComponent {
       clearTimeout(this.pendingClearTimer);
       this.pendingClearTimer = null;
     }
+    this.pendingClearResetCount = 0;
   }
 
   private isUserVisiblePendingAction(action: QueuedAction): boolean {

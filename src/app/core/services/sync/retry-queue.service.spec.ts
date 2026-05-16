@@ -248,6 +248,27 @@ describe('RetryQueueService', () => {
     service.setOperationHandler(handler);
   });
 
+  it('setOperationHandler 即使 queue 为空也应主动同步 pendingCount=0 到 SyncState（防止切账号 stale 漂移）', () => {
+    // 模拟切账号场景：clearCurrentView 已把 queue 清空，但 SyncState 残留旧 pendingCount。
+    // 此时上层 SimpleSyncService 重新 setOperationHandler 必须把 pendingCount 主动归零。
+    const freshHandler = {
+      pushTask: vi.fn().mockResolvedValue(true),
+      deleteTask: vi.fn().mockResolvedValue(true),
+      pushProject: vi.fn().mockResolvedValue(true),
+      pushConnection: vi.fn().mockResolvedValue(true),
+      pushBlackBoxEntry: vi.fn().mockResolvedValue(true),
+      isSessionExpired: vi.fn().mockReturnValue(false),
+      isOnline: vi.fn(() => false),
+      onProcessingStateChange: vi.fn(),
+    };
+
+    expect(service.length).toBe(0);
+
+    service.setOperationHandler(freshHandler);
+
+    expect(freshHandler.onProcessingStateChange).toHaveBeenCalledWith(false, 0);
+  });
+
   it('processQueueSlice 在 sync writer lease 开启时应持有 lease 后再 flush 并最终释放', async () => {
     online = true;
     syncWriterLeaseMock.isFeatureEnabled.mockReturnValue(true);
