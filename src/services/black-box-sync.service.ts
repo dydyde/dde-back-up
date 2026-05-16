@@ -1101,7 +1101,8 @@ export class BlackBoxSyncService {
   /**
    * 当 push 完成时发现 latestLocalAfterPush 比 entry 更晚，按业务字段等价性决定：
    *   - 等价（差异只是 updatedAt 这种同步元数据）→ 升级为 synced，避免 UI 长期 待同步；
-   *   - 不等价（latestLocal 含未推送的真实编辑）→ 保留 pending，等下次同步循环承接。
+   *   - 不等价（latestLocal 含未推送的真实编辑）→ 保留 pending，并主动确保 latestLocal
+   *     已经在 RetryQueue / debounce 队列中等待续推（避免孤儿挂死成"长期 待同步"）。
    * 这是「Fix 3·路径 B」的核心收敛点，RPC / 直接 upsert 两条路径共用。
    */
   private async upgradeEquivalentLatestLocalToSynced(
@@ -1128,11 +1129,47 @@ export class BlackBoxSyncService {
       return;
     }
 
-    this.logger.debug('黑匣子推送完成时检测到更晚的本地快照，跳过旧状态回写，等待 latestLocal 自身续推', {
+    // 【2026-05-16 根因修复·路径 B】保留 pending 时必须主动确保 latestLocal 已被
+    // RetryQueue 或 debounce 队列承接。原实现只 debug log 后期望 latestLocal 自己被
+    // scheduleSync 续推；但若 latestLocal 来源是 pushToServer 内部 preflight monotonic
+    // 合并（pendingMerged）而非 update() 调用链，那条路径不会触达 scheduleSync，会成为
+    // "孤儿 pending"——UI 永远显示 待同步 直到下次手动 update。
+    this.logger.info('黑匣子推送完成时检测到不等价的更晚本地快照，确保 latestLocal 已入队续推', {
       entryId: pushedEntry.id,
       pushedUpdatedAt: pushedEntry.updatedAt,
       latestLocalUpdatedAt: latestLocal.updatedAt,
       pushPath,
+    });
+    this.ensureLatestLocalEnqueued(latestLocal, 'upgrade-non-equivalent');
+  }
+
+  /**
+   * 确保某个本地 pending 条目已经进入 RetryQueue（优先）或被内联 push 兜底。
+   *
+   * 调用方包括：
+   * - `upgradeEquivalentLatestLocalToSynced` 业务字段非等价分支（push 已完成、保留 pending）
+   * - `mergeWithLocal` 远端单调真值合并路径（保留 pending）
+   *
+   * 没有此方法时，"latestLocal 在 push 进行期间被并发更新成不等价的更晚快照"会变成孤儿，
+   * 导致 UI 长期显示 待同步。
+   */
+  private ensureLatestLocalEnqueued(
+    latestLocal: BlackBoxEntry,
+    reason: 'merge-monotonic' | 'upgrade-non-equivalent',
+  ): void {
+    if (this.retryQueueHandler) {
+      this.retryQueueHandler(latestLocal);
+      return;
+    }
+    void this.pushToServer(latestLocal).catch(err => {
+      this.logger.error(
+        '黑匣子 ensureLatestLocalEnqueued 内联续推失败',
+        err instanceof Error ? err.message : String(err),
+      );
+    });
+    this.logger.debug('黑匣子 ensureLatestLocalEnqueued 无 retryQueueHandler，降级走内联 push', {
+      entryId: latestLocal.id,
+      reason,
     });
   }
 
@@ -1676,6 +1713,7 @@ export class BlackBoxSyncService {
         return true;
       }
 
+      const previousSyncStatus = entry.syncStatus ?? 'unknown';
       const synced: BlackBoxEntry = {
         ...entry,
         updatedAt: serverUpdatedAt,
@@ -1683,7 +1721,15 @@ export class BlackBoxSyncService {
       };
       await this.saveToLocal(synced);
       updateBlackBoxEntry(synced);
-      this.logger.debug(`Entry synced to server via RPC: ${entry.id}`);
+      // 升级为 info 级别并附带 before/after 快照，便于排查"看似同步完成但 UI 仍显示 待同步"的取证。
+      this.logger.info('黑匣子条目通过 RPC 同步完成', {
+        entryId: entry.id,
+        previousSyncStatus,
+        nextSyncStatus: 'synced',
+        previousUpdatedAt: entry.updatedAt,
+        serverUpdatedAt,
+        pushPath: 'rpc',
+      });
       return true;
     }
 
@@ -2127,11 +2173,12 @@ export class BlackBoxSyncService {
         this.clockSync.recordServerTimestamp(serverUpdatedAt, entry.id);
       }
 
+      const previousSyncStatus = entry.syncStatus ?? 'unknown';
       const latestLocalAfterPush = await this.resolveLatestLocalEntry(entry.id);
       if (latestLocalAfterPush && this.isEntryNewer(latestLocalAfterPush, entry)) {
         // 【2026-05-11 根因修复·路径 B】upsert 完成但本地 latestLocal 比 entry 更晚。
-        // 与 RPC 路径同策：业务字段等价则升级为 synced；否则保留 pending 等 latestLocal
-        // 自己的同步链路续推。
+        // 与 RPC 路径同策：业务字段等价则升级为 synced；否则保留 pending 并主动确保
+        // latestLocal 已进入 RetryQueue / debounce 队列续推（2026-05-16 修复孤儿 pending）。
         await this.upgradeEquivalentLatestLocalToSynced(
           latestLocalAfterPush,
           entry,
@@ -2148,7 +2195,14 @@ export class BlackBoxSyncService {
         updateBlackBoxEntry(synced);
       }
 
-      this.logger.debug(`Entry synced to server: ${entry.id}`);
+      this.logger.info('黑匣子条目通过 upsert 同步完成', {
+        entryId: entry.id,
+        previousSyncStatus,
+        nextSyncStatus: 'synced',
+        previousUpdatedAt: entry.updatedAt,
+        serverUpdatedAt,
+        pushPath: 'upsert',
+      });
       return true;
     } catch (error) {
       this.logger.error('Sync error', error instanceof Error ? error.message : String(error));
@@ -2798,18 +2852,10 @@ export class BlackBoxSyncService {
 
         // 【2026-05-11 根因修复·路径 C】保留 pending 后必须主动把 merged 重新入队，
         // 否则没有任何机制会再次触发这条 entry 的 push，直到用户下次手动 update，
-        // 表现就是 UI 长期"待同步"。优先走 retryQueueHandler 享受主同步通道的
-        // 持久化 + 指数回退；没有 handler 时降级为内联 pushToServer。
-        if (this.retryQueueHandler) {
-          this.retryQueueHandler(merged);
-        } else {
-          void this.pushToServer(merged).catch(err => {
-            this.logger.error(
-              '黑匣子 mergeWithLocal 续推失败',
-              err instanceof Error ? err.message : String(err),
-            );
-          });
-        }
+        // 表现就是 UI 长期"待同步"。
+        // 【2026-05-16 重构】抽出 `ensureLatestLocalEnqueued` 工具方法，与
+        // `upgradeEquivalentLatestLocalToSynced` 非等价分支共用，避免两边重复实现。
+        this.ensureLatestLocalEnqueued(merged, 'merge-monotonic');
         return;
       }
     }
