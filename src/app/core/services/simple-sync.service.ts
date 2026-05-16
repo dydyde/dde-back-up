@@ -401,7 +401,7 @@ export class SimpleSyncService {
       },
       // 重试连接时保留 tombstone + 任务存在性校验，避免陈旧连接重放与 23503 外键错误风暴
       pushConnection: (conn, pid, sourceUserId) => this.pushConnection(conn, pid, false, false, true, sourceUserId),
-      pushBlackBoxEntry: (entry: BlackBoxEntry, sourceUserId?: string) => {
+      pushBlackBoxEntry: async (entry: BlackBoxEntry, sourceUserId?: string) => {
         if (!sourceUserId) {
           this.logger.warn('BlackBox retry deferred: missing queued owner', {
             entryId: entry.id,
@@ -415,7 +415,16 @@ export class SimpleSyncService {
             hasSourceUserId: !!sourceUserId,
             hasEntryUserId: !!entry.userId,
           });
-          return Promise.resolve(true);
+          try {
+            await this.blackBoxSync.markEntrySyncConflict(entry);
+            return true;
+          } catch (error) {
+            this.logger.warn('BlackBox retry owner mismatch repair failed', {
+              entryId: entry.id,
+              error: error instanceof Error ? error.message : String(error),
+            });
+            return false;
+          }
         }
         return this.blackBoxSync.pushToServer(entry, sourceUserId);
       },

@@ -47,6 +47,8 @@ export interface SyncRpcResult {
   minProtocolVersion?: number;
   /** `applied` / `idempotent-replay` 时返回的实体 ID。 */
   entityId?: string;
+  /** 服务端判定 payload 陈旧并保留了远端权威状态。 */
+  stalePayload?: boolean;
   /** delete/batch RPC 返回的影响行数。 */
   affectedCount?: number;
   /** 任务 purge 时服务端返回、客户端后续异步清理的附件路径。 */
@@ -321,6 +323,7 @@ export class SyncRpcClientService {
     if (typeof obj['remote_updated_at'] === 'string') result.remoteUpdatedAt = obj['remote_updated_at'] as string;
     if (typeof obj['updated_at'] === 'string') result.serverUpdatedAt = obj['updated_at'] as string;
     if (typeof obj['minProtocolVersion'] === 'number') result.minProtocolVersion = obj['minProtocolVersion'] as number;
+    if (typeof obj['stale_payload'] === 'boolean') result.stalePayload = obj['stale_payload'] as boolean;
     if (typeof obj['task_id'] === 'string') result.entityId = obj['task_id'] as string;
     else if (typeof obj['connection_id'] === 'string') result.entityId = obj['connection_id'] as string;
     else if (typeof obj['entry_id'] === 'string') result.entityId = obj['entry_id'] as string;

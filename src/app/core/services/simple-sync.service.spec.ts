@@ -49,6 +49,7 @@ import {
 } from './sync';
 import type { RetryQueueItem } from './sync';
 import { Task, Project, Connection } from '../../../models';
+import type { BlackBoxEntry } from '../../../models/focus';
 import { PermanentFailureError } from '../../../utils/permanent-failure-error';
 import { ProjectStore } from '../state/stores';
 
@@ -93,6 +94,7 @@ describe('SimpleSyncService', () => {
     setRetryQueueHandler: ReturnType<typeof vi.fn>;
     pushToServer: ReturnType<typeof vi.fn>;
     pullChanges: ReturnType<typeof vi.fn>;
+    markEntrySyncConflict: ReturnType<typeof vi.fn>;
   };
   let mockProjectStore: any;
   let mockSyncCursorPersistence: any;
@@ -557,6 +559,7 @@ describe('SimpleSyncService', () => {
       setRetryQueueHandler: vi.fn(),
       pushToServer: vi.fn().mockResolvedValue(true),
       pullChanges: vi.fn().mockResolvedValue(undefined),
+      markEntrySyncConflict: vi.fn().mockResolvedValue(undefined),
     };
     
     // 【技术债务重构】TaskSyncOperationsService Mock
@@ -779,6 +782,31 @@ describe('SimpleSyncService', () => {
         undefined,
         'user-1',
       );
+    });
+
+    it('黑匣子重试 owner mismatch 应先修复本地 pending 再移除队列项', async () => {
+      const retryHandlers = mockRetryQueueService.setOperationHandler.mock.calls[0]?.[0] as {
+        pushBlackBoxEntry: (entry: BlackBoxEntry, sourceUserId?: string) => Promise<boolean>;
+      };
+      const entry = {
+        id: crypto.randomUUID(),
+        projectId: null,
+        userId: 'user-1',
+        content: 'entry',
+        date: '2026-03-04',
+        createdAt: '2026-03-04T00:00:00.000Z',
+        updatedAt: '2026-03-04T00:00:00.000Z',
+        isRead: false,
+        isCompleted: false,
+        isArchived: false,
+        deletedAt: null,
+        syncStatus: 'pending' as const,
+      } as BlackBoxEntry;
+
+      await expect(retryHandlers.pushBlackBoxEntry(entry, 'other-user')).resolves.toBe(true);
+
+      expect(mockBlackBoxSync.pushToServer).not.toHaveBeenCalled();
+      expect(mockBlackBoxSync.markEntrySyncConflict).toHaveBeenCalledWith(entry);
     });
     
     it('应该初始化网络状态为在线', () => {

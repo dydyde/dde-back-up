@@ -168,6 +168,34 @@ describe('SyncRpcClientService', () => {
     expect(rpc).toHaveBeenCalledTimes(1);
   });
 
+  it('upsertBlackboxEntry: 应解析服务端 stale_payload 标记', async () => {
+    const env = environment as unknown as MutableEnv;
+    env.syncRpcEnabled = true;
+    env.syncProtocolVersion = 1;
+
+    const rpc = vi.fn(async () => ({
+      data: {
+        status: 'applied',
+        entry_id: 'entry-9',
+        updated_at: '2026-05-16T00:00:01.000Z',
+        stale_payload: true,
+      },
+      error: null,
+    }));
+
+    const service = buildService(rpc as never);
+    const result = await service.upsertBlackboxEntry({
+      operationId: 'op-blackbox-stale',
+      entry: { id: 'entry-9', projectId: null, content: 'hi' } as unknown as BlackBoxEntry,
+      baseUpdatedAt: '2026-05-16T00:00:00.000Z',
+    });
+
+    expect(result.status).toBe('applied');
+    expect(result.entityId).toBe('entry-9');
+    expect(result.serverUpdatedAt).toBe('2026-05-16T00:00:01.000Z');
+    expect(result.stalePayload).toBe(true);
+  });
+
   it('upsertTask: 序列化完整同步字段供 batch_upsert_tasks 使用', async () => {
     const env = environment as unknown as MutableEnv;
     env.syncRpcEnabled = true;

@@ -1624,11 +1624,29 @@ export class BlackBoxSyncService {
   private async handleBlackBoxSyncRpcResult(
     result: SyncRpcResult,
     entry: BlackBoxEntry,
+    client: Awaited<ReturnType<SupabaseClientService['clientAsync']>>,
+    sessionUserId: string,
   ): Promise<boolean> {
     if (result.status === 'applied' || result.status === 'idempotent-replay') {
       const serverUpdatedAt = result.serverUpdatedAt ?? entry.updatedAt;
       if (serverUpdatedAt) {
         this.clockSync.recordServerTimestamp(serverUpdatedAt, entry.id);
+      }
+
+      if (result.stalePayload) {
+        const reconciled = await this.reconcileAuthoritativeRemoteEntry(
+          client,
+          entry,
+          sessionUserId,
+          'rpc-stale-payload',
+        );
+        if (reconciled) {
+          return true;
+        }
+        this.logger.warn('黑匣子 RPC stale payload 已应用但远端权威状态未能对账，保留 pending 等待重试', {
+          entryId: entry.id,
+        });
+        return false;
       }
 
       const latestLocalAfterPush = await this.resolveLatestLocalEntry(entry.id);
@@ -1669,7 +1687,12 @@ export class BlackBoxSyncService {
         tags: { operation: 'pushBlackBoxEntry', entityType: 'blackbox', status: result.status },
         extra: { entryId: entry.id, remoteUpdatedAt: result.remoteUpdatedAt, reason: result.reason },
       });
-      return false;
+      return await this.reconcileAuthoritativeRemoteEntry(
+        client,
+        entry,
+        sessionUserId,
+        'rpc-remote-newer',
+      );
     }
 
     this.logger.warn('黑匣子 RPC 拒绝写入', {
@@ -1684,6 +1707,101 @@ export class BlackBoxSyncService {
       extra: { entryId: entry.id, reason: result.reason, minProtocolVersion: result.minProtocolVersion },
     });
     return false;
+  }
+
+  private async reconcileAuthoritativeRemoteEntry(
+    client: Awaited<ReturnType<SupabaseClientService['clientAsync']>>,
+    entry: BlackBoxEntry,
+    sessionUserId: string,
+    reason: 'rpc-remote-newer' | 'rpc-stale-payload',
+  ): Promise<boolean> {
+    const remoteEntry = await this.fetchRemoteEntryById(client, entry.id, sessionUserId, reason);
+    if (!remoteEntry) {
+      return false;
+    }
+
+    await this.mergeWithLocal(remoteEntry, false, false);
+    const latestLocal = await this.resolveLatestLocalEntry(entry.id);
+    const clearedPending = latestLocal?.syncStatus !== 'pending';
+    if (!clearedPending) {
+      this.logger.debug('黑匣子远端权威对账后仍保留 pending，等待最新本地快照续推', {
+        entryId: entry.id,
+        reason,
+        localUpdatedAt: latestLocal?.updatedAt,
+        remoteUpdatedAt: remoteEntry.updatedAt,
+      });
+    }
+    return clearedPending;
+  }
+
+  private async fetchRemoteEntryById(
+    client: Awaited<ReturnType<SupabaseClientService['clientAsync']>>,
+    entryId: string,
+    sessionUserId: string,
+    reason: string,
+  ): Promise<BlackBoxEntry | null> {
+    if (!client) {
+      return null;
+    }
+
+    try {
+      let query = client
+        .from('black_box_entries')
+        .select('*');
+      const userEqQuery = this.getOptionalQueryMethod<[string, string]>(query, 'eq');
+      if (!userEqQuery) {
+        this.logger.warn('黑匣子远端权威对账缺少 eq 查询能力，保留 pending 状态', {
+          entryId,
+          reason,
+        });
+        return null;
+      }
+      query = userEqQuery('user_id', sessionUserId) as typeof query;
+      const idEqQuery = this.getOptionalQueryMethod<[string, string]>(query, 'eq');
+      if (!idEqQuery) {
+        this.logger.warn('黑匣子远端权威对账缺少 id 查询能力，保留 pending 状态', {
+          entryId,
+          reason,
+        });
+        return null;
+      }
+      query = idEqQuery('id', entryId) as typeof query;
+
+      const maybeSingle = this.getOptionalQueryMethod<[]>(query, 'maybeSingle');
+      if (!maybeSingle) {
+        this.logger.warn('黑匣子远端权威对账缺少 maybeSingle 查询能力，保留 pending 状态', {
+          entryId,
+          reason,
+        });
+        return null;
+      }
+
+      const { data, error } = await maybeSingle() as { data: unknown | null; error: unknown };
+      if (error) {
+        this.logger.warn('黑匣子远端权威对账失败，保留 pending 状态', {
+          entryId,
+          reason,
+          message: supabaseErrorToError(error).message,
+        });
+        return null;
+      }
+      if (!data) {
+        this.logger.warn('黑匣子远端权威对账未找到服务端行，保留 pending 状态', {
+          entryId,
+          reason,
+        });
+        return null;
+      }
+
+      return this.mapRowToEntry(data as Record<string, unknown>);
+    } catch (error) {
+      this.logger.warn('黑匣子远端权威对账异常，保留 pending 状态', {
+        entryId,
+        reason,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
   }
 
   /**
@@ -1941,7 +2059,7 @@ export class BlackBoxSyncService {
           entry,
           baseUpdatedAt: syncRpcBaseUpdatedAt,
         });
-        return await this.handleBlackBoxSyncRpcResult(result, entry);
+        return await this.handleBlackBoxSyncRpcResult(result, entry, client, sessionUserId);
       }
 
       // 让数据库触发器生成权威 updated_at，避免客户端时钟偏差把跨设备完成状态盖回去。

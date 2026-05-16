@@ -1403,6 +1403,28 @@ export class RetryQueueService {
     });
   }
 
+  private async markBlackBoxTerminalConflict(item: RetryQueueItem, reason: string): Promise<void> {
+    if (item.type !== 'blackbox') {
+      return;
+    }
+
+    const entry = item.data as BlackBoxEntry;
+    if (!entry?.id || entry.syncStatus !== 'pending') {
+      return;
+    }
+
+    try {
+      await this.blackBoxSync.markEntrySyncConflict(entry);
+    } catch (error) {
+      this.logger.warn('黑匣子终止态重试项本地 conflict 修复失败', {
+        queueItemId: item.id,
+        entryId: entry.id,
+        reason,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
   private quarantineLegacyRetryItem(item: RetryQueueItem, reason: string): void {
     const ownerUserId = this.resolveLegacyReviewOwnerUserId(item);
     const record: LegacyRetryReviewItem = {
@@ -1722,15 +1744,20 @@ export class RetryQueueService {
 
       const now = Date.now();
       const expiredIds = new Set<string>();
+      const expiredItems: RetryQueueItem[] = [];
       const validItems: RetryQueueItem[] = [];
       for (const item of sortedItems) {
         if (now - item.createdAt > this.MAX_ITEM_AGE) {
           expiredIds.add(item.id);
+          expiredItems.push(item);
         } else {
           validItems.push(item);
         }
       }
       if (expiredIds.size > 0) {
+        for (const item of expiredItems) {
+          await this.markBlackBoxTerminalConflict(item, 'expired');
+        }
         this.queue = this.queue.filter(item => !expiredIds.has(item.id));
         this.touchQueueState();
         this.saveToStorage();
@@ -1831,6 +1858,7 @@ export class RetryQueueService {
         } catch (e) {
           if (isPermanentFailureError(e)) {
             this.logger.warn('永久失败，从队列移除', { type: item.type, id: item.data.id, error: (e as Error).message });
+            await this.markBlackBoxTerminalConflict(item, 'permanent-failure');
             processedIds.add(item.id);
             hadTerminalRemoval = true;
             continue;
@@ -1918,6 +1946,7 @@ export class RetryQueueService {
         item.retryCount++;
         this.touchQueueState();
         if (item.retryCount >= this.MAX_RETRIES) {
+          await this.markBlackBoxTerminalConflict(item, 'max-retries');
           processedIds.add(item.id);
           exceededCount++;
           hadTerminalRemoval = true;
