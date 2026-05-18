@@ -39,6 +39,7 @@ const mockActionQueueService = {
   markActionResolvedWithoutRemote: vi.fn(),
   moveToDeadLetter: vi.fn(),
   deferRetry: vi.fn((error) => ({ outcome: 'defer-retry', error })),
+  failRetry: vi.fn((error) => ({ outcome: 'failed', error })),
   discardActions: vi.fn(),
   settleProjectDeleteSuccessForOwner: vi.fn().mockResolvedValue(1),
   enqueueForOwner: vi.fn().mockResolvedValue('queued-owner-action'),
@@ -436,13 +437,26 @@ describe('ActionQueueProcessorsService', () => {
     expect(mockActionQueueService.markActionResolvedWithoutRemote).toHaveBeenCalledWith('action-project-view-stale');
   });
 
-  it('project:update should return false when userId is missing', async () => {
+  it('project:update should defer without retry budget when userId is missing', async () => {
     mockAuthService.currentUserId.mockReturnValueOnce(null);
     const handler = getProcessor('project:update');
 
     const result = await handler({ payload: { project: { id: 'p-1' } } });
 
-    expect(result).toBe(false);
+    expect(result).toEqual({
+      outcome: 'defer-retry',
+      error: expect.objectContaining({
+        code: 'SYNC_AUTH_PENDING',
+        details: expect.objectContaining({
+          reason: 'auth-pending',
+          actionType: 'project:update',
+          projectId: 'p-1',
+        }),
+      }),
+    });
+    expect(mockActionQueueService.deferRetry).toHaveBeenCalledWith(expect.objectContaining({
+      code: 'SYNC_AUTH_PENDING',
+    }));
     expect(mockLoggerCategory.warn).toHaveBeenCalled();
   });
 
@@ -598,7 +612,7 @@ describe('ActionQueueProcessorsService', () => {
     );
   });
 
-  it('project:update should keep failing when failed entities were not transferred to RetryQueue', async () => {
+  it('project:update should return a classified failure when failed entities were not transferred to RetryQueue', async () => {
     mockSyncService.saveProjectSmart.mockResolvedValueOnce({
       success: false,
       projectPushed: true,
@@ -615,8 +629,26 @@ describe('ActionQueueProcessorsService', () => {
       },
     } as QueuedAction);
 
-    expect(result).toBe(false);
-    expect(mockLoggerCategory.error).toHaveBeenCalled();
+    expect(result).toEqual({
+      outcome: 'failed',
+      error: expect.objectContaining({
+        code: 'SYNC_PROJECT_WRITE_FAILED',
+        message: 'permanent task failure',
+        details: expect.objectContaining({
+          reason: 'project-sync-failed',
+          actionType: 'project:update',
+          projectId: 'p-permanent-failure',
+          failedTaskIds: ['task-a'],
+        }),
+      }),
+    });
+    expect(mockActionQueueService.failRetry).toHaveBeenCalledWith(expect.objectContaining({
+      message: 'permanent task failure',
+    }));
+    expect(mockLoggerCategory.warn).toHaveBeenCalledWith(
+      'project:update 同步未完成，保留 ActionQueue 重试',
+      expect.objectContaining({ projectId: 'p-permanent-failure' }),
+    );
   });
 
   it('project:update should log info and defer retry without consuming queue failure budget when partialRetryHandoff is set', async () => {
@@ -679,7 +711,17 @@ describe('ActionQueueProcessorsService', () => {
       },
     } as QueuedAction);
 
-    expect(result).toBe(false);
+    expect(result).toEqual({
+      outcome: 'failed',
+      error: expect.objectContaining({
+        code: 'SYNC_PROJECT_WRITE_FAILED',
+        message: 'permission denied',
+        details: expect.objectContaining({
+          actionType: 'project:update',
+          projectId: 'p-no-retry-transfer',
+        }),
+      }),
+    });
   });
 
   it('project:update should move terminal project sync failures to dead letter', async () => {
@@ -787,7 +829,17 @@ describe('ActionQueueProcessorsService', () => {
       },
     } as QueuedAction);
 
-    expect(result).toBe(false);
+    expect(result).toEqual({
+      outcome: 'failed',
+      error: expect.objectContaining({
+        code: 'SYNC_PROJECT_WRITE_FAILED',
+        message: 'transient network failure',
+        details: expect.objectContaining({
+          actionType: 'project:update',
+          projectId: 'p-owner-handoff',
+        }),
+      }),
+    });
     expect(mockActionQueueService.markActionResolvedWithoutRemote).not.toHaveBeenCalledWith('action-owner-handoff-failure');
   });
 
@@ -846,10 +898,16 @@ describe('ActionQueueProcessorsService', () => {
       },
     } as QueuedAction);
 
-    expect(result).toBe(false);
+    expect(result).toEqual({
+      outcome: 'failed',
+      error: expect.objectContaining({
+        code: 'SYNC_PROJECT_WRITE_FAILED',
+        message: 'offline sync deferred',
+      }),
+    });
   });
 
-  it('project:update should keep failing when persisted project retry snapshot differs from the action snapshot', async () => {
+  it('project:update should keep classified failure when persisted project retry snapshot differs from the action snapshot', async () => {
     mockSyncService.saveProjectSmart.mockResolvedValueOnce({
       success: false,
       projectPushed: false,
@@ -872,7 +930,13 @@ describe('ActionQueueProcessorsService', () => {
       },
     } as QueuedAction);
 
-    expect(result).toBe(false);
+    expect(result).toEqual({
+      outcome: 'failed',
+      error: expect.objectContaining({
+        code: 'SYNC_PROJECT_WRITE_FAILED',
+        message: 'offline sync deferred',
+      }),
+    });
   });
 
   it('project:update should persist conflict when remote snapshot is unavailable', async () => {
@@ -1003,7 +1067,7 @@ describe('ActionQueueProcessorsService', () => {
     expect(result).toBe(true);
   });
 
-  it('project:create should keep failing when failed entities were not transferred to RetryQueue', async () => {
+  it('project:create should return a classified failure when failed entities were not transferred to RetryQueue', async () => {
     mockSyncService.saveProjectSmart.mockResolvedValueOnce({
       success: false,
       projectPushed: true,
@@ -1020,7 +1084,19 @@ describe('ActionQueueProcessorsService', () => {
       },
     } as QueuedAction);
 
-    expect(result).toBe(false);
+    expect(result).toEqual({
+      outcome: 'failed',
+      error: expect.objectContaining({
+        code: 'SYNC_PROJECT_WRITE_FAILED',
+        message: 'permanent task failure',
+        details: expect.objectContaining({
+          reason: 'project-sync-failed',
+          actionType: 'project:create',
+          projectId: 'p-create-permanent-failure',
+          failedTaskIds: ['task-a'],
+        }),
+      }),
+    });
   });
 
   it('project:create should log info and defer retry without consuming queue failure budget when partialRetryHandoff is set', async () => {
@@ -1082,7 +1158,17 @@ describe('ActionQueueProcessorsService', () => {
       },
     } as QueuedAction);
 
-    expect(result).toBe(false);
+    expect(result).toEqual({
+      outcome: 'failed',
+      error: expect.objectContaining({
+        code: 'SYNC_PROJECT_WRITE_FAILED',
+        message: 'permission denied',
+        details: expect.objectContaining({
+          actionType: 'project:create',
+          projectId: 'p-create-no-retry-transfer',
+        }),
+      }),
+    });
   });
 
   it('project:create should persist conflict when remote snapshot is unavailable', async () => {

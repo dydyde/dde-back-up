@@ -126,4 +126,5 @@ dependencies {
   // 让 FirebaseMessaging.getInstance().token 可在 suspend 函数里直接 await。
   implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.9.0")
   implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
+  testImplementation(kotlin("test"))
 }

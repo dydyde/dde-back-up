@@ -912,6 +912,29 @@ describe('ActionQueueService', () => {
       expect(service.queueSize()).toBe(1);
       expect(service.pendingActions()[0]?.retryCount).toBe(LOCAL_QUEUE_CONFIG.MAX_RETRIES);
     });
+
+    it('failed processor result 应保留真实错误原因而不是 Operation returned false', async () => {
+      const processor = vi.fn().mockResolvedValue(service.failRetry({
+        code: 'SYNC_PROJECT_WRITE_FAILED',
+        message: 'permission denied',
+        details: {
+          reason: 'project-sync-failed',
+          projectId: 'project-classified-failure',
+        },
+      }));
+      service.registerProcessor('project:update', processor);
+
+      setNetworkStatus(false);
+      service.enqueue(createTestProjectAction());
+
+      setNetworkStatus(true);
+      await service.processQueue();
+
+      expect(service.queueSize()).toBe(0);
+      expect(service.hasDeadLetters()).toBe(true);
+      expect(service.deadLetterQueue()[0]?.reason).toContain('permission denied');
+      expect(service.deadLetterQueue()[0]?.reason).not.toContain('Operation returned false');
+    });
     
     it('重试成功后应该从队列移除', async () => {
       // 使用 fake timers 加速重试延迟测试

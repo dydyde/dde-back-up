@@ -191,6 +191,11 @@ describe('FlowOverviewService', () => {
     expect(overview.isEnabled).toBe(false);
   });
 
+  it('Overview 不应设置 contentAlignment，避免按容器居中后让预览框与主视图脱节', () => {
+    const overview = service.overviewInstance as unknown as { contentAlignment?: unknown };
+    expect(overview.contentAlignment).toBeUndefined();
+  });
+
   it('松开小地图预览框后仍按最后拖拽视口重绘，避免内容弹跳', () => {
     const overview = service.overviewInstance as unknown as {
       centerRect: ReturnType<typeof vi.fn>;

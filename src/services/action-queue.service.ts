@@ -9,8 +9,7 @@ import { ActionQueueStorageService, LOCAL_QUEUE_CONFIG, type QueueRetryError } f
 import { RetryQueueService, type RetryableEntityType } from '../core-bridge';
 import { AuthService } from './auth.service';
 import { WriteGuardService } from './write-guard.service';
-import { SyncWriterLeaseService } from './sync-writer-lease.service';
-import type { LeaseHandle } from './sync-writer-lease.service';
+import { SyncWriterLeaseService, type LeaseHandle } from './sync-writer-lease.service';
 import { AUTH_CONFIG } from '../config/auth.config';
 import {
   OperationPriority, 
@@ -44,7 +43,12 @@ export type DeferredActionQueueRetry = {
   error: QueueRetryError;
 };
 
-export type ActionQueueProcessorResult = boolean | DeferredActionQueueRetry;
+export type FailedActionQueueRetry = {
+  outcome: 'failed';
+  error: QueueRetryError;
+};
+
+export type ActionQueueProcessorResult = boolean | DeferredActionQueueRetry | FailedActionQueueRetry;
 
 /**
  * 离线操作队列服务
@@ -181,6 +185,13 @@ export class ActionQueueService {
       error,
     };
   }
+
+  failRetry(error: QueueRetryError): FailedActionQueueRetry {
+    return {
+      outcome: 'failed',
+      error,
+    };
+  }
   
   /**
    * 验证所有必需的处理器是否已注册
@@ -202,6 +213,18 @@ export class ActionQueueService {
 
   private isDeferredProcessorResult(result: ActionQueueProcessorResult): result is DeferredActionQueueRetry {
     return typeof result === 'object' && result !== null && result.outcome === 'defer-retry';
+  }
+
+  private isFailedProcessorResult(result: ActionQueueProcessorResult): result is FailedActionQueueRetry {
+    return typeof result === 'object' && result !== null && result.outcome === 'failed';
+  }
+
+  private getProcessorRetryError(result: ActionQueueProcessorResult): QueueRetryError | null {
+    if (this.isDeferredProcessorResult(result) || this.isFailedProcessorResult(result)) {
+      return result.error;
+    }
+
+    return null;
   }
   
   /** 注册失败通知回调 */
@@ -588,8 +611,9 @@ export class ActionQueueService {
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), SYNC_WRITER_LEASE_WAIT_MS);
+    let leaseHandle: LeaseHandle | null = null;
     try {
-      return await this.syncWriterLease.requestLease({
+      leaseHandle = await this.syncWriterLease.requestLease({
         userId: this.getCurrentOwnerUserId(),
         projectId: SYNC_WRITER_LEASE_PROJECT_SCOPE,
         signal: controller.signal,
@@ -597,10 +621,11 @@ export class ActionQueueService {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.logger.warn('sync writer lease 获取失败，本轮 ActionQueue flush 已延后', { message });
-      return null;
     } finally {
       clearTimeout(timeout);
     }
+
+    return leaseHandle;
   }
 
   private createQueuedAction(action: EnqueueParams): QueuedAction {
@@ -946,9 +971,8 @@ export class ActionQueueService {
           this.actionProcessTokenById.set(action.id, processLifecycleToken);
           const processResult = await processor(action);
           const success = processResult === true;
-          const retryError = this.isDeferredProcessorResult(processResult)
-            ? processResult.error
-            : { message: 'Operation returned false' };
+          const retryError = this.getProcessorRetryError(processResult)
+            ?? { message: 'Operation returned false' };
 
           if (this.isStaleProcess(processGeneration)) {
             if (success) {

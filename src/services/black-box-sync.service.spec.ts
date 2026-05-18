@@ -1764,6 +1764,83 @@ describe('BlackBoxSyncService', () => {
     }));
   });
 
+  it('loadFromLocal 不应让 IDB 中更旧的 pending 回退内存里已收敛的 synced 条目', async () => {
+    const entryId = 'entry-stale-pending';
+    const idbPendingEntry = {
+      id: entryId,
+      projectId: null,
+      userId: 'user-1',
+      content: 'entry',
+      date: '2026-03-04',
+      createdAt: '2026-03-04T00:00:00.000Z',
+      updatedAt: '2026-03-04T00:00:00.000Z',
+      isRead: false,
+      isCompleted: false,
+      isArchived: false,
+      deletedAt: null,
+      syncStatus: 'pending',
+    };
+    const inMemorySyncedEntry = createEntry({
+      id: entryId,
+      updatedAt: '2026-03-04T00:00:05.000Z',
+      syncStatus: 'synced',
+    });
+    const put = vi.fn(() => {
+      const request = {
+        onsuccess: null as ((this: IDBRequest<unknown>, ev: Event) => unknown) | null,
+        onerror: null as ((this: IDBRequest<unknown>, ev: Event) => unknown) | null,
+        error: null,
+      };
+      queueMicrotask(() => request.onsuccess?.call(request as unknown as IDBRequest<unknown>, new Event('success')));
+      return request;
+    });
+    const transaction = vi.fn((_storeName: string, mode?: IDBTransactionMode) => ({
+      objectStore: vi.fn(() => ({
+        getAll: () => {
+          const request = {
+            result: [idbPendingEntry],
+            onsuccess: null as ((this: IDBRequest<unknown[]>, ev: Event) => unknown) | null,
+            onerror: null as ((this: IDBRequest<unknown[]>, ev: Event) => unknown) | null,
+          };
+          queueMicrotask(() => request.onsuccess?.call(request as unknown as IDBRequest<unknown[]>, new Event('success')));
+          return request;
+        },
+        get: () => {
+          const request = {
+            result: mode === 'readwrite' ? idbPendingEntry : null,
+            onsuccess: null as ((this: IDBRequest<unknown>, ev: Event) => unknown) | null,
+            onerror: null as ((this: IDBRequest<unknown>, ev: Event) => unknown) | null,
+            error: null,
+          };
+          queueMicrotask(() => request.onsuccess?.call(request as unknown as IDBRequest<unknown>, new Event('success')));
+          return request;
+        },
+        put,
+      })),
+    }));
+    (service as unknown as { db: unknown }).db = { transaction };
+    setBlackBoxEntries([inMemorySyncedEntry]);
+
+    const entries = await service.loadFromLocal();
+    await flushMicrotasks();
+
+    expect(entries).toEqual([expect.objectContaining({
+      id: entryId,
+      syncStatus: 'synced',
+      updatedAt: '2026-03-04T00:00:05.000Z',
+    })]);
+    expect(blackBoxEntriesMap().get(entryId)).toEqual(expect.objectContaining({
+      id: entryId,
+      syncStatus: 'synced',
+      updatedAt: '2026-03-04T00:00:05.000Z',
+    }));
+    expect(put).toHaveBeenCalledWith(expect.objectContaining({
+      id: entryId,
+      syncStatus: 'synced',
+      updatedAt: '2026-03-04T00:00:05.000Z',
+    }));
+  });
+
   it('markEntrySyncConflict 应把可见条目回写为 conflict 并持久化到本地', async () => {
     const entry = createEntry({
       id: 'entry-conflict',

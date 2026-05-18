@@ -288,7 +288,17 @@ export class GateService {
 
     // 仅当队列彻底空（没有保留项也没有未处理项）时才判定完成，
     // 避免在动画进行中因同步信号剔除导致的误判。
-    if (nextItems.length === 0 && !this.actionInFlight) {
+    // 【修复 2026-04-21】同时排除 deferredMutation：finalizeActionTransition 会先
+    // 把 actionInFlight 置 null 再进入 settling 阶段，真正的 mark-read /
+    // mark-completed 要等到 onSettlingComplete -> flushDeferredMutation 才落库。
+    // 在这两步之间，远端 pull / BlackBox LWW 升级可能让 pendingBlackBoxEntries
+    // 短暂归零，从而触发 queue-empty 误判，造成「大门瞬间消失」并把未提交的条目
+    // 留在 pending 列表里，之后被其他路径重新唤起大门。
+    if (
+      nextItems.length === 0
+      && !this.actionInFlight
+      && !this.deferredMutation
+    ) {
       this.completeGateSession('queue-empty');
     }
   }
@@ -410,10 +420,16 @@ export class GateService {
           'Gate',
           `Animation did not start within ${ANIMATION_START_GRACE_MS}ms, forcing idle from '${state}'`
         );
-        this.cardAnimation.set('idle');
+        // 【修复 2026-04-21】先调用 cb 再置 idle：onSettlingComplete 等回调依赖
+        // cardAnimation() === state 的守卫来判定是否兜底执行 flushDeferredMutation。
+        // 旧顺序（先 set idle 再 cb）会让回调早返回，导致延迟提交的 mark-read /
+        // mark-completed 被静默丢弃，表现为大门项被消费但实际仍 pending。
         const cb = this.pendingAnimationTimeout;
         this.resetPendingAnimation();
         cb?.();
+        if (this.cardAnimation() === state) {
+          this.cardAnimation.set('idle');
+        }
       });
     }, ANIMATION_START_GRACE_MS);
   }
@@ -439,10 +455,13 @@ export class GateService {
           'Gate',
           `Animation duration exceeded ${ANIMATION_DURATION_MAX_MS}ms, forcing idle from '${state}'`
         );
-        this.cardAnimation.set('idle');
+        // 【修复 2026-04-21】先调用 cb 再置 idle，原因同阶段一兜底注释。
         const cb = this.pendingAnimationTimeout;
         this.resetPendingAnimation();
         cb?.();
+        if (this.cardAnimation() === state) {
+          this.cardAnimation.set('idle');
+        }
       });
     }, ANIMATION_DURATION_MAX_MS);
   }

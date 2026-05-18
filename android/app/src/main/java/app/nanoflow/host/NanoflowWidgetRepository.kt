@@ -36,6 +36,130 @@ private const val FOCUS_MUTATION_COMPLETE = "complete-front"
 private const val FOCUS_MUTATION_WAIT = "wait-front"
 private const val GATE_READ_REAPPEAR_COOLDOWN_MS = 30 * 60 * 1000L
 
+internal fun hasActionableOptimisticGateEntry(
+  blackBox: WidgetBlackBoxSummary,
+  privacyMode: Boolean,
+  now: Instant = Instant.now(),
+): Boolean {
+  if (blackBox.pendingCount <= 0) {
+    return true
+  }
+
+  return resolveRenderableGateEntriesForBlackBox(blackBox, privacyMode, now)
+    .firstOrNull { preview -> isActionableOptimisticGatePreview(preview, privacyMode) } != null
+}
+
+private fun isActionableOptimisticGatePreview(
+  preview: WidgetGatePreview,
+  privacyMode: Boolean,
+): Boolean {
+  if (preview.entryId.isNullOrBlank()) {
+    return false
+  }
+
+  return privacyMode || !preview.content.isNullOrBlank()
+}
+
+internal fun resolveRenderableGateEntriesForBlackBox(
+  blackBox: WidgetBlackBoxSummary,
+  privacyMode: Boolean,
+  now: Instant = Instant.now(),
+): List<WidgetGatePreview> {
+  val entries = mutableListOf<WidgetGatePreview>()
+  val fallbackEntries = mutableListOf<WidgetGatePreview>()
+
+  fun appendIfRenderable(preview: WidgetGatePreview) {
+    if (!preview.valid) {
+      return
+    }
+
+    val hiddenByCooldown = isGateReadCoolingDownForBlackBox(preview, now)
+    val hiddenByMissingContent = !privacyMode && preview.content.isNullOrBlank()
+    val renderableIndex = entries.indexOfFirst { existing -> areSameGatePreview(existing, preview) }
+    if (renderableIndex >= 0) {
+      if (!hiddenByCooldown && !hiddenByMissingContent) {
+        entries[renderableIndex] = preferRicherGatePreviewForBlackBox(entries[renderableIndex], preview)
+      }
+      return
+    }
+
+    val fallbackIndex = fallbackEntries.indexOfFirst { existing -> areSameGatePreview(existing, preview) }
+
+    if (hiddenByCooldown || hiddenByMissingContent) {
+      if (fallbackIndex >= 0) {
+        fallbackEntries[fallbackIndex] = preferRicherGatePreviewForBlackBox(fallbackEntries[fallbackIndex], preview)
+      } else {
+        fallbackEntries.add(preview)
+      }
+      return
+    }
+
+    if (fallbackIndex >= 0) {
+      fallbackEntries.removeAt(fallbackIndex)
+    }
+    entries.add(preview)
+  }
+
+  blackBox.previews.forEach(::appendIfRenderable)
+  appendIfRenderable(blackBox.gatePreview)
+
+  if (entries.isNotEmpty() || blackBox.pendingCount <= 0) {
+    return entries
+  }
+
+  val fallbackPreview = fallbackEntries.firstOrNull { !it.entryId.isNullOrBlank() }
+    ?: fallbackEntries.firstOrNull()
+  return fallbackPreview?.let(::listOf) ?: emptyList()
+}
+
+private fun preferRicherGatePreviewForBlackBox(
+  current: WidgetGatePreview,
+  candidate: WidgetGatePreview,
+): WidgetGatePreview {
+  return if (gatePreviewRichnessForBlackBox(candidate) >= gatePreviewRichnessForBlackBox(current)) {
+    candidate
+  } else {
+    current
+  }
+}
+
+private fun gatePreviewRichnessForBlackBox(preview: WidgetGatePreview): Int {
+  var score = 0
+  if (!preview.entryId.isNullOrBlank()) score += 8
+  if (!preview.content.isNullOrBlank()) score += 4
+  if (!preview.createdAt.isNullOrBlank()) score += 2
+  if (!preview.projectTitle.isNullOrBlank()) score += 1
+  return score
+}
+
+private fun isGateReadCoolingDownForBlackBox(
+  preview: WidgetGatePreview,
+  now: Instant,
+): Boolean {
+  if (!preview.isRead) {
+    return false
+  }
+
+  val updatedAt = runCatching {
+    Instant.parse(preview.updatedAt?.takeIf { it.isNotBlank() } ?: preview.createdAt ?: "")
+  }.getOrNull()
+  if (updatedAt == null) return false
+  val elapsedMs = Duration.between(updatedAt, now).toMillis().coerceAtLeast(0)
+  return elapsedMs < GATE_READ_REAPPEAR_COOLDOWN_MS
+}
+
+private fun areSameGatePreview(left: WidgetGatePreview, right: WidgetGatePreview): Boolean {
+  val leftEntryId = left.entryId?.takeIf { it.isNotBlank() }
+  val rightEntryId = right.entryId?.takeIf { it.isNotBlank() }
+  if (leftEntryId != null && rightEntryId != null) {
+    return leftEntryId == rightEntryId
+  }
+
+  return left.content == right.content
+    && left.createdAt == right.createdAt
+    && left.projectId == right.projectId
+}
+
 private data class VisibleCommandCenterTask(
   val position: Int,
   val taskId: String?,
@@ -542,13 +666,28 @@ class NanoflowWidgetRepository(private val context: Context) {
     val newUnreadCount = (resolveBlackBoxUnreadCount(cached) - unreadDelta)
       .coerceAtLeast(0)
       .coerceAtMost(newPendingCount)
+    val patchedBlackBox = cached.blackBox.copy(
+      pendingCount = newPendingCount,
+      unreadCount = newUnreadCount,
+      previews = newPreviews,
+      gatePreview = newGatePreview,
+    )
+    // 当本地缓存推不出下一条可执行的大门条目时，宁可保留旧卡片等权威刷新，
+    // 也不要把 UI 退化成只有“待处理沉积”的假死占位态。
+    if (!hasActionableOptimisticGateEntry(patchedBlackBox, privacyMode)) {
+      NanoflowWidgetTelemetry.info(
+        "widget_black_box_action_optimistic_skipped_unrenderable_gate",
+        mapOf(
+          "appWidgetId" to appWidgetId,
+          "entryId" to NanoflowWidgetTelemetry.redactId(entryId),
+          "action" to action.wireValue,
+          "pendingCount" to newPendingCount,
+        ),
+      )
+      return null
+    }
     val patched = cached.copy(
-      blackBox = cached.blackBox.copy(
-        pendingCount = newPendingCount,
-        unreadCount = newUnreadCount,
-        previews = newPreviews,
-        gatePreview = newGatePreview,
-      ),
+      blackBox = patchedBlackBox,
     )
     store.saveSummary(appWidgetId, patched)
     if (previousSelectedEntryId == entryId || previousSelectedEntryId.isNullOrBlank() || cached.blackBox.gatePreview.entryId == entryId) {
@@ -1769,53 +1908,7 @@ class NanoflowWidgetRepository(private val context: Context) {
     summary: WidgetSummaryResponse,
     privacyMode: Boolean,
   ): List<WidgetGatePreview> {
-    val entries = mutableListOf<WidgetGatePreview>()
-    val fallbackEntries = mutableListOf<WidgetGatePreview>()
-
-    fun appendIfRenderable(preview: WidgetGatePreview) {
-      if (!preview.valid) {
-        return
-      }
-
-      val hiddenByCooldown = isGateReadCoolingDown(preview)
-      val hiddenByMissingContent = !privacyMode && preview.content.isNullOrBlank()
-      val renderableIndex = entries.indexOfFirst { existing -> isSameGatePreview(existing, preview) }
-      if (renderableIndex >= 0) {
-        if (!hiddenByCooldown && !hiddenByMissingContent) {
-          entries[renderableIndex] = preferRicherGatePreview(entries[renderableIndex], preview)
-        }
-        return
-      }
-
-      val fallbackIndex = fallbackEntries.indexOfFirst { existing -> isSameGatePreview(existing, preview) }
-
-      if (hiddenByCooldown || hiddenByMissingContent) {
-        if (fallbackIndex >= 0) {
-          fallbackEntries[fallbackIndex] = preferRicherGatePreview(fallbackEntries[fallbackIndex], preview)
-        } else {
-          fallbackEntries.add(preview)
-        }
-        return
-      }
-
-      if (fallbackIndex >= 0) {
-        fallbackEntries.removeAt(fallbackIndex)
-      }
-      entries.add(preview)
-    }
-
-    summary.blackBox.previews.forEach(::appendIfRenderable)
-    appendIfRenderable(summary.blackBox.gatePreview)
-
-    if (entries.isNotEmpty() || resolveGateQueueCount(summary) <= 0) {
-      return entries
-    }
-
-    // 还有 pendingCount，但所有 preview 都因冷却/缺正文被过滤时，保留一条真实 preview 兜底，
-    // 避免 UI 落入“待处理沉积 + 无日期 + 无按钮”的假死状态。
-    val fallbackPreview = fallbackEntries.firstOrNull { !it.entryId.isNullOrBlank() }
-      ?: fallbackEntries.firstOrNull()
-    return fallbackPreview?.let(::listOf) ?: emptyList()
+    return resolveRenderableGateEntriesForBlackBox(summary.blackBox, privacyMode)
   }
 
   private fun preferRicherGatePreview(current: WidgetGatePreview, candidate: WidgetGatePreview): WidgetGatePreview {

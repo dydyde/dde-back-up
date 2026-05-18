@@ -1515,7 +1515,7 @@ export class BlackBoxSyncService {
       const batchIds = pendingIds.slice(offset, offset + batchSize);
       let query = client
         .from('black_box_entries')
-        .select('*');
+        .select(this.BLACKBOX_ENTRY_SELECT_COLUMNS);
       const eqQuery = this.getOptionalQueryMethod<[string, string]>(query, 'eq');
       if (!eqQuery) {
         this.logger.warn('黑匣子 pending 对账缺少 user_id 查询能力，跳过远端对账以避免跨用户误判', {
@@ -1603,13 +1603,20 @@ export class BlackBoxSyncService {
           return;
         }
 
-        const syncStatusRepairs: BlackBoxEntry[] = [];
+        const hydrationRepairs = new Map<string, BlackBoxEntry>();
         const visibleEntries = entries
           .filter(entry => entry.userId === visibleUserId)
           .map(entry => {
             const normalized = this.normalizeLocalOnlySyncStatus(entry, visibleUserId);
+            const inMemory = blackBoxEntriesMap().get(normalized.id);
+
+            if (this.shouldKeepInMemoryEntryDuringHydration(normalized, inMemory)) {
+              hydrationRepairs.set(inMemory.id, inMemory);
+              return inMemory;
+            }
+
             if (normalized !== entry) {
-              syncStatusRepairs.push(normalized);
+              hydrationRepairs.set(normalized.id, normalized);
             }
             return normalized;
           });
@@ -1634,8 +1641,8 @@ export class BlackBoxSyncService {
 
         // 更新状态
         setBlackBoxEntries(visibleEntries);
-        if (syncStatusRepairs.length > 0) {
-          this.persistLocalOnlySyncStatusRepairs(syncStatusRepairs)
+        if (hydrationRepairs.size > 0) {
+          this.persistLocalOnlySyncStatusRepairs(Array.from(hydrationRepairs.values()))
             .then(() => resolve(visibleEntries))
             .catch((error: unknown) => {
               this.logger.debug('黑匣子本地缓存同步状态修复流程失败，保留内存归一化结果', {
@@ -1702,6 +1709,29 @@ export class BlackBoxSyncService {
       ...entry,
       syncStatus: 'synced',
     };
+  }
+
+  private shouldKeepInMemoryEntryDuringHydration(
+    hydrated: BlackBoxEntry,
+    inMemory: BlackBoxEntry | undefined,
+  ): inMemory is BlackBoxEntry {
+    if (!inMemory) {
+      return false;
+    }
+
+    if (hydrated.syncStatus !== 'pending' || inMemory.syncStatus === 'pending') {
+      return false;
+    }
+
+    if (hydrated.userId !== inMemory.userId) {
+      return false;
+    }
+
+    if (this.hasSameInstant(hydrated.updatedAt, inMemory.updatedAt)) {
+      return true;
+    }
+
+    return !this.isEntryNewer(hydrated, inMemory);
   }
 
   private async persistLocalOnlySyncStatusRepairs(entries: BlackBoxEntry[]): Promise<void> {
@@ -2780,8 +2810,8 @@ export class BlackBoxSyncService {
     }
 
     let baseQuery = client
-        .from('black_box_entries')
-        .select('*');
+      .from('black_box_entries')
+      .select(this.BLACKBOX_ENTRY_SELECT_COLUMNS);
     const eqQuery = this.getOptionalQueryMethod<[string, string]>(baseQuery, 'eq');
     if (!eqQuery) {
       this.logger.warn('黑匣子增量拉取缺少 user_id 查询能力，跳过远端读取以避免跨用户误拉', {

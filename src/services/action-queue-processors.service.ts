@@ -20,6 +20,7 @@ import { AuthService } from './auth.service';
 import { LoggerService } from './logger.service';
 import { ConflictStorageService } from './conflict-storage.service';
 import { ToastService } from './toast.service';
+import type { QueueRetryError } from './action-queue-storage.service';
 import { Project } from '../models';
 import { AUTH_CONFIG } from '../config/auth.config';
 import { isPermanentFailureError } from '../utils/permanent-failure-error';
@@ -170,6 +171,66 @@ export class ActionQueueProcessorsService {
         projectPushed: result.projectPushed ?? null,
         failedTaskCount: result.failedTaskIds?.length ?? 0,
         failedConnectionCount: result.failedConnectionIds?.length ?? 0,
+      },
+    };
+  }
+
+  private buildAuthPendingRetryError(actionType: 'project:create' | 'project:update', projectId: string): QueueRetryError {
+    return {
+      code: 'SYNC_AUTH_PENDING',
+      message: '认证状态尚未就绪，请稍后重试',
+      details: {
+        reason: 'auth-pending',
+        actionType,
+        projectId,
+      },
+    };
+  }
+
+  private buildProjectSyncRetryError(
+    result: ProjectSyncResult,
+    actionType: 'project:create' | 'project:update',
+    projectId: string,
+  ): QueueRetryError {
+    return {
+      code: 'SYNC_PROJECT_WRITE_FAILED',
+      message: result.failureReason?.trim() || `${actionType} 未提供失败原因`,
+      details: {
+        reason: 'project-sync-failed',
+        actionType,
+        projectId,
+        projectPushed: result.projectPushed ?? null,
+        failedTaskIds: result.failedTaskIds ?? [],
+        failedConnectionIds: result.failedConnectionIds ?? [],
+        retryEnqueued: result.retryEnqueued ?? [],
+      },
+    };
+  }
+
+  private buildProjectProcessorRetryError(
+    error: unknown,
+    actionType: 'project:create' | 'project:update',
+    projectId: string,
+  ): QueueRetryError {
+    const maybeError = error && typeof error === 'object'
+      ? error as { code?: unknown; message?: unknown; details?: unknown }
+      : null;
+    const details = maybeError?.details && typeof maybeError.details === 'object'
+      ? maybeError.details as Record<string, unknown>
+      : {};
+
+    return {
+      code: typeof maybeError?.code === 'string' ? maybeError.code : undefined,
+      message: error instanceof Error
+        ? error.message
+        : typeof maybeError?.message === 'string'
+          ? maybeError.message
+          : String(error ?? `${actionType} 未提供失败原因`),
+      details: {
+        ...details,
+        reason: details['reason'] ?? 'project-processor-failed',
+        actionType,
+        projectId,
       },
     };
   }
@@ -408,9 +469,12 @@ export class ActionQueueProcessorsService {
     // 项目更新
     this.actionQueue.registerProcessor('project:update', async (action) => {
       const userId = this.authService.currentUserId();
-      if (!userId) { this.logger.warn('project:update 失败：用户未登录'); return false; }
-      
       const payload = action.payload as ProjectPayload;
+      if (!userId) {
+        this.logger.warn('project:update 延后：用户认证状态尚未就绪');
+        return this.actionQueue.deferRetry(this.buildAuthPendingRetryError('project:update', payload.project.id));
+      }
+
       const mutationContext = this.captureProjectMutationContext(userId, payload.project.id, 'project:update');
       if (this.shouldStopProjectMutation(action, userId, payload, 'update')) {
         return true;
@@ -430,7 +494,13 @@ export class ActionQueueProcessorsService {
           return true;
         }
         if (staleness === 'queue-view-stale') {
-          return result.success || result.conflict === true || failureTransferred || result.terminal === true;
+          if (result.success || result.conflict === true || failureTransferred || result.terminal === true) {
+            return true;
+          }
+
+          return this.actionQueue.failRetry(
+            this.buildProjectSyncRetryError(result, 'project:update', payload.project.id),
+          );
         }
         if (result.success && result.newVersion !== undefined) {
           this.projectState.updateProjects(ps => ps.map(p =>
@@ -489,18 +559,26 @@ export class ActionQueueProcessorsService {
           });
           return true;
         }
-        throw new Error(result.failureReason ?? 'project:update 未提供失败原因');
+        this.logger.warn('project:update 同步未完成，保留 ActionQueue 重试', {
+          projectId: payload.project.id,
+          failureReason: result.failureReason,
+          failedTaskIds: result.failedTaskIds,
+          failedConnectionIds: result.failedConnectionIds,
+          retryEnqueued: result.retryEnqueued,
+        });
+        return this.actionQueue.failRetry(
+          this.buildProjectSyncRetryError(result, 'project:update', payload.project.id),
+        );
       } catch (error) {
         const staleness = this.getProjectMutationStaleness(mutationContext);
         if (staleness === 'project-view-stale') {
           this.actionQueue.markActionResolvedWithoutRemote(action.id);
           return true;
         }
-        if (staleness === 'queue-view-stale') {
-          return false;
-        }
-        this.logger.error('project:update 异常', { error, projectId: payload.project.id });
-        return false;
+        this.logProcessorFailure('project:update', error, { projectId: payload.project.id });
+        return this.actionQueue.failRetry(
+          this.buildProjectProcessorRetryError(error, 'project:update', payload.project.id),
+        );
       }
     });
 
@@ -536,9 +614,12 @@ export class ActionQueueProcessorsService {
     // 项目创建
     this.actionQueue.registerProcessor('project:create', async (action) => {
       const userId = this.authService.currentUserId();
-      if (!userId) { this.logger.warn('project:create 失败：用户未登录'); return false; }
-      
       const payload = action.payload as ProjectPayload;
+      if (!userId) {
+        this.logger.warn('project:create 延后：用户认证状态尚未就绪');
+        return this.actionQueue.deferRetry(this.buildAuthPendingRetryError('project:create', payload.project.id));
+      }
+
       const mutationContext = this.captureProjectMutationContext(userId, payload.project.id, 'project:create');
       if (this.shouldStopProjectMutation(action, userId, payload, 'create')) {
         return true;
@@ -558,7 +639,13 @@ export class ActionQueueProcessorsService {
           return true;
         }
         if (staleness === 'queue-view-stale') {
-          return result.success || result.conflict === true || failureTransferred || result.terminal === true;
+          if (result.success || result.conflict === true || failureTransferred || result.terminal === true) {
+            return true;
+          }
+
+          return this.actionQueue.failRetry(
+            this.buildProjectSyncRetryError(result, 'project:create', payload.project.id),
+          );
         }
         if (result.success && result.newVersion !== undefined) {
           this.projectState.updateProjects(ps => ps.map(p =>
@@ -615,18 +702,26 @@ export class ActionQueueProcessorsService {
           });
           return true;
         }
-        throw new Error(result.failureReason ?? 'project:create 未提供失败原因');
+        this.logger.warn('project:create 同步未完成，保留 ActionQueue 重试', {
+          projectId: payload.project.id,
+          failureReason: result.failureReason,
+          failedTaskIds: result.failedTaskIds,
+          failedConnectionIds: result.failedConnectionIds,
+          retryEnqueued: result.retryEnqueued,
+        });
+        return this.actionQueue.failRetry(
+          this.buildProjectSyncRetryError(result, 'project:create', payload.project.id),
+        );
       } catch (error) {
         const staleness = this.getProjectMutationStaleness(mutationContext);
         if (staleness === 'project-view-stale') {
           this.actionQueue.markActionResolvedWithoutRemote(action.id);
           return true;
         }
-        if (staleness === 'queue-view-stale') {
-          return false;
-        }
-        this.logger.error('project:create 异常', { error, projectId: payload.project.id });
-        return false;
+        this.logProcessorFailure('project:create', error, { projectId: payload.project.id });
+        return this.actionQueue.failRetry(
+          this.buildProjectProcessorRetryError(error, 'project:create', payload.project.id),
+        );
       }
     });
   }

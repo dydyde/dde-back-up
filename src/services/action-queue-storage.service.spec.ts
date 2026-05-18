@@ -655,6 +655,25 @@ describe('ActionQueueStorageService', () => {
       expect(service.hasDeadLetters()).toBe(false);
       expect(ctx.pendingActions().find(a => a.id === action.id)?.retryCount).toBe(LOCAL_QUEUE_CONFIG.MAX_RETRIES);
     });
+
+    it('should defer auth-pending errors without consuming retry budget', () => {
+      const action = createMockAction({ retryCount: LOCAL_QUEUE_CONFIG.MAX_RETRIES });
+      ctx.pendingActions.set([action]);
+      const scheduleRetrySpy = vi.spyOn(service, 'scheduleRetry');
+
+      const result = service.handleRetry(action, {
+        code: 'SYNC_AUTH_PENDING',
+        message: '认证状态尚未就绪，请稍后重试',
+        details: {
+          reason: 'auth-pending',
+        },
+      } as never);
+
+      expect(result).toBe('retry');
+      expect(scheduleRetrySpy).toHaveBeenCalled();
+      expect(service.hasDeadLetters()).toBe(false);
+      expect(ctx.pendingActions().find(a => a.id === action.id)?.retryCount).toBe(LOCAL_QUEUE_CONFIG.MAX_RETRIES);
+    });
   });
 
   // ==================== 辅助方法 ====================

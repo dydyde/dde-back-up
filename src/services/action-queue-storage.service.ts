@@ -17,7 +17,7 @@ import { ToastService } from './toast.service';
 import { SentryLazyLoaderService } from './sentry-lazy-loader.service';
 import { NetworkAwarenessService } from './network-awareness.service';
 import { AuthService } from './auth.service';
-import { QueueBackupService, type LegacyQueueReviewItem } from './queue-backup.service';
+import { QueueBackupService } from './queue-backup.service';
 import { DeadLetterItem, QueuedAction, TaskDeletePayload, TaskPayload } from './action-queue.types';
 import {
   getRemainingBrowserNetworkResumeDelayMs,
@@ -855,7 +855,11 @@ export class ActionQueueStorageService {
   classifyError(error: string | QueueRetryError): 'network' | 'timeout' | 'permission' | 'business' | 'deferred' | 'unknown' {
     const normalizedError = this.normalizeRetryError(error);
 
-    if (this.isBrowserSuspensionError(normalizedError) || this.isPartialRetryHandoffError(normalizedError)) {
+    if (
+      this.isBrowserSuspensionError(normalizedError)
+      || this.isPartialRetryHandoffError(normalizedError)
+      || this.isAuthPendingRetryError(normalizedError)
+    ) {
       return 'deferred';
     }
 
@@ -937,6 +941,11 @@ export class ActionQueueStorageService {
       || error.code === 'SYNC_RETRY_HANDOFF_PENDING';
   }
 
+  private isAuthPendingRetryError(error: QueueRetryError): boolean {
+    return error.details?.['reason'] === 'auth-pending'
+      || error.code === 'SYNC_AUTH_PENDING';
+  }
+
   private resolveDeferredRetryDelay(error: QueueRetryError): number {
     if (this.isPartialRetryHandoffError(error)) {
       const requestedDelay = error.details?.['retryAfterMs'];
@@ -947,13 +956,24 @@ export class ActionQueueStorageService {
       return QUEUE_CONFIG.RETRY_BASE_DELAY;
     }
 
+    // auth 认证过渡期使用固定基础间隔，避免降级到浏览器挂起延迟计算产生 100ms 快速重试噪声
+    if (this.isAuthPendingRetryError(error)) {
+      return QUEUE_CONFIG.RETRY_BASE_DELAY;
+    }
+
     return this.resolveBrowserSuspensionDelay(error);
   }
 
-  private describeDeferredRetryReason(error: QueueRetryError): 'browser-network-suspended' | 'partial-retry-handoff' {
-    return this.isPartialRetryHandoffError(error)
-      ? 'partial-retry-handoff'
-      : 'browser-network-suspended';
+  private describeDeferredRetryReason(error: QueueRetryError): 'browser-network-suspended' | 'partial-retry-handoff' | 'auth-pending' {
+    if (this.isPartialRetryHandoffError(error)) {
+      return 'partial-retry-handoff';
+    }
+
+    if (this.isAuthPendingRetryError(error)) {
+      return 'auth-pending';
+    }
+
+    return 'browser-network-suspended';
   }
 
   private resolveBrowserSuspensionDelay(error?: QueueRetryError): number {
