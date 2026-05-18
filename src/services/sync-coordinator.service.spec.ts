@@ -872,6 +872,87 @@ describe('持久化状态管理', () => {
       });
     });
 
+    it('partialRetryHandoff 仍有 project ActionQueue 回放兜底时不应升级为风险告警', async () => {
+      const project = createTestProject({ id: 'proj-partial-handoff-covered' });
+      mockProjectStateService.activeProject.set(project);
+      mockProjectStateService.projects.set([project]);
+      mockActionQueueService.getPendingActionsForProject.mockReturnValueOnce([
+        {
+          entityType: 'project',
+          entityId: 'proj-partial-handoff-covered',
+          type: 'update',
+        },
+      ]);
+      mockSyncService.saveProjectSmart.mockResolvedValueOnce({
+        success: false,
+        failedConnectionIds: ['connection-risk'],
+        retryEnqueued: [],
+        partialRetryHandoff: true,
+        failureReason: 'project batch sync partially delegated; some failures did not enter retry queue',
+      });
+      mockLoggerCategory.info.mockClear();
+      mockLoggerCategory.warn.mockClear();
+      mockToastService.warning.mockClear();
+
+      service.markLocalChanges('content');
+      service.flushPendingPersist();
+
+      await vi.waitFor(() => {
+        expect(mockSyncService.saveProjectSmart).toHaveBeenCalledTimes(1);
+      });
+
+      expect(mockLoggerCategory.info).toHaveBeenCalledWith(
+        '远端未完全确认，未入重试队列的项仍由 ActionQueue 保底回放',
+        expect.objectContaining({
+          projectId: 'proj-partial-handoff-covered',
+          uncoveredConnectionCount: 1,
+        }),
+      );
+      expect(mockLoggerCategory.warn).not.toHaveBeenCalledWith(
+        '远端未完全确认，存在未入重试队列的风险项',
+        expect.anything(),
+      );
+      expect(mockToastService.warning).not.toHaveBeenCalledWith(
+        '同步未完成',
+        expect.any(String),
+      );
+    });
+
+    it('partialRetryHandoff 缺少 project ActionQueue 回放兜底时仍应保留风险告警', async () => {
+      const project = createTestProject({ id: 'proj-partial-handoff-uncovered' });
+      mockProjectStateService.activeProject.set(project);
+      mockProjectStateService.projects.set([project]);
+      mockActionQueueService.getPendingActionsForProject.mockReturnValueOnce([]);
+      mockSyncService.saveProjectSmart.mockResolvedValueOnce({
+        success: false,
+        failedConnectionIds: ['connection-risk'],
+        retryEnqueued: [],
+        partialRetryHandoff: true,
+        failureReason: 'project batch sync partially delegated; some failures did not enter retry queue',
+      });
+      mockLoggerCategory.warn.mockClear();
+      mockToastService.warning.mockClear();
+
+      service.markLocalChanges('content');
+      service.flushPendingPersist();
+
+      await vi.waitFor(() => {
+        expect(mockSyncService.saveProjectSmart).toHaveBeenCalledTimes(1);
+      });
+
+      expect(mockLoggerCategory.warn).toHaveBeenCalledWith(
+        '远端未完全确认，存在未入重试队列的风险项',
+        expect.objectContaining({
+          projectId: 'proj-partial-handoff-uncovered',
+          uncoveredConnectionCount: 1,
+        }),
+      );
+      expect(mockToastService.warning).toHaveBeenCalledWith(
+        '同步未完成',
+        expect.stringContaining('连接失败 1 项'),
+      );
+    });
+
     it('flushPendingPersistToCloud 离线时应只保留本地快照', async () => {
       const project = createTestProject({ id: 'proj-offline-flush' });
       mockProjectStateService.activeProject.set(project);

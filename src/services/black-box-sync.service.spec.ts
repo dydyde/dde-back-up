@@ -837,7 +837,12 @@ describe('BlackBoxSyncService', () => {
     supabase.clientAsync.mockResolvedValue({ from });
 
     await expect(service.pushToServer(olderEntry)).resolves.toBe(true);
-    expect(saveToLocalSpy).not.toHaveBeenCalled();
+    // 【2026-05-18 根因修复·阶段 2】更晚的内存快照必须被持久化到 IDB，否则新会话冷启动
+    // 时仍会看到旧的 olderEntry 并继续把"待同步"标签挂在 UI 上。
+    // 但绝对不能用 olderEntry 覆盖 IDB——那才是这个测试要守住的本质不变量。
+    expect(saveToLocalSpy).not.toHaveBeenCalledWith(expect.objectContaining({
+      updatedAt: olderEntry.updatedAt,
+    }));
     expect(blackBoxEntriesMap().get(entryId)).toEqual(expect.objectContaining({
       updatedAt: newerEntry.updatedAt,
       isCompleted: true,

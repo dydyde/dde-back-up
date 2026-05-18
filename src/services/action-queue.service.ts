@@ -39,6 +39,13 @@ export type {
   DeadLetterItem
 } from './action-queue.types';
 
+export type DeferredActionQueueRetry = {
+  outcome: 'defer-retry';
+  error: QueueRetryError;
+};
+
+export type ActionQueueProcessorResult = boolean | DeferredActionQueueRetry;
+
 /**
  * 离线操作队列服务
  * 负责存储失败的变更操作，网络恢复后自动重试
@@ -101,7 +108,7 @@ export class ActionQueueService {
   }
   
   /** 处理器函数映射 */
-  private processors: Map<string, (action: QueuedAction) => Promise<boolean>> = new Map();
+  private processors: Map<string, (action: QueuedAction) => Promise<ActionQueueProcessorResult>> = new Map();
   
   /** 队列处理生命周期回调 */
   private onQueueProcessStart: (() => void) | null = null;
@@ -163,9 +170,16 @@ export class ActionQueueService {
   /**
    * 注册操作处理器
    */
-  registerProcessor(type: string, processor: (action: QueuedAction) => Promise<boolean>) {
+  registerProcessor(type: string, processor: (action: QueuedAction) => Promise<ActionQueueProcessorResult>) {
     this.processors.set(type, processor);
     this.logger.debug('处理器已注册', { type });
+  }
+
+  deferRetry(error: QueueRetryError): DeferredActionQueueRetry {
+    return {
+      outcome: 'defer-retry',
+      error,
+    };
   }
   
   /**
@@ -184,6 +198,10 @@ export class ActionQueueService {
    */
   getRegisteredProcessorTypes(): string[] {
     return Array.from(this.processors.keys());
+  }
+
+  private isDeferredProcessorResult(result: ActionQueueProcessorResult): result is DeferredActionQueueRetry {
+    return typeof result === 'object' && result !== null && result.outcome === 'defer-retry';
   }
   
   /** 注册失败通知回调 */
@@ -926,7 +944,11 @@ export class ActionQueueService {
         
         try {
           this.actionProcessTokenById.set(action.id, processLifecycleToken);
-          const success = await processor(action);
+          const processResult = await processor(action);
+          const success = processResult === true;
+          const retryError = this.isDeferredProcessorResult(processResult)
+            ? processResult.error
+            : { message: 'Operation returned false' };
 
           if (this.isStaleProcess(processGeneration)) {
             if (success) {
@@ -936,7 +958,7 @@ export class ActionQueueService {
             } else {
               await this.settleStaleActionResult(processGeneration, processOwnerUserId, action, {
                 success: false,
-                error: { message: 'Operation returned false' },
+                error: retryError,
               });
             }
             this.logger.debug('旧账号队列项处理结果已失效，已转入旧 owner 收口流程', {
@@ -956,7 +978,7 @@ export class ActionQueueService {
             this.dequeue(action.id);
             processed++;
           } else {
-            const result = this.storage.handleRetry(action, 'Operation returned false');
+            const result = this.storage.handleRetry(action, retryError);
             if (result === 'dead-letter') {
               movedToDeadLetter++;
               if (action.type === 'create') {

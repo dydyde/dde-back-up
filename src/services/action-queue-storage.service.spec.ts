@@ -635,6 +635,26 @@ describe('ActionQueueStorageService', () => {
       expect(service.hasDeadLetters()).toBe(false);
       expect(ctx.pendingActions().find(a => a.id === action.id)?.retryCount).toBe(LOCAL_QUEUE_CONFIG.MAX_RETRIES);
     });
+
+    it('should defer partial retry handoff errors without consuming retry budget', () => {
+      const action = createMockAction({ retryCount: LOCAL_QUEUE_CONFIG.MAX_RETRIES });
+      ctx.pendingActions.set([action]);
+      const scheduleRetrySpy = vi.spyOn(service, 'scheduleRetry');
+
+      const result = service.handleRetry(action, {
+        code: 'SYNC_RETRY_HANDOFF_PENDING',
+        message: 'project batch sync partially delegated; some failures did not enter retry queue',
+        details: {
+          reason: 'partial-retry-handoff',
+          retryAfterMs: 432,
+        },
+      } as never);
+
+      expect(result).toBe('retry');
+      expect(scheduleRetrySpy).toHaveBeenCalledWith(432);
+      expect(service.hasDeadLetters()).toBe(false);
+      expect(ctx.pendingActions().find(a => a.id === action.id)?.retryCount).toBe(LOCAL_QUEUE_CONFIG.MAX_RETRIES);
+    });
   });
 
   // ==================== 辅助方法 ====================

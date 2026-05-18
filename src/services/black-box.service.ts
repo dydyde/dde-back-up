@@ -75,6 +75,11 @@ export class BlackBoxService {
       localCreatedAt: now,
       snoozeCount: 0,
       ...safeData,
+      // 【2026-05-18 根因修复·阶段 1】focusMeta 在本地与远端必须有同一种"空"形态（null），
+      // 否则 hasEquivalentEntryState 在后续 push/pull 等价判定时会把"业务字段相同、仅
+      // 同步元数据不同"误判为不等价，触发 upgrade-non-equivalent 分支保留 pending，
+      // 表现为黑匣子条目永远显示 "⏳ 待同步"。
+      focusMeta: safeData.focusMeta ?? null,
       syncStatus: this.resolveSyncStatusForMode(userId),
     };
     
@@ -164,6 +169,9 @@ export class BlackBoxService {
     const updated: BlackBoxEntry = {
       ...entry,
       ...safeUpdates,
+      // 【2026-05-18 根因修复·阶段 1】update 同样归一化 focusMeta（即便基线 entry
+      // 是补丁前持久化的旧数据，也确保后续等价判定不会因 undefined vs null 漂移）。
+      focusMeta: (safeUpdates.focusMeta !== undefined ? safeUpdates.focusMeta : entry.focusMeta) ?? null,
       updatedAt: new Date().toISOString(),
       syncStatus: this.resolveSyncStatusForMode(entry.userId),
     };

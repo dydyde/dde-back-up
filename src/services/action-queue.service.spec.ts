@@ -885,6 +885,33 @@ describe('ActionQueueService', () => {
       expect(service.queueSize()).toBe(1);
       expect(service.pendingActions()[0]?.retryCount).toBe(LOCAL_QUEUE_CONFIG.MAX_RETRIES);
     });
+
+    it('partialRetryHandoff defer result 不应消耗 retry budget 或进入死信', async () => {
+      const processor = vi.fn().mockResolvedValue(service.deferRetry({
+        code: 'SYNC_RETRY_HANDOFF_PENDING',
+        message: 'project batch sync partially delegated; some failures did not enter retry queue',
+        details: {
+          reason: 'partial-retry-handoff',
+          retryAfterMs: 432,
+        },
+      }));
+      service.registerProcessor('project:update', processor);
+
+      setNetworkStatus(false);
+      const actionId = service.enqueue(createTestProjectAction());
+      service.pendingActions.update(queue => queue.map(action =>
+        action.id === actionId
+          ? { ...action, retryCount: LOCAL_QUEUE_CONFIG.MAX_RETRIES }
+          : action
+      ));
+
+      setNetworkStatus(true);
+      await service.processQueue();
+
+      expect(service.hasDeadLetters()).toBe(false);
+      expect(service.queueSize()).toBe(1);
+      expect(service.pendingActions()[0]?.retryCount).toBe(LOCAL_QUEUE_CONFIG.MAX_RETRIES);
+    });
     
     it('重试成功后应该从队列移除', async () => {
       // 使用 fake timers 加速重试延迟测试

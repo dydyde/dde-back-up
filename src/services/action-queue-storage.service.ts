@@ -786,7 +786,8 @@ export class ActionQueueStorageService {
     }
 
     if (errorType === 'deferred') {
-      const delay = this.resolveBrowserSuspensionDelay(normalizedError);
+      const delay = this.resolveDeferredRetryDelay(normalizedError);
+      const deferredReason = this.describeDeferredRetryReason(normalizedError);
       this.ctx.pendingActions.update(queue =>
         queue.map(a => a.id === action.id
           ? { ...a, lastError: errorMessage, errorType }
@@ -795,11 +796,12 @@ export class ActionQueueStorageService {
       );
       this.saveQueueToStorage();
 
-      this.logger.info('浏览器网络挂起，延后队列重试且不消耗 retry budget', {
+      this.logger.info('延后队列重试且不消耗 retry budget', {
         actionId: action.id,
         type: action.type,
         entityType: action.entityType,
         entityId: action.entityId,
+        deferredReason,
         delay,
       });
       this.scheduleRetry(delay);
@@ -853,7 +855,7 @@ export class ActionQueueStorageService {
   classifyError(error: string | QueueRetryError): 'network' | 'timeout' | 'permission' | 'business' | 'deferred' | 'unknown' {
     const normalizedError = this.normalizeRetryError(error);
 
-    if (this.isBrowserSuspensionError(normalizedError)) {
+    if (this.isBrowserSuspensionError(normalizedError) || this.isPartialRetryHandoffError(normalizedError)) {
       return 'deferred';
     }
 
@@ -928,6 +930,30 @@ export class ActionQueueStorageService {
       || msg.includes('network io suspended')
       || (error.code === 'SYNC_OFFLINE' && error.message.includes('浏览器恢复连接中'))
       || msg.includes('resuming connection');
+  }
+
+  private isPartialRetryHandoffError(error: QueueRetryError): boolean {
+    return error.details?.['reason'] === 'partial-retry-handoff'
+      || error.code === 'SYNC_RETRY_HANDOFF_PENDING';
+  }
+
+  private resolveDeferredRetryDelay(error: QueueRetryError): number {
+    if (this.isPartialRetryHandoffError(error)) {
+      const requestedDelay = error.details?.['retryAfterMs'];
+      if (typeof requestedDelay === 'number' && Number.isFinite(requestedDelay)) {
+        return Math.max(0, requestedDelay);
+      }
+
+      return QUEUE_CONFIG.RETRY_BASE_DELAY;
+    }
+
+    return this.resolveBrowserSuspensionDelay(error);
+  }
+
+  private describeDeferredRetryReason(error: QueueRetryError): 'browser-network-suspended' | 'partial-retry-handoff' {
+    return this.isPartialRetryHandoffError(error)
+      ? 'partial-retry-handoff'
+      : 'browser-network-suspended';
   }
 
   private resolveBrowserSuspensionDelay(error?: QueueRetryError): number {

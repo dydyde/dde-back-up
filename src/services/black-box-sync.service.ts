@@ -1152,11 +1152,58 @@ export class BlackBoxSyncService {
    *
    * 没有此方法时，"latestLocal 在 push 进行期间被并发更新成不等价的更晚快照"会变成孤儿，
    * 导致 UI 长期显示 待同步。
+   *
+   * 【2026-05-18 根因修复·阶段 2】仅入队不足以保证内存/IDB/signal store 三方一致。如果
+   * latestLocal 来源是 `pushToServer` 内部 preflight 合并的临时对象（pendingMerged），
+   * 该对象既未写入 IDB 也未触达 updateBlackBoxEntry，此时只入队 RetryQueue 会让 UI 看到的
+   * entry 仍是旧 pending 状态。新增 saveToLocal + updateBlackBoxEntry 兜底，确保 UI 与
+   * RetryQueue 看到的 entry 完全一致，避免出现"队列在跑、UI 一直显示 待同步"的错位。
+   *
+   * 【2026-05-18 根因修复·阶段 0】对短时间内反复进入该方法的同一 entry 做埋点：30s 窗口内
+   * 重复次数 ≥3 时升级为 warn，便于在生产排查"修复后仍出现 stuck pending"的回归。
    */
+  private readonly ensureLatestLocalReentry = new Map<string, { count: number; firstAt: number; lastReason: string }>();
+  private static readonly ENSURE_LATEST_LOCAL_REENTRY_WINDOW_MS = 30_000;
+  private static readonly ENSURE_LATEST_LOCAL_REENTRY_WARN_THRESHOLD = 3;
+
   private ensureLatestLocalEnqueued(
     latestLocal: BlackBoxEntry,
     reason: 'merge-monotonic' | 'upgrade-non-equivalent',
   ): void {
+    // 先把 latestLocal 写入 IDB + signal store，避免临时对象在 RetryQueue 兜底前
+    // 与 UI 视图脱节（详见上方注释）。失败时只 warn 不抛出，重试由队列承接。
+    void this.saveToLocal(latestLocal).catch(err => {
+      this.logger.warn('黑匣子 ensureLatestLocalEnqueued 持久化 latestLocal 失败，等待 RetryQueue 兜底', {
+        entryId: latestLocal.id,
+        reason,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
+    const currentInMemory = blackBoxEntriesMap().get(latestLocal.id);
+    if (!currentInMemory || this.isEntryNewer(latestLocal, currentInMemory) || currentInMemory.syncStatus !== latestLocal.syncStatus) {
+      updateBlackBoxEntry(latestLocal);
+    }
+
+    // 重入计数（阶段 0 取证）
+    const now = Date.now();
+    const existing = this.ensureLatestLocalReentry.get(latestLocal.id);
+    if (!existing || now - existing.firstAt > BlackBoxSyncService.ENSURE_LATEST_LOCAL_REENTRY_WINDOW_MS) {
+      this.ensureLatestLocalReentry.set(latestLocal.id, { count: 1, firstAt: now, lastReason: reason });
+    } else {
+      existing.count += 1;
+      existing.lastReason = reason;
+      if (existing.count >= BlackBoxSyncService.ENSURE_LATEST_LOCAL_REENTRY_WARN_THRESHOLD) {
+        this.logger.warn('黑匣子条目在短时间内被反复保留 pending，疑似收敛失败', {
+          entryId: latestLocal.id,
+          windowMs: BlackBoxSyncService.ENSURE_LATEST_LOCAL_REENTRY_WINDOW_MS,
+          reentryCount: existing.count,
+          lastReason: existing.lastReason,
+          syncStatus: latestLocal.syncStatus,
+          updatedAt: latestLocal.updatedAt,
+        });
+      }
+    }
+
     if (this.retryQueueHandler) {
       this.retryQueueHandler(latestLocal);
       return;
@@ -1351,33 +1398,74 @@ export class BlackBoxSyncService {
     return leftMs === rightMs;
   }
 
+  /**
+   * 把任意来源的 entry 归一化成等价比较友好的形态：
+   * - focusMeta 的 `null` 与 `undefined` 统一成 `null`，并对内部可空字段递归归一；
+   * - `snoozeUntil` / `snoozeCount` / `projectId` / `deletedAt` 的 `undefined` 统一成默认值；
+   *
+   * 仅用于等价判定，不会回写到 IDB 或 signal store。
+   *
+   * 【2026-05-18 根因修复·阶段 1】黑匣子条目在多个写入路径（BlackBoxService.create / update、
+   * mapRowToEntry、saveToLocal 等）可能出现 focusMeta=undefined vs null、snoozeCount=undefined
+   * vs 0 等"形态漂移"。hasEquivalentEntryState 未归一时，会把"业务字段实际相等、仅同步元数据
+   * 不同"的快照判定为不等价，使 upgradeEquivalentLatestLocalToSynced / mergeWithLocal 进入
+   * "保留 pending + 重新入队"的循环，UI 表现为黑匣子条目长期 ⏳ 待同步。
+   */
+  private normalizeEntryForEquivalence(entry: BlackBoxEntry): BlackBoxEntry {
+    const rawFocusMeta = entry.focusMeta ?? null;
+    const focusMeta = rawFocusMeta
+      ? {
+          source: rawFocusMeta.source,
+          sessionId: rawFocusMeta.sessionId,
+          title: rawFocusMeta.title,
+          detail: rawFocusMeta.detail ?? null,
+          lane: rawFocusMeta.lane,
+          expectedMinutes: rawFocusMeta.expectedMinutes ?? null,
+          waitMinutes: rawFocusMeta.waitMinutes ?? null,
+          cognitiveLoad: rawFocusMeta.cognitiveLoad,
+          dockEntryId: rawFocusMeta.dockEntryId,
+        }
+      : null;
+
+    return {
+      ...entry,
+      projectId: entry.projectId ?? null,
+      snoozeUntil: entry.snoozeUntil ?? undefined,
+      snoozeCount: entry.snoozeCount ?? 0,
+      deletedAt: entry.deletedAt ?? null,
+      focusMeta,
+    };
+  }
+
   private hasEquivalentEntryState(local: BlackBoxEntry, remote: BlackBoxEntry): boolean {
-    const localFocusMeta = local.focusMeta ?? null;
-    const remoteFocusMeta = remote.focusMeta ?? null;
+    const normalizedLocal = this.normalizeEntryForEquivalence(local);
+    const normalizedRemote = this.normalizeEntryForEquivalence(remote);
+    const localFocusMeta = normalizedLocal.focusMeta;
+    const remoteFocusMeta = normalizedRemote.focusMeta;
     const focusMetaMatches = !localFocusMeta || !remoteFocusMeta
       ? localFocusMeta === remoteFocusMeta
       : localFocusMeta.source === remoteFocusMeta.source
         && localFocusMeta.sessionId === remoteFocusMeta.sessionId
         && localFocusMeta.title === remoteFocusMeta.title
-        && (localFocusMeta.detail ?? null) === (remoteFocusMeta.detail ?? null)
+        && localFocusMeta.detail === remoteFocusMeta.detail
         && localFocusMeta.lane === remoteFocusMeta.lane
-        && (localFocusMeta.expectedMinutes ?? null) === (remoteFocusMeta.expectedMinutes ?? null)
-        && (localFocusMeta.waitMinutes ?? null) === (remoteFocusMeta.waitMinutes ?? null)
+        && localFocusMeta.expectedMinutes === remoteFocusMeta.expectedMinutes
+        && localFocusMeta.waitMinutes === remoteFocusMeta.waitMinutes
         && localFocusMeta.cognitiveLoad === remoteFocusMeta.cognitiveLoad
         && localFocusMeta.dockEntryId === remoteFocusMeta.dockEntryId;
 
-    return local.id === remote.id
-      && (local.projectId ?? null) === (remote.projectId ?? null)
-      && local.userId === remote.userId
-      && local.content === remote.content
-      && local.date === remote.date
-      && this.hasSameInstant(local.createdAt, remote.createdAt)
-      && local.isRead === remote.isRead
-      && local.isCompleted === remote.isCompleted
-      && local.isArchived === remote.isArchived
-      && (local.snoozeUntil ?? null) === (remote.snoozeUntil ?? null)
-      && (local.snoozeCount ?? 0) === (remote.snoozeCount ?? 0)
-      && this.hasSameInstant(local.deletedAt, remote.deletedAt)
+    return normalizedLocal.id === normalizedRemote.id
+      && normalizedLocal.projectId === normalizedRemote.projectId
+      && normalizedLocal.userId === normalizedRemote.userId
+      && normalizedLocal.content === normalizedRemote.content
+      && normalizedLocal.date === normalizedRemote.date
+      && this.hasSameInstant(normalizedLocal.createdAt, normalizedRemote.createdAt)
+      && normalizedLocal.isRead === normalizedRemote.isRead
+      && normalizedLocal.isCompleted === normalizedRemote.isCompleted
+      && normalizedLocal.isArchived === normalizedRemote.isArchived
+      && (normalizedLocal.snoozeUntil ?? null) === (normalizedRemote.snoozeUntil ?? null)
+      && normalizedLocal.snoozeCount === normalizedRemote.snoozeCount
+      && this.hasSameInstant(normalizedLocal.deletedAt, normalizedRemote.deletedAt)
       && focusMetaMatches;
   }
 
@@ -2839,6 +2927,36 @@ export class BlackBoxSyncService {
           // 保持 pending 状态，后续 push 会带着合并后的真值再次与服务端对齐
           syncStatus: 'pending',
         };
+
+        // 【2026-05-18 根因修复·阶段 3】若 merged 与远端业务字段已经完全等价（即本地 pending
+        // 的差异点本就只是被远端单调合并补齐的字段，content / snoozeUntil / isArchived /
+        // focusMeta 等都与远端一致），且远端 updatedAt 已经追上或晚于 merged，说明
+        // 服务端真实状态就是 merged：就不要再保留 pending，否则只会让 push → 再次走到
+        // 同一个 mergeWithLocal 分支 → 再保留 pending → 死循环。直接升级 synced，
+        // 采纳远端 updatedAt 作为权威时间戳，避免 UI 长期"待同步"。
+        // ⚠️ 注意：若本地 updatedAt 比远端更晚，即便业务字段等价也不能升级 synced——
+        //    服务端尚未感知本地的更晚时间戳，强制 synced 会让 LWW 判定丢失本地写入，
+        //    必须继续走下面的 pending + enqueue 分支把本地权威时间戳推上去。
+        if (
+          this.hasEquivalentEntryState(merged, remote)
+          && !this.clockSync.isLocalNewer(merged.updatedAt, remote.updatedAt)
+        ) {
+          const converged: BlackBoxEntry = {
+            ...merged,
+            updatedAt: remote.updatedAt,
+            syncStatus: 'synced',
+          };
+          this.logger.info('黑匣子 pull 合并：单调真值补齐后已与远端等价且远端时间戳不晚于本地，直接升级 synced 以避免死循环', {
+            entryId: remote.id,
+            convergedUpdatedAt: remote.updatedAt,
+            localUpdatedAt: local.updatedAt,
+            remoteUpdatedAt: remote.updatedAt,
+          });
+          await this.saveToLocal(converged);
+          updateBlackBoxEntry(converged);
+          return;
+        }
+
         this.logger.warn('黑匣子 pull 合并：本地 pending 胜出 LWW，但合并远端单调真值以免大门继续展示已完成条目', {
           entryId: remote.id,
           localUpdatedAt: local.updatedAt,

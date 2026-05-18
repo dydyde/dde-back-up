@@ -7,7 +7,7 @@
 import { Injector, runInInjectionContext } from '@angular/core';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { ActionQueueProcessorsService } from './action-queue-processors.service';
-import { ActionQueueService } from './action-queue.service';
+import { ActionQueueService, type ActionQueueProcessorResult } from './action-queue.service';
 import { QueuedAction as QueuedActionModel } from './action-queue.types';
 import { RetryQueueService, SimpleSyncService } from '../core-bridge';
 import { ProjectStateService } from './project-state.service';
@@ -19,7 +19,7 @@ import { AUTH_CONFIG } from '../config/auth.config';
 import { PermanentFailureError } from '../utils/permanent-failure-error';
 
 type QueuedAction = Omit<Partial<QueuedActionModel>, 'payload'> & { payload: unknown };
-type RegisteredProcessor = (action: QueuedActionModel) => Promise<boolean>;
+type RegisteredProcessor = (action: QueuedActionModel) => Promise<ActionQueueProcessorResult>;
 type MockRetryQueueProjectItem = {
   type: 'project';
   data: { id: string; syncSource?: string; name?: string };
@@ -38,6 +38,7 @@ const mockActionQueueService = {
   markActionSyncedRemotely: vi.fn(),
   markActionResolvedWithoutRemote: vi.fn(),
   moveToDeadLetter: vi.fn(),
+  deferRetry: vi.fn((error) => ({ outcome: 'defer-retry', error })),
   discardActions: vi.fn(),
   settleProjectDeleteSuccessForOwner: vi.fn().mockResolvedValue(1),
   enqueueForOwner: vi.fn().mockResolvedValue('queued-owner-action'),
@@ -79,12 +80,12 @@ const mockToastService = { warning: vi.fn(), info: vi.fn(), error: vi.fn(), succ
 // ── Helpers ──────────────────────────────────────────────────
 
 /** Retrieve the handler registered for a given action type */
-function getProcessor(type: string): (action: QueuedAction) => Promise<boolean> {
+function getProcessor(type: string): (action: QueuedAction) => Promise<ActionQueueProcessorResult> {
   const call = mockActionQueueService.registerProcessor.mock.calls.find(
     (c: unknown[]) => c[0] === type,
   ) as [string, RegisteredProcessor] | undefined;
   if (!call) throw new Error(`No processor registered for "${type}"`);
-  return call[1] as unknown as (action: QueuedAction) => Promise<boolean>;
+  return call[1] as unknown as (action: QueuedAction) => Promise<ActionQueueProcessorResult>;
 }
 
 describe('ActionQueueProcessorsService', () => {
@@ -618,7 +619,7 @@ describe('ActionQueueProcessorsService', () => {
     expect(mockLoggerCategory.error).toHaveBeenCalled();
   });
 
-  it('project:update should log info (not error) and return false when partialRetryHandoff is set', async () => {
+  it('project:update should log info and defer retry without consuming queue failure budget when partialRetryHandoff is set', async () => {
     mockSyncService.saveProjectSmart.mockResolvedValueOnce({
       success: false,
       projectPushed: true,
@@ -637,7 +638,20 @@ describe('ActionQueueProcessorsService', () => {
       },
     } as QueuedAction);
 
-    expect(result).toBe(false);
+    expect(result).toEqual({
+      outcome: 'defer-retry',
+      error: expect.objectContaining({
+        code: 'SYNC_RETRY_HANDOFF_PENDING',
+        details: expect.objectContaining({
+          reason: 'partial-retry-handoff',
+          failedTaskCount: 2,
+          failedConnectionCount: 0,
+        }),
+      }),
+    });
+    expect(mockActionQueueService.deferRetry).toHaveBeenCalledWith(expect.objectContaining({
+      code: 'SYNC_RETRY_HANDOFF_PENDING',
+    }));
     expect(mockLoggerCategory.info).toHaveBeenCalledWith(
       'project:update 部分转交 RetryQueue，等待下一轮回放',
       expect.objectContaining({
@@ -1009,7 +1023,7 @@ describe('ActionQueueProcessorsService', () => {
     expect(result).toBe(false);
   });
 
-  it('project:create should log info (not error) and return false when partialRetryHandoff is set', async () => {
+  it('project:create should log info and defer retry without consuming queue failure budget when partialRetryHandoff is set', async () => {
     mockSyncService.saveProjectSmart.mockResolvedValueOnce({
       success: false,
       projectPushed: true,
@@ -1027,7 +1041,20 @@ describe('ActionQueueProcessorsService', () => {
       },
     } as QueuedAction);
 
-    expect(result).toBe(false);
+    expect(result).toEqual({
+      outcome: 'defer-retry',
+      error: expect.objectContaining({
+        code: 'SYNC_RETRY_HANDOFF_PENDING',
+        details: expect.objectContaining({
+          reason: 'partial-retry-handoff',
+          failedTaskCount: 2,
+          failedConnectionCount: 0,
+        }),
+      }),
+    });
+    expect(mockActionQueueService.deferRetry).toHaveBeenCalledWith(expect.objectContaining({
+      code: 'SYNC_RETRY_HANDOFF_PENDING',
+    }));
     expect(mockLoggerCategory.info).toHaveBeenCalledWith(
       'project:create 部分转交 RetryQueue，等待下一轮回放',
       expect.objectContaining({

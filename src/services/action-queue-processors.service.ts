@@ -157,6 +157,23 @@ export class ActionQueueProcessorsService {
     return queueError;
   }
 
+  private buildPartialRetryHandoffError(result: ProjectSyncResult): {
+    code: string;
+    message: string;
+    details: Record<string, unknown>;
+  } {
+    return {
+      code: 'SYNC_RETRY_HANDOFF_PENDING',
+      message: result.failureReason ?? '项目部分同步结果仍需由 ActionQueue 下一轮回放收口',
+      details: {
+        reason: 'partial-retry-handoff',
+        projectPushed: result.projectPushed ?? null,
+        failedTaskCount: result.failedTaskIds?.length ?? 0,
+        failedConnectionCount: result.failedConnectionIds?.length ?? 0,
+      },
+    };
+  }
+
   private isDeferredQueueError(error: unknown): boolean {
     const details = (error as { details?: Record<string, unknown> } | null)?.details;
     if (details?.['reason'] === 'browser-network-suspended') {
@@ -461,7 +478,7 @@ export class ActionQueueProcessorsService {
             failedConnectionIds: result.failedConnectionIds,
             failureReason: result.failureReason,
           });
-          return false;
+          return this.actionQueue.deferRetry(this.buildPartialRetryHandoffError(result));
         }
         if (failureTransferred) {
           this.logger.info('project:update 已转交 RetryQueue，当前 ActionQueue 项视为完成', {
@@ -587,7 +604,7 @@ export class ActionQueueProcessorsService {
             failedConnectionIds: result.failedConnectionIds,
             failureReason: result.failureReason,
           });
-          return false;
+          return this.actionQueue.deferRetry(this.buildPartialRetryHandoffError(result));
         }
         if (failureTransferred) {
           this.logger.info('project:create 已转交 RetryQueue，当前 ActionQueue 项视为完成', {

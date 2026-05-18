@@ -960,6 +960,12 @@ export class SyncCoordinatorService {
     return pendingActions.length > 0;
   }
 
+  private hasPendingProjectQueueReplay(projectId: string): boolean {
+    return this.actionQueue.getPendingActionsForProject(projectId).some(action =>
+      action.entityType === 'project' && action.entityId === projectId
+    );
+  }
+
   // ============================================================
   // 【Stingy Hoarder Protocol】Delta Sync 增量同步入口
   // @see docs/plan_save.md Phase 3
@@ -2000,8 +2006,10 @@ export class SyncCoordinatorService {
           const uncoveredTasks = failedTaskIds.filter(id => !retryMarkers.has(`task:${id}`));
           const uncoveredConnections = failedConnectionIds.filter(id => !retryMarkers.has(`connection:${id}`));
           const hasDataAtRisk = uncoveredTasks.length > 0 || uncoveredConnections.length > 0;
+          const actionQueueReplayPending =
+            result.partialRetryHandoff === true && this.hasPendingProjectQueueReplay(project.id);
 
-          if (hasDataAtRisk) {
+          if (hasDataAtRisk && !actionQueueReplayPending) {
             this.logger.warn('远端未完全确认，存在未入重试队列的风险项', {
               projectId: project.id,
               failedTasks,
@@ -2014,6 +2022,15 @@ export class SyncCoordinatorService {
               '同步未完成',
               `任务失败 ${failedTasks} 项，连接失败 ${failedConnections} 项，已保留待同步标记`
             );
+          } else if (hasDataAtRisk) {
+            this.logger.info('远端未完全确认，未入重试队列的项仍由 ActionQueue 保底回放', {
+              projectId: project.id,
+              failedTasks,
+              failedConnections,
+              uncoveredTaskCount: uncoveredTasks.length,
+              uncoveredConnectionCount: uncoveredConnections.length,
+              failureReason: result.failureReason,
+            });
           } else {
             this.logger.info('远端未完全确认，所有失败项已入重试队列，等待自动重试', {
               projectId: project.id,
