@@ -1147,8 +1147,9 @@ export class BlackBoxSyncService {
    * 确保某个本地 pending 条目已经进入 RetryQueue（优先）或被内联 push 兜底。
    *
    * 调用方包括：
-   * - `upgradeEquivalentLatestLocalToSynced` 业务字段非等价分支（push 已完成、保留 pending）
-   * - `mergeWithLocal` 远端单调真值合并路径（保留 pending）
+    * - `upgradeEquivalentLatestLocalToSynced` 业务字段非等价分支（push 已完成、保留 pending）
+    * - `mergeWithLocal` 远端单调真值合并路径（保留 pending）
+    * - `pushToServer` 跳过过期队列快照时发现本地最新快照仍 pending
    *
    * 没有此方法时，"latestLocal 在 push 进行期间被并发更新成不等价的更晚快照"会变成孤儿，
    * 导致 UI 长期显示 待同步。
@@ -1168,7 +1169,7 @@ export class BlackBoxSyncService {
 
   private ensureLatestLocalEnqueued(
     latestLocal: BlackBoxEntry,
-    reason: 'merge-monotonic' | 'upgrade-non-equivalent',
+    reason: 'merge-monotonic' | 'upgrade-non-equivalent' | 'skip-stale-queued-entry',
   ): void {
     // 先把 latestLocal 写入 IDB + signal store，避免临时对象在 RetryQueue 兜底前
     // 与 UI 视图脱节（详见上方注释）。失败时只 warn 不抛出，重试由队列承接。
@@ -2033,6 +2034,9 @@ export class BlackBoxSyncService {
           queuedUpdatedAt: entry.updatedAt,
           latestLocalUpdatedAt: latestLocalBeforePush?.updatedAt,
         });
+        if (latestLocalBeforePush?.syncStatus === 'pending' && latestLocalBeforePush.userId === sessionUserId) {
+          this.ensureLatestLocalEnqueued(latestLocalBeforePush, 'skip-stale-queued-entry');
+        }
         return true;
       }
       entry = this.hydrateBlankContentFromSource(entry, latestLocalBeforePush, 'latest-local');

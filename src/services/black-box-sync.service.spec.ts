@@ -493,6 +493,46 @@ describe('BlackBoxSyncService', () => {
     expect(from).not.toHaveBeenCalled();
   });
 
+  it('should re-enqueue newer pending local snapshot when stale queued payload is skipped', async () => {
+    const entryId = crypto.randomUUID();
+    const olderEntry = createEntry({
+      id: entryId,
+      updatedAt: '2026-03-04T00:00:00.000Z',
+      syncStatus: 'pending',
+    });
+    const newerPendingEntry = createEntry({
+      id: entryId,
+      content: 'newer pending edit',
+      updatedAt: '2026-03-04T00:00:05.000Z',
+      syncStatus: 'pending',
+    });
+    const from = vi.fn();
+    const enqueue = vi.fn();
+    const supabase = TestBed.inject(SupabaseClientService) as unknown as {
+      clientAsync: ReturnType<typeof vi.fn>;
+    };
+    const saveToLocalSpy = vi.spyOn(service, 'saveToLocal').mockResolvedValue(undefined);
+
+    setBlackBoxEntries([newerPendingEntry]);
+    (service as unknown as { retryQueueHandler: ((entry: BlackBoxEntry) => void) | null }).retryQueueHandler = enqueue;
+    supabase.clientAsync.mockResolvedValue({ from });
+
+    await expect(service.pushToServer(olderEntry)).resolves.toBe(true);
+
+    expect(from).not.toHaveBeenCalled();
+    expect(saveToLocalSpy).toHaveBeenCalledWith(expect.objectContaining({
+      id: entryId,
+      content: 'newer pending edit',
+      syncStatus: 'pending',
+    }));
+    expect(enqueue).toHaveBeenCalledTimes(1);
+    expect(enqueue).toHaveBeenCalledWith(expect.objectContaining({
+      id: entryId,
+      content: 'newer pending edit',
+      syncStatus: 'pending',
+    }));
+  });
+
   it('should use sync RPC for black box pushes when the feature flag is enabled', async () => {
     const entry = createEntry({
       id: crypto.randomUUID(),
