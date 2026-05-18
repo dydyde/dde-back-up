@@ -101,11 +101,13 @@ describe('android host contract', () => {
     const repository = readText('android/app/src/main/java/app/nanoflow/host/NanoflowWidgetRepository.kt');
 
     expect(repository).toContain('GATE_READ_REAPPEAR_COOLDOWN_MS');
+    expect(repository).toContain('return resolveRenderableGateEntriesForBlackBox(summary.blackBox, privacyMode)');
+    expect(repository).toContain('internal fun resolveRenderableGateEntriesForBlackBox(');
     expect(repository).toContain('private fun isGateReadCoolingDown(preview: WidgetGatePreview): Boolean');
     expect(repository).toContain('scheduleGateReadCooldownRefreshFromSummary(appWidgetId, reconciledSummary)');
     expect(repository).toContain('summary.blackBox.nextReviewAt');
     expect(repository).toMatch(
-      /isGateReadCoolingDown\(preview\)[\s\S]*?preferRicherGatePreview\(entries\[renderableIndex\], preview\)[\s\S]*?fallbackEntries\.add\(preview\)/,
+      /isGateReadCoolingDownForBlackBox\(preview, now\)[\s\S]*?preferRicherGatePreviewForBlackBox\(entries\[renderableIndex\], preview\)[\s\S]*?fallbackEntries\.add\(preview\)/,
     );
     expect(repository).toContain('return summary.blackBox.pendingCount.coerceAtLeast(0)');
     expect(repository).toContain('BlackBoxEntryAction.READ -> (cached.blackBox.pendingCount - 1).coerceAtLeast(0)');
