@@ -207,8 +207,10 @@ data class WidgetRenderModel(
   val showUntrusted: Boolean,
   /** 当前渲染到大门主卡上的条目 ID；null 表示当前没有可直接执行已读/完成的具体条目。 */
   val displayedGateEntryId: String? = null,
-  /** 已读回退态只保留“完成”按钮，避免重复触发 read 并继续延长冷却窗口。 */
+  /** 当前展示条目的已读状态；只影响卡片元信息，底部仍稳定保留“已读 / 完成”双按钮。 */
   val displayedGateEntryIsRead: Boolean = false,
+  /** 当前展示条目是否仍可直接执行 gate action；非隐私 fallback 只作提示，不展示按钮。 */
+  val displayedGateEntryIsActionable: Boolean = false,
   /** C 位 1-4 的可见任务映射；主/副属性由 isMain 独立表达，不随位置前置而改变。 */
   val tasks: List<WidgetTaskCard> = emptyList(),
   /** 当前前台 C 位下标；专注模式下始终锚定 0，仅为兼容旧渲染接口保留。 */

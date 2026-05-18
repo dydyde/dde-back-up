@@ -78,23 +78,25 @@ describe('android host contract', () => {
     expect(messagingService).toContain('widget-refresh');
   });
 
-  it('routes widget gate read and complete actions through an activity-backed PendingIntent', () => {
+  it('routes widget gate read and complete actions through a receiver-backed PendingIntent', () => {
     const manifest = readText('android/app/src/main/AndroidManifest.xml');
     const receiver = readText('android/app/src/main/java/app/nanoflow/host/NanoflowWidgetReceiver.kt');
     const renderer = readText('android/app/src/main/java/app/nanoflow/host/NanoflowWidgetRenderer.kt');
 
     expect(manifest).toContain('NanoflowWidgetActionActivity');
-    expect(receiver).toContain('Intent(context, NanoflowWidgetActionActivity::class.java)');
     expect(receiver).toContain('fun gateActionClickTemplatePendingIntent');
+    expect(receiver).toContain('PendingIntent.getBroadcast');
+    expect(receiver).toContain('action = ACTION_CLICK_ITEM');
+    expect(receiver).toContain('ITEM_TYPE_GATE_ACTION');
     expect(renderer).toContain('NanoflowWidgetReceiver.gateActionClickTemplatePendingIntent');
   });
 
   it('advances the displayed gate entry immediately when widget read starts cooldown', () => {
     const repository = readText('android/app/src/main/java/app/nanoflow/host/NanoflowWidgetRepository.kt');
 
-    expect(repository).toContain('resolveNextGateEntryId');
-    expect(repository).toContain('candidateEntries.firstOrNull { it.entryId != entryId && !isGateReadCoolingDown(it) }');
-    expect(repository).toContain('BlackBoxEntryAction.READ -> resolveNextGateEntryId(');
+    expect(repository).toContain('resolveNextGateEntryIdForBlackBox');
+    expect(repository).toContain('filterNot { it.entryId == entryId }');
+    expect(repository).toContain('BlackBoxEntryAction.READ -> resolveNextGateEntryIdForBlackBox(candidateEntries, now)');
   });
 
   it('keeps widget gate read entries quiet only during the cooldown window', () => {
@@ -110,19 +112,21 @@ describe('android host contract', () => {
       /isGateReadCoolingDownForBlackBox\(preview, now\)[\s\S]*?preferRicherGatePreviewForBlackBox\(entries\[renderableIndex\], preview\)[\s\S]*?fallbackEntries\.add\(preview\)/,
     );
     expect(repository).toContain('return summary.blackBox.pendingCount.coerceAtLeast(0)');
-    expect(repository).toContain('BlackBoxEntryAction.READ -> (cached.blackBox.pendingCount - 1).coerceAtLeast(0)');
+    expect(repository).toContain('BlackBoxEntryAction.READ -> (blackBox.pendingCount - 1).coerceAtLeast(0)');
     expect(repository).toContain('gateEntries.isEmpty()');
     expect(repository).toContain('&& gateQueueCount == 0');
   });
 
   it('keeps widget gate actions local-first without success toasts or remote blocking', () => {
     const handler = readText('android/app/src/main/java/app/nanoflow/host/NanoflowWidgetGateActionHandler.kt');
+    const factory = readText('android/app/src/main/java/app/nanoflow/host/NanoflowWidgetActionFactory.kt');
     const worker = readText('android/app/src/main/java/app/nanoflow/host/NanoflowWidgetRefreshWorker.kt');
 
-    expect(handler).toContain('remoteActionScope.launch');
     expect(handler).toContain('submitRemoteAction');
     expect(handler).toContain('partialUpdate = true');
     expect(handler).toContain('scheduleGateReadCooldownRefresh');
+    expect(handler).not.toContain('remoteActionScope.launch');
+    expect(factory).toContain('displayedGateEntryIsActionable');
     expect(worker).toContain('GATE_READ_COOLDOWN_REFRESH_WORK_PREFIX');
     expect(worker).toContain('GATE_READ_REAPPEAR_COOLDOWN_MS');
     expect(worker).toContain('setInitialDelay(delayMs.coerceAtLeast(0L), TimeUnit.MILLISECONDS)');

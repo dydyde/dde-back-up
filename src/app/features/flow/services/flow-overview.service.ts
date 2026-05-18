@@ -1057,6 +1057,21 @@ export class FlowOverviewService {
       try { (ev as Event & { preventDefault?: () => void }).preventDefault?.(); } catch { /* noop */ }
     };
 
+    const moveOverviewBoxToCenter = (center: go.Point): void => {
+      if (!this.overview) return;
+      const box = this.overview.box;
+      const bounds = box?.actualBounds;
+      if (!box || !bounds?.isReal()) return;
+
+      const nextPosition = new go.Point(
+        center.x - bounds.width / 2,
+        center.y - bounds.height / 2,
+      );
+      if (!box.position.equals(nextPosition)) {
+        box.position = nextPosition;
+      }
+    };
+
     const onClick = (ev: MouseEvent): void => {
       if (!suppressNextOverviewClick) return;
       stopEventForManualDrag(ev);
@@ -1171,9 +1186,10 @@ export class FlowOverviewService {
         centerY - manualDragViewportSize.h / 2
       );
 
+      moveOverviewBoxToCenter(boxCenter);
+
       if (!this.diagram.position.equals(desiredPos)) {
         this.diagram.position = desiredPos;
-        this.diagram.requestUpdate();
         // 【2026-05-11】检测到实际位移，启用 smartLerp 平滑动画（仅在真实拖拽中）。
         this.hasManualBoxMovement = true;
       }

@@ -72,7 +72,7 @@ vi.mock('gojs', () => {
   }
 
   class Overview {
-    box = { actualBounds: new Rect(10, 10, 100, 80) };
+    box = { actualBounds: new Rect(10, 10, 100, 80), position: new Point(10, 10) };
     centerRect = vi.fn();
     requestUpdate = vi.fn();
     transformViewToDoc = vi.fn((point: Point) => point);
@@ -106,6 +106,7 @@ describe('FlowOverviewService', () => {
   let documentBounds: InstanceType<typeof go.Rect>;
   let delayViewportCommit: boolean;
   let viewportListener: (() => void) | null;
+  let diagramRequestUpdate: ReturnType<typeof vi.fn>;
   let originalRequestAnimationFrame: typeof globalThis.requestAnimationFrame | undefined;
   let originalCancelAnimationFrame: typeof globalThis.cancelAnimationFrame | undefined;
 
@@ -124,6 +125,7 @@ describe('FlowOverviewService', () => {
     documentBounds = new go.Rect(0, 0, 400, 300);
     delayViewportCommit = false;
     viewportListener = null;
+    diagramRequestUpdate = vi.fn();
 
     originalRequestAnimationFrame = globalThis.requestAnimationFrame;
     originalCancelAnimationFrame = globalThis.cancelAnimationFrame;
@@ -693,6 +695,68 @@ describe('FlowOverviewService', () => {
     vi.runOnlyPendingTimers();
   });
 
+  it('【性能修复】拖拽帧直接移动 overview.box，且不强制 requestUpdate 主图', () => {
+    const overview = service.overviewInstance as unknown as {
+      box: { position: InstanceType<typeof go.Point> };
+    };
+
+    dispatchPointer('pointerdown', 20, 20);
+    vi.runOnlyPendingTimers();
+    diagramRequestUpdate.mockClear();
+
+    dispatchPointer('pointermove', 120, 90);
+    expect(diagramPosition.x).toBe(0);
+    expect(diagramPosition.y).toBe(0);
+
+    vi.runOnlyPendingTimers();
+
+    expect(overview.box.position.x).toBe(450);
+    expect(overview.box.position.y).toBe(330);
+    expect(diagramPosition.x).toBe(100);
+    expect(diagramPosition.y).toBe(70);
+    expect(diagramRequestUpdate).not.toHaveBeenCalled();
+
+    dispatchPointer('pointerup', 120, 90);
+    vi.runOnlyPendingTimers();
+  });
+
+  it('【性能修复】拖拽期间必须复用 overview 容器 rect，避免每次 pointermove 触发布局读', () => {
+    const rectSpy = vi.fn(() => ({
+      left: 0,
+      top: 0,
+      right: 180,
+      bottom: 140,
+      width: 180,
+      height: 140,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    } as DOMRect));
+    Object.defineProperty(container, 'getBoundingClientRect', {
+      configurable: true,
+      value: rectSpy,
+    });
+
+    dispatchPointer('pointerdown', 20, 20);
+    vi.runOnlyPendingTimers();
+    const callsAfterDragStart = rectSpy.mock.calls.length;
+
+    dispatchPointer('pointermove', 30, 30);
+    dispatchPointer('pointermove', 60, 50);
+    dispatchPointer('pointermove', 100, 80);
+
+    expect(rectSpy.mock.calls.length).toBe(callsAfterDragStart);
+
+    vi.runOnlyPendingTimers();
+    dispatchPointer('pointerup', 100, 80);
+    vi.runOnlyPendingTimers();
+
+    const callsAfterRelease = rectSpy.mock.calls.length;
+    dispatchPointer('pointerdown', 20, 20);
+
+    expect(rectSpy.mock.calls.length).toBeGreaterThan(callsAfterRelease);
+  });
+
   it('【2026-05-15 性能修复 P5】拖拽期间 updateAllTargetBindings 必须经过 16ms 节流（不再每帧调用）', () => {
     const overview = service.overviewInstance as unknown as {
       updateAllTargetBindings: ReturnType<typeof vi.fn>;
@@ -763,7 +827,7 @@ describe('FlowOverviewService', () => {
       },
       model: { nodeDataArray: [{ key: 'a' }] },
       skipsUndoManager: false,
-      requestUpdate: vi.fn(),
+      requestUpdate: diagramRequestUpdate,
       addDiagramListener: vi.fn((name: string, handler: () => void) => {
         listeners.set(name, handler);
         if (name === 'ViewportBoundsChanged') {

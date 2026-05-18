@@ -857,8 +857,7 @@ class NanoflowWidgetReceiver : AppWidgetProvider() {
      *
      * 仅用于 tabs / refresh / focus action 这类 broadcast 可接受的列表 —— 这些
      * 交互只在 receiver 内完成 store 更新和 partial update，不触发 BAL。
-     * Gate 的已读/完成按钮需要避开 ROM 对 broadcast 的后台限制，走
-     * [gateActionClickTemplatePendingIntent]。
+    * Gate 的已读/完成按钮也走同一条 receiver 分发链；receiver 内部用 goAsync 保护后台动作。
      *
      * **禁止** 在 content 列表（主点击打开 App）上复用此模板：content 列表每 item 的
      * 点击都需要启动 LauncherActivity，走 receiver 中转会触发 Android 14+ 的
@@ -881,25 +880,21 @@ class NanoflowWidgetReceiver : AppWidgetProvider() {
     }
 
     /**
-     * 大门「已读 / 完成」点击模板：直接启动透明 Activity 执行动作。
-     *
-     * MIUI / HyperOS 在自启动权限被系统重置后会静默丢弃 widget broadcast，表现为按钮无响应。
-     * Activity PendingIntent 继承 launcher 的前台用户手势，更接近整卡点击路径，能稳定进入本进程。
+     * 大门「已读 / 完成」点击模板：直接交给 Receiver 的 goAsync 分发链。
+     * MIUI / HyperOS 对 noHistory 透明 Activity 的任务清理会让 trampoline 只被拉起、业务入口不执行；
+     * 广播路径不依赖 Activity 生命周期，且 fill-in extras 会稳定合并到模板中。
      */
     fun gateActionClickTemplatePendingIntent(context: Context, appWidgetId: Int): PendingIntent {
-      val template = Intent(context, NanoflowWidgetActionActivity::class.java).apply {
+      val template = Intent(context, NanoflowWidgetReceiver::class.java).apply {
         action = ACTION_CLICK_ITEM
         setPackage(context.packageName)
-        addFlags(
-          Intent.FLAG_ACTIVITY_NEW_TASK
-            or Intent.FLAG_ACTIVITY_NO_ANIMATION
-            or Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS,
-        )
+        putExtra(EXTRA_APP_WIDGET_ID, appWidgetId)
+        putExtra(EXTRA_ITEM_TYPE, NanoflowWidgetActionFactory.ITEM_TYPE_GATE_ACTION)
       }
       val flags = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
-      return PendingIntent.getActivity(
+      return PendingIntent.getBroadcast(
         context,
-        requestCodeFor(appWidgetId, "gate-action-activity"),
+        requestCodeFor(appWidgetId, "gate-action-broadcast"),
         template,
         flags,
       )

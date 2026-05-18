@@ -4,6 +4,7 @@ import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 class NanoflowWidgetGatePreviewPolicyTest {
@@ -117,5 +118,83 @@ class NanoflowWidgetGatePreviewPolicyTest {
         now = Instant.parse("2026-05-18T05:00:00Z"),
       ),
     )
+  }
+
+  @Test
+  fun `optimistic read advances to next preview instead of keeping clicked card`() {
+    val clickedPreview = WidgetGatePreview(
+      entryId = "entry-read",
+      projectId = "project-1",
+      content = "已经读过但需要重新冷却的条目",
+      isRead = true,
+      createdAt = "2026-05-18T01:00:00Z",
+      updatedAt = "2026-05-18T02:00:00Z",
+      valid = true,
+    )
+    val nextPreview = WidgetGatePreview(
+      entryId = "entry-next",
+      projectId = "project-1",
+      content = "下一条大门任务",
+      isRead = false,
+      createdAt = "2026-05-18T03:00:00Z",
+      updatedAt = "2026-05-18T03:00:00Z",
+      valid = true,
+    )
+
+    val patch = buildOptimisticBlackBoxActionPatch(
+      blackBox = WidgetBlackBoxSummary(
+        pendingCount = 2,
+        unreadCount = 1,
+        previews = listOf(clickedPreview, nextPreview),
+        gatePreview = clickedPreview,
+      ),
+      entryId = "entry-read",
+      action = BlackBoxEntryAction.READ,
+      gateEntries = listOf(clickedPreview, nextPreview),
+      selectedGateIndex = 0,
+      previousSelectedEntryId = "entry-read",
+      now = Instant.parse("2026-05-18T05:00:00Z"),
+    )
+
+    val optimisticPatch = assertNotNull(patch)
+    assertEquals(listOf("entry-next"), optimisticPatch.blackBox.previews.map { it.entryId })
+    assertEquals("entry-next", optimisticPatch.blackBox.gatePreview.entryId)
+    assertEquals("entry-next", optimisticPatch.nextSelectedEntryId)
+    assertEquals(1, optimisticPatch.blackBox.pendingCount)
+  }
+
+  @Test
+  fun `optimistic read clears clicked fallback when there is no next preview`() {
+    val clickedPreview = WidgetGatePreview(
+      entryId = "entry-only",
+      projectId = "project-1",
+      content = "唯一的大门任务",
+      isRead = true,
+      createdAt = "2026-05-18T01:00:00Z",
+      updatedAt = "2026-05-18T02:00:00Z",
+      valid = true,
+    )
+
+    val patch = buildOptimisticBlackBoxActionPatch(
+      blackBox = WidgetBlackBoxSummary(
+        pendingCount = 1,
+        unreadCount = 0,
+        previews = listOf(clickedPreview),
+        gatePreview = clickedPreview,
+      ),
+      entryId = "entry-only",
+      action = BlackBoxEntryAction.READ,
+      gateEntries = listOf(clickedPreview),
+      selectedGateIndex = 0,
+      previousSelectedEntryId = "entry-only",
+      now = Instant.parse("2026-05-18T05:00:00Z"),
+    )
+
+    val optimisticPatch = assertNotNull(patch)
+    assertTrue(optimisticPatch.blackBox.previews.isEmpty())
+    assertFalse(optimisticPatch.blackBox.gatePreview.valid)
+    assertEquals(null, optimisticPatch.blackBox.gatePreview.entryId)
+    assertEquals(null, optimisticPatch.nextSelectedEntryId)
+    assertEquals(0, optimisticPatch.blackBox.pendingCount)
   }
 }

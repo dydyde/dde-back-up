@@ -24,6 +24,11 @@ data class WidgetBlackBoxOptimisticSnapshot(
   val selectedEntryId: String?,
 )
 
+data class WidgetBlackBoxOptimisticPatch(
+  val blackBox: WidgetBlackBoxSummary,
+  val nextSelectedEntryId: String?,
+)
+
 data class WidgetFocusOptimisticSnapshot(
   val summary: WidgetSummaryResponse,
   val selectedTaskIndex: Int,
@@ -146,6 +151,93 @@ private fun isGateReadCoolingDownForBlackBox(
   if (updatedAt == null) return false
   val elapsedMs = Duration.between(updatedAt, now).toMillis().coerceAtLeast(0)
   return elapsedMs < GATE_READ_REAPPEAR_COOLDOWN_MS
+}
+
+internal fun buildOptimisticBlackBoxActionPatch(
+  blackBox: WidgetBlackBoxSummary,
+  entryId: String,
+  action: BlackBoxEntryAction,
+  gateEntries: List<WidgetGatePreview>,
+  selectedGateIndex: Int,
+  previousSelectedEntryId: String?,
+  now: Instant = Instant.now(),
+): WidgetBlackBoxOptimisticPatch? {
+  val targetPreview = blackBox.previews.firstOrNull { it.entryId == entryId }
+    ?: blackBox.gatePreview.takeIf { it.entryId == entryId && it.valid }
+    ?: return null
+  val unreadDelta = if (!targetPreview.isRead) 1 else 0
+  val newPendingCount = when (action) {
+    BlackBoxEntryAction.READ -> (blackBox.pendingCount - 1).coerceAtLeast(0)
+    BlackBoxEntryAction.COMPLETE -> (blackBox.pendingCount - 1).coerceAtLeast(0)
+  }
+  val newPreviews = when (action) {
+    BlackBoxEntryAction.READ -> blackBox.previews.filterNot { it.entryId == entryId }
+    BlackBoxEntryAction.COMPLETE -> blackBox.previews.filterNot { it.entryId == entryId }
+  }
+  val candidateEntries = rotateGateEntriesAfterForBlackBox(gateEntries, selectedGateIndex)
+    .filterNot { it.entryId == entryId }
+  val nextSelectedEntryId = when (action) {
+    BlackBoxEntryAction.READ -> resolveNextGateEntryIdForBlackBox(candidateEntries, now)
+    BlackBoxEntryAction.COMPLETE -> candidateEntries.firstOrNull()?.entryId
+  }
+  val nextPreview = when {
+    nextSelectedEntryId.isNullOrBlank() -> null
+    else -> newPreviews.firstOrNull { it.entryId == nextSelectedEntryId }
+      ?: candidateEntries.firstOrNull { it.entryId == nextSelectedEntryId }
+  }
+  val newGatePreview = when (action) {
+    BlackBoxEntryAction.READ -> when {
+      blackBox.gatePreview.entryId == entryId -> nextPreview ?: WidgetGatePreview()
+      previousSelectedEntryId == entryId -> nextPreview ?: WidgetGatePreview()
+      else -> blackBox.gatePreview
+    }
+    BlackBoxEntryAction.COMPLETE -> {
+      if (blackBox.gatePreview.entryId == entryId || previousSelectedEntryId == entryId) {
+        nextPreview ?: WidgetGatePreview()
+      } else {
+        blackBox.gatePreview
+      }
+    }
+  }
+  val newUnreadCount = (resolveBlackBoxUnreadCountForPatch(blackBox) - unreadDelta)
+    .coerceAtLeast(0)
+    .coerceAtMost(newPendingCount)
+  return WidgetBlackBoxOptimisticPatch(
+    blackBox = blackBox.copy(
+      pendingCount = newPendingCount,
+      unreadCount = newUnreadCount,
+      previews = newPreviews,
+      gatePreview = newGatePreview,
+    ),
+    nextSelectedEntryId = nextSelectedEntryId,
+  )
+}
+
+private fun rotateGateEntriesAfterForBlackBox(
+  entries: List<WidgetGatePreview>,
+  selectedGateIndex: Int,
+): List<WidgetGatePreview> {
+  if (entries.isEmpty()) return emptyList()
+  val safeIndex = selectedGateIndex.coerceIn(0, entries.lastIndex)
+  return entries.drop(safeIndex + 1) + entries.take(safeIndex + 1)
+}
+
+private fun resolveNextGateEntryIdForBlackBox(
+  candidateEntries: List<WidgetGatePreview>,
+  now: Instant,
+): String? {
+  return candidateEntries.firstOrNull { !isGateReadCoolingDownForBlackBox(it, now) }?.entryId
+}
+
+private fun resolveBlackBoxUnreadCountForPatch(blackBox: WidgetBlackBoxSummary): Int {
+  val pendingCount = blackBox.pendingCount.coerceAtLeast(0)
+  val explicitUnreadCount = blackBox.unreadCount
+  if (explicitUnreadCount != null) {
+    return explicitUnreadCount.coerceIn(0, pendingCount)
+  }
+
+  val previewUnreadCount = blackBox.previews.count { !it.isRead }
+  return previewUnreadCount.coerceAtMost(pendingCount)
 }
 
 private fun areSameGatePreview(left: WidgetGatePreview, right: WidgetGatePreview): Boolean {
@@ -601,9 +693,6 @@ class NanoflowWidgetRepository(private val context: Context) {
     action: BlackBoxEntryAction,
   ): WidgetBlackBoxOptimisticSnapshot? {
     val cached = store.readSummary(appWidgetId) ?: return null
-    val targetPreview = cached.blackBox.previews.firstOrNull { it.entryId == entryId }
-      ?: cached.blackBox.gatePreview.takeIf { it.entryId == entryId && it.valid }
-      ?: return null
     val privacyMode = store.isPrivacyModeEnabled()
     val gateEntries = resolveRenderableGateEntries(cached, privacyMode)
     val selectedGateIndex = if (gateEntries.isEmpty()) {
@@ -612,76 +701,25 @@ class NanoflowWidgetRepository(private val context: Context) {
       resolveGatePageIndex(appWidgetId, gateEntries)
     }
     val previousSelectedEntryId = store.readGateSelectedEntryId(appWidgetId)
-    val nowIso = Instant.now().toString()
-    val unreadDelta = if (!targetPreview.isRead) 1 else 0
-    val newPendingCount = when (action) {
-      BlackBoxEntryAction.READ -> (cached.blackBox.pendingCount - 1).coerceAtLeast(0)
-      BlackBoxEntryAction.COMPLETE -> (cached.blackBox.pendingCount - 1).coerceAtLeast(0)
-    }
-    val newPreviews = when (action) {
-      BlackBoxEntryAction.READ -> cached.blackBox.previews.map { preview ->
-        if (preview.entryId == entryId) preview.copy(isRead = true, updatedAt = nowIso) else preview
-      }
-      BlackBoxEntryAction.COMPLETE -> cached.blackBox.previews.filterNot { it.entryId == entryId }
-    }
-    val candidateEntries = rotateGateEntriesAfter(gateEntries, selectedGateIndex).map { preview ->
-      if (action == BlackBoxEntryAction.READ && preview.entryId == entryId) {
-        preview.copy(isRead = true, updatedAt = nowIso)
-      } else {
-        preview
-      }
-    }
-    val nextSelectedEntryId = when (action) {
-      BlackBoxEntryAction.READ -> resolveNextGateEntryId(
-        entryId = entryId,
-        candidateEntries = candidateEntries,
-      )
-      BlackBoxEntryAction.COMPLETE -> {
-        val remainingGateEntries = candidateEntries.filterNot { it.entryId == entryId }
-        remainingGateEntries.firstOrNull()?.entryId
-      }
-    }
-    val nextPreview = when {
-      nextSelectedEntryId.isNullOrBlank() -> null
-      else -> newPreviews.firstOrNull { it.entryId == nextSelectedEntryId }
-        ?: candidateEntries.firstOrNull { it.entryId == nextSelectedEntryId }
-    }
-    val newGatePreview = when (action) {
-      BlackBoxEntryAction.READ -> when {
-        cached.blackBox.gatePreview.entryId == entryId -> nextPreview ?: targetPreview.copy(isRead = true, updatedAt = nowIso)
-        previousSelectedEntryId == entryId -> nextPreview ?: targetPreview.copy(
-          isRead = true,
-          updatedAt = nowIso,
-        )
-        else -> cached.blackBox.gatePreview
-      }
-      BlackBoxEntryAction.COMPLETE -> {
-        if (cached.blackBox.gatePreview.entryId == entryId || previousSelectedEntryId == entryId) {
-          nextPreview ?: WidgetGatePreview()
-        } else {
-          cached.blackBox.gatePreview
-        }
-      }
-    }
-    val newUnreadCount = (resolveBlackBoxUnreadCount(cached) - unreadDelta)
-      .coerceAtLeast(0)
-      .coerceAtMost(newPendingCount)
-    val patchedBlackBox = cached.blackBox.copy(
-      pendingCount = newPendingCount,
-      unreadCount = newUnreadCount,
-      previews = newPreviews,
-      gatePreview = newGatePreview,
-    )
-    // 当本地缓存推不出下一条可执行的大门条目时，宁可保留旧卡片等权威刷新，
-    // 也不要把 UI 退化成只有“待处理沉积”的假死占位态。
-    if (!hasActionableOptimisticGateEntry(patchedBlackBox, privacyMode)) {
+    val optimisticPatch = buildOptimisticBlackBoxActionPatch(
+      blackBox = cached.blackBox,
+      entryId = entryId,
+      action = action,
+      gateEntries = gateEntries,
+      selectedGateIndex = selectedGateIndex,
+      previousSelectedEntryId = previousSelectedEntryId,
+    ) ?: return null
+    val patchedBlackBox = optimisticPatch.blackBox
+    // 完成动作没有下一条可执行条目时保留旧卡片等权威刷新；已读动作则必须本地移走当前条目，
+    // 让 repeated read 重新进入 30 分钟冷却时也有即时反馈。
+    if (action != BlackBoxEntryAction.READ && !hasActionableOptimisticGateEntry(patchedBlackBox, privacyMode)) {
       NanoflowWidgetTelemetry.info(
         "widget_black_box_action_optimistic_skipped_unrenderable_gate",
         mapOf(
           "appWidgetId" to appWidgetId,
           "entryId" to NanoflowWidgetTelemetry.redactId(entryId),
           "action" to action.wireValue,
-          "pendingCount" to newPendingCount,
+          "pendingCount" to patchedBlackBox.pendingCount,
         ),
       )
       return null
@@ -691,7 +729,7 @@ class NanoflowWidgetRepository(private val context: Context) {
     )
     store.saveSummary(appWidgetId, patched)
     if (previousSelectedEntryId == entryId || previousSelectedEntryId.isNullOrBlank() || cached.blackBox.gatePreview.entryId == entryId) {
-      store.persistGateSelectedEntryId(appWidgetId, nextSelectedEntryId)
+      store.persistGateSelectedEntryId(appWidgetId, optimisticPatch.nextSelectedEntryId)
     }
 
     NanoflowWidgetTelemetry.info(
@@ -1448,8 +1486,12 @@ class NanoflowWidgetRepository(private val context: Context) {
       val gateContentCards = if (isGateEmpty) buildGateEmptyContentCards()
         else buildGateContentCards(summary, displayedGateEntries, privacyMode)
       val primaryGateCard = gateContentCards.firstOrNull()
-      val displayedGateEntryId = displayedGateEntries.firstOrNull()?.entryId?.takeIf { it.isNotBlank() }
-      val displayedGateEntryIsRead = displayedGateEntries.firstOrNull()?.isRead == true
+      val displayedGatePreview = displayedGateEntries.firstOrNull()
+      val displayedGateEntryId = displayedGatePreview?.entryId?.takeIf { it.isNotBlank() }
+      val displayedGateEntryIsRead = displayedGatePreview?.isRead == true
+      val displayedGateEntryIsActionable = displayedGatePreview?.let {
+        isActionableOptimisticGatePreview(it, privacyMode)
+      } == true
       // 空大门点击 = 进入项目（OPEN_WORKSPACE）；非空大门点击只提示用户使用已读/完成按钮。
       val rootPrimaryAction = if (isGateEmpty) WidgetPrimaryAction.OPEN_WORKSPACE
         else WidgetPrimaryAction.BLOCK_GATE_ACTIONS
@@ -1480,6 +1522,7 @@ class NanoflowWidgetRepository(private val context: Context) {
         showUntrusted = false,
         displayedGateEntryId = displayedGateEntryId,
         displayedGateEntryIsRead = displayedGateEntryIsRead,
+        displayedGateEntryIsActionable = displayedGateEntryIsActionable,
         contentCards = gateContentCards,
         syncBadgeLabel = buildCompactSyncBadge(summary, appWidgetId),
       )
@@ -1969,22 +2012,6 @@ class NanoflowWidgetRepository(private val context: Context) {
     } else {
       gateEntries.drop(selectedGateIndex) + gateEntries.take(selectedGateIndex)
     }
-  }
-
-  private fun rotateGateEntriesAfter(
-    entries: List<WidgetGatePreview>,
-    selectedGateIndex: Int,
-  ): List<WidgetGatePreview> {
-    if (entries.isEmpty()) return emptyList()
-    val safeIndex = selectedGateIndex.coerceIn(0, entries.lastIndex)
-    return entries.drop(safeIndex + 1) + entries.take(safeIndex + 1)
-  }
-
-  private fun resolveNextGateEntryId(
-    entryId: String,
-    candidateEntries: List<WidgetGatePreview>,
-  ): String? {
-    return candidateEntries.firstOrNull { it.entryId != entryId && !isGateReadCoolingDown(it) }?.entryId
   }
 
   private suspend fun resolveGatePageIndex(appWidgetId: Int, entries: List<WidgetGatePreview>): Int {

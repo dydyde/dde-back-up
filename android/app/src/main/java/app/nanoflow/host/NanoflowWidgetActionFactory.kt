@@ -346,36 +346,26 @@ class NanoflowWidgetActionFactory(
     }
 
     if (listKind == LIST_KIND_GATE_ACTIONS) {
-      // 蓝图 UI：大门模式的双按钮（已读 / 完成）
-      // 非 gate 状态页（setup/auth/untrusted）与空大门都不应该显示这组按钮。
+      // 蓝图 UI：仅当当前 gate 条目仍可直接执行时展示双按钮（已读 / 完成）；
+      // 非隐私模式下无正文 fallback 只作为占位提示，不应继续显示动作按钮。
       val displayedGateEntryId = model.displayedGateEntryId?.takeIf { it.isNotBlank() }
-      if (!model.isGateMode || model.contentCards.firstOrNull()?.isGateEmptyState == true || displayedGateEntryId == null) {
+      val gateActions = resolveGateActionCodesForModel(model)
+      if (displayedGateEntryId == null || gateActions.isEmpty()) {
         return emptyList()
       }
-      return buildList {
-        if (!model.displayedGateEntryIsRead) {
-          add(
-            ActionItem(
-              label = context.getString(R.string.nanoflow_widget_gate_action_read),
-              selected = false,
-              kind = ActionItem.Kind.GATE_ACTION,
-              gateAction = GATE_ACTION_READ,
-              gateEntryId = displayedGateEntryId,
-              clickable = true,
-              primaryAction = WidgetPrimaryAction.OPEN_FOCUS_TOOLS,
-            )
-          )
+      return gateActions.map { gateAction ->
+        val labelRes = when (gateAction) {
+          GATE_ACTION_READ -> R.string.nanoflow_widget_gate_action_read
+          else -> R.string.nanoflow_widget_gate_action_complete
         }
-        add(
-          ActionItem(
-            label = context.getString(R.string.nanoflow_widget_gate_action_complete),
-            selected = false,
-            kind = ActionItem.Kind.GATE_ACTION,
-            gateAction = GATE_ACTION_COMPLETE,
-            gateEntryId = displayedGateEntryId,
-            clickable = true,
-            primaryAction = WidgetPrimaryAction.OPEN_FOCUS_TOOLS,
-          )
+        ActionItem(
+          label = context.getString(labelRes),
+          selected = false,
+          kind = ActionItem.Kind.GATE_ACTION,
+          gateAction = gateAction,
+          gateEntryId = displayedGateEntryId,
+          clickable = true,
+          primaryAction = WidgetPrimaryAction.OPEN_FOCUS_TOOLS,
         )
       }
     }
@@ -569,4 +559,20 @@ class NanoflowWidgetActionFactory(
     const val LIST_KIND_FOCUS_ACTIONS = "focus_actions"
     const val LIST_KIND_FOCUS_WAIT_PRESETS = "focus_wait_presets"
   }
+}
+
+internal fun resolveGateActionCodesForModel(model: WidgetRenderModel): List<String> {
+  val displayedGateEntryId = model.displayedGateEntryId?.takeIf { it.isNotBlank() }
+  if (!model.isGateMode
+    || model.contentCards.firstOrNull()?.isGateEmptyState == true
+    || displayedGateEntryId == null
+    || !model.displayedGateEntryIsActionable
+  ) {
+    return emptyList()
+  }
+
+  return listOf(
+    NanoflowWidgetActionFactory.GATE_ACTION_READ,
+    NanoflowWidgetActionFactory.GATE_ACTION_COMPLETE,
+  )
 }

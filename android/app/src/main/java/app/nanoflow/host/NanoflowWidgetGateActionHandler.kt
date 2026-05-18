@@ -4,10 +4,7 @@ import android.appwidget.AppWidgetManager
 import android.content.Context
 import android.content.Intent
 import android.widget.Toast
-import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
@@ -18,8 +15,6 @@ import kotlinx.coroutines.withContext
  * - 旧版本 broadcast 模板：已安装旧 hostView 在下一次完整重绘前仍可被兼容处理。
  */
 object NanoflowWidgetGateActionHandler {
-  private val remoteActionScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-
   suspend fun handle(context: Context, appWidgetId: Int, intent: Intent) {
     val appContext = context.applicationContext
     val gateAction = intent.getStringExtra(NanoflowWidgetActionFactory.EXTRA_GATE_ACTION)
@@ -125,27 +120,12 @@ object NanoflowWidgetGateActionHandler {
       ?: cached?.blackBox?.gatePreview?.takeIf { it.entryId == entryId && it.valid }
     if (entryAction == BlackBoxEntryAction.READ && currentTargetPreview?.isRead == true) {
       NanoflowWidgetTelemetry.info(
-        "widget_click_gate_action_skipped_already_read",
+        "widget_click_gate_action_repeat_read",
         mapOf(
           "appWidgetId" to appWidgetId,
           "entryId" to NanoflowWidgetTelemetry.redactId(entryId),
         ),
       )
-      runCatching {
-        renderCurrentWidget()
-      }.onFailure { error ->
-        NanoflowWidgetTelemetry.warn(
-          "widget_click_gate_action_local_render_failed",
-          mapOf(
-            "appWidgetId" to appWidgetId,
-            "gateAction" to entryAction.wireValue,
-            "phase" to "already-read",
-          ),
-          error,
-        )
-      }
-      NanoflowWidgetRefreshWorker.enqueue(appContext, reason = "gate-action-read-already-read")
-      return
     }
 
     val optimisticSnapshot = runCatching {
@@ -178,15 +158,13 @@ object NanoflowWidgetGateActionHandler {
       }
     }
 
-    remoteActionScope.launch {
-      submitRemoteAction(
-        context = appContext,
-        appWidgetId = appWidgetId,
-        entryId = entryId,
-        entryAction = entryAction,
-        optimisticSnapshot = optimisticSnapshot,
-      )
-    }
+    submitRemoteAction(
+      context = appContext,
+      appWidgetId = appWidgetId,
+      entryId = entryId,
+      entryAction = entryAction,
+      optimisticSnapshot = optimisticSnapshot,
+    )
   }
 
   private suspend fun submitRemoteAction(
