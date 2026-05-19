@@ -361,6 +361,45 @@ describe('GateService', () => {
       expect(mockBlackBoxService.markAsRead).toHaveBeenCalledWith(first.id);
     });
 
+    it('未触发动作时 pending 短暂变空不应让大门自动消失', () => {
+      const entry = createMockEntry({
+        id: 'mobile-gate-current-entry',
+        date: getDateOffset(-1),
+      });
+      setBlackBoxEntries([entry]);
+
+      service.checkGate();
+      expect(gateState()).toBe('reviewing');
+
+      // 模拟手机端恢复/远端拉取窗口里 pending 派生信号短暂归零；用户没有点已读/完成。
+      setBlackBoxEntries([]);
+      TestBed.flushEffects();
+
+      expect(gateState()).toBe('reviewing');
+      expect(gatePendingItems().map(item => item.id)).toEqual(['mobile-gate-current-entry']);
+      expect(mockBlackBoxService.markAsRead).not.toHaveBeenCalled();
+      expect(mockBlackBoxService.markAsCompleted).not.toHaveBeenCalled();
+    });
+
+    it('远端确认当前条目已解决时不应保留 ghost 卡片', () => {
+      const entry = createMockEntry({
+        id: 'remote-cleared-entry',
+        date: getDateOffset(-1),
+      });
+      setBlackBoxEntries([entry]);
+
+      service.checkGate();
+
+      (service as unknown as {
+        syncReviewingQueueWithPending: (pending: BlackBoxEntry[], source: 'checkGate' | 'signal' | 'remote') => void;
+      }).syncReviewingQueueWithPending([], 'remote');
+
+      expect(gateState()).toBe('completed');
+      expect(gatePendingItems()).toEqual([]);
+      expect(mockBlackBoxService.markAsRead).not.toHaveBeenCalled();
+      expect(mockBlackBoxService.markAsCompleted).not.toHaveBeenCalled();
+    });
+
     it('settling 期间不应接受下一次动作，避免覆盖上一个 deferred mutation', () => {
       const first = createMockEntry({ date: getDateOffset(-1) });
       const second = createMockEntry({ date: getDateOffset(-2) });

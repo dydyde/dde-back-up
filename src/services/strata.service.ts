@@ -154,15 +154,21 @@ export class StrataService {
       .filter(e => 
         e.isCompleted && 
         !e.deletedAt &&
-        this.getLocalDate(e.updatedAt) === date
+        e.date === date
       )
       .map(e => ({
         type: 'black_box' as const,
         id: e.id,
         title: (e.content || '').slice(0, 100),
-        completedAt: e.updatedAt,
+        completedAt: this.getBlackBoxLayerTimestamp(e),
         source: e
        }));
+  }
+
+  private getBlackBoxLayerTimestamp(entry: { date: string; createdAt: string; updatedAt: string }): string {
+    if (this.getLocalDate(entry.createdAt) === entry.date) return entry.createdAt;
+    if (this.getLocalDate(entry.updatedAt) === entry.date) return entry.updatedAt;
+    return `${entry.date}T00:00:00.000`;
   }
 
   private getTaskCompletionTimestamp(task: { completedAt?: string | null; updatedAt?: string; createdDate: string }): string | undefined {
@@ -196,7 +202,7 @@ export class StrataService {
         .map(timestamp => this.getLocalDate(timestamp)),
       ...Array.from(blackBoxEntriesMap().values())
         .filter(e => e.isCompleted && !e.deletedAt)
-        .map(e => this.getLocalDate(e.updatedAt)),
+        .map(e => e.date),
     ];
     return dates.sort((a, b) => b.localeCompare(a))[0] ?? null;
   }

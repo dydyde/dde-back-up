@@ -150,6 +150,46 @@ describe('StrataService', () => {
       expect(service.getDepthLabel('2026-04-20')).toBe('那日');
       expect(service.getLayerLabel('2026-04-20')).toBe('4月20日');
     });
+
+    it('黑匣子 updatedAt 变成今天时不应污染最后完成任务日期标签', () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-05-19T08:00:00.000Z'));
+      mockProjectStateService.tasks.set([
+        {
+          id: 'last-completed-task',
+          title: '最后完成任务',
+          status: 'completed',
+          completedAt: '2026-05-18T10:00:00.000Z',
+          updatedAt: '2026-05-18T10:00:00.000Z',
+          createdDate: '2026-05-10T00:00:00.000Z',
+          deletedAt: null,
+        },
+      ]);
+      setBlackBoxEntries([
+        {
+          id: 'black-box-synced-today',
+          projectId: null,
+          userId: 'user-1',
+          content: '历史黑匣子条目',
+          date: '2026-05-17',
+          createdAt: '2026-05-17T09:00:00.000Z',
+          updatedAt: '2026-05-19T07:30:00.000Z',
+          isRead: true,
+          isCompleted: true,
+          isArchived: false,
+          deletedAt: null,
+          syncStatus: 'synced',
+          focusMeta: null,
+        },
+      ]);
+
+      service.refresh();
+
+      const layers = strataLayers();
+      expect(layers.map(layer => layer.date)).not.toContain('2026-05-19');
+      expect(layers[0].date).toBe('2026-05-18');
+      expect(service.getLayerLabel(layers[0].date)).toBe('5月18日');
+    });
   });
 
   describe('addItem', () => {

@@ -7,6 +7,7 @@ import { SiyuanDirectProvider } from './siyuan-direct-provider';
 import { SiyuanExtensionProvider } from './siyuan-extension-provider';
 import {
   SiyuanProviderError,
+  type SiyuanExtensionConfigProbeResult,
   type SiyuanExtensionConfigStatus,
   type SiyuanPreviewProvider,
   type SiyuanPushConfigInput,
@@ -65,6 +66,12 @@ export class SiyuanPreviewService {
     const config = await this.cache.loadConfig();
     if (config.runtimeMode !== 'extension-relay') return null;
     return this.extensionProvider.getConfigStatus();
+  }
+
+  async probeExtensionConfigStatus(): Promise<SiyuanExtensionConfigProbeResult> {
+    const config = await this.cache.loadConfig();
+    if (config.runtimeMode !== 'extension-relay') return { kind: 'unavailable' };
+    return this.extensionProvider.probeConfigStatus();
   }
 
   async preview(link: ExternalSourceLink, options?: { forceRefresh?: boolean }): Promise<SiyuanPreviewResult> {

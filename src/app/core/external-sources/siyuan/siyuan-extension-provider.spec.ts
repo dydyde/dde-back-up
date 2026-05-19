@@ -2,6 +2,12 @@ import { describe, expect, it, vi } from 'vitest';
 import { SiyuanExtensionProvider } from './siyuan-extension-provider';
 import { SiyuanProviderError } from './siyuan-provider.interface';
 
+type ProviderPrivateApi = {
+  isTrustedWindowMessage: (event: MessageEvent<unknown>) => boolean;
+  pingExtension: () => Promise<boolean>;
+  postRelayRequest: (args: unknown) => Promise<unknown>;
+};
+
 describe('siyuan-extension-provider', () => {
   it('returns extension-unavailable when ping cannot reach relay', async () => {
     const provider = new SiyuanExtensionProvider();
@@ -13,14 +19,15 @@ describe('siyuan-extension-provider', () => {
 
   it('maps relay test-connection error codes for diagnostics', async () => {
     const provider = new SiyuanExtensionProvider();
-    vi.spyOn(provider as { isTrustedWindowMessage: () => boolean }, 'isTrustedWindowMessage').mockReturnValue(true);
-    const postMessageSpy = vi.spyOn(window, 'postMessage').mockImplementation((message: unknown, targetOrigin: string | URL) => {
+    const privateProvider = provider as unknown as ProviderPrivateApi;
+    vi.spyOn(privateProvider, 'isTrustedWindowMessage').mockReturnValue(true);
+    const postMessageSpy = vi.spyOn(window, 'postMessage').mockImplementation((message: unknown, _options?: WindowPostMessageOptions) => {
       if (typeof message !== 'object' || message === null) return;
       const payload = message as { type?: string; requestId?: string };
       if (payload.type === 'nanoflow.siyuan.ping') {
         queueMicrotask(() => {
           window.dispatchEvent(new MessageEvent('message', {
-            origin: String(targetOrigin),
+            origin: window.location.origin,
             data: { type: 'nanoflow.siyuan.pong', requestId: payload.requestId, ok: true },
           }));
         });
@@ -28,7 +35,7 @@ describe('siyuan-extension-provider', () => {
       if (payload.type === 'nanoflow.siyuan.test-connection') {
         queueMicrotask(() => {
           window.dispatchEvent(new MessageEvent('message', {
-            origin: String(targetOrigin),
+            origin: window.location.origin,
             data: {
               type: 'nanoflow.siyuan.test-connection-result',
               requestId: payload.requestId,
@@ -48,9 +55,10 @@ describe('siyuan-extension-provider', () => {
 
   it('pushConfig forwards baseUrl and token to the extension and only includes whitelisted fields', async () => {
     const provider = new SiyuanExtensionProvider();
-    vi.spyOn(provider as { pingExtension: () => Promise<boolean> }, 'pingExtension').mockResolvedValue(true);
+    const privateProvider = provider as unknown as ProviderPrivateApi;
+    vi.spyOn(privateProvider, 'pingExtension').mockResolvedValue(true);
     const postRelay = vi.spyOn(
-      provider as { postRelayRequest: (args: { requestType: string; payload?: Record<string, unknown> }) => Promise<unknown> },
+      privateProvider,
       'postRelayRequest',
     ).mockResolvedValue({ type: 'nanoflow.siyuan.set-config-result', ok: true });
 
@@ -66,9 +74,10 @@ describe('siyuan-extension-provider', () => {
 
   it('pushConfig maps token-invalid response', async () => {
     const provider = new SiyuanExtensionProvider();
-    vi.spyOn(provider as { pingExtension: () => Promise<boolean> }, 'pingExtension').mockResolvedValue(true);
+    const privateProvider = provider as unknown as ProviderPrivateApi;
+    vi.spyOn(privateProvider, 'pingExtension').mockResolvedValue(true);
     vi.spyOn(
-      provider as { postRelayRequest: () => Promise<unknown> },
+      privateProvider,
       'postRelayRequest',
     ).mockResolvedValue({ type: 'nanoflow.siyuan.set-config-result', ok: false, errorCode: 'token-invalid' });
 
@@ -79,7 +88,8 @@ describe('siyuan-extension-provider', () => {
 
   it('pushConfig returns extension-unavailable when ping fails', async () => {
     const provider = new SiyuanExtensionProvider();
-    vi.spyOn(provider as { pingExtension: () => Promise<boolean> }, 'pingExtension').mockResolvedValue(false);
+    const privateProvider = provider as unknown as ProviderPrivateApi;
+    vi.spyOn(privateProvider, 'pingExtension').mockResolvedValue(false);
 
     const result = await provider.pushConfig({ baseUrl: 'http://127.0.0.1:6806', token: 'x' });
 
@@ -88,9 +98,10 @@ describe('siyuan-extension-provider', () => {
 
   it('pushConfig omits the token field entirely when caller did not provide one', async () => {
     const provider = new SiyuanExtensionProvider();
-    vi.spyOn(provider as { pingExtension: () => Promise<boolean> }, 'pingExtension').mockResolvedValue(true);
+    const privateProvider = provider as unknown as ProviderPrivateApi;
+    vi.spyOn(privateProvider, 'pingExtension').mockResolvedValue(true);
     const postRelay = vi.spyOn(
-      provider as { postRelayRequest: (args: { payload?: Record<string, unknown> }) => Promise<unknown> },
+      privateProvider,
       'postRelayRequest',
     ).mockResolvedValue({ type: 'nanoflow.siyuan.set-config-result', ok: true });
 
@@ -103,10 +114,11 @@ describe('siyuan-extension-provider', () => {
 
   it('getConfigStatus returns null when the extension does not respond (legacy version)', async () => {
     const provider = new SiyuanExtensionProvider();
-    vi.spyOn(provider as { pingExtension: () => Promise<boolean> }, 'pingExtension').mockResolvedValue(true);
+    const privateProvider = provider as unknown as ProviderPrivateApi;
+    vi.spyOn(privateProvider, 'pingExtension').mockResolvedValue(true);
     // 旧扩展不识别消息 → postRelayRequest 超时抛 extension-unavailable
     vi.spyOn(
-      provider as { postRelayRequest: () => Promise<unknown> },
+      privateProvider,
       'postRelayRequest',
     ).mockRejectedValue(new SiyuanProviderError('extension-unavailable'));
 
@@ -115,11 +127,44 @@ describe('siyuan-extension-provider', () => {
     expect(status).toBeNull();
   });
 
+  it('probeConfigStatus marks a timed-out config-status request as unsupported after ping succeeds', async () => {
+    const provider = new SiyuanExtensionProvider();
+    const privateProvider = provider as unknown as ProviderPrivateApi;
+    vi.spyOn(privateProvider, 'pingExtension').mockResolvedValue(true);
+    vi.spyOn(
+      privateProvider,
+      'postRelayRequest',
+    ).mockRejectedValue(new SiyuanProviderError('extension-unavailable'));
+
+    const result = await provider.probeConfigStatus();
+
+    expect(result).toEqual({ kind: 'unsupported' });
+  });
+
+  it('probeConfigStatus preserves non-timeout error codes for the caller', async () => {
+    const provider = new SiyuanExtensionProvider();
+    const privateProvider = provider as unknown as ProviderPrivateApi;
+    vi.spyOn(privateProvider, 'pingExtension').mockResolvedValue(true);
+    vi.spyOn(
+      privateProvider,
+      'postRelayRequest',
+    ).mockResolvedValue({
+      type: 'nanoflow.siyuan.config-status-result',
+      ok: false,
+      errorCode: 'runtime-not-supported',
+    });
+
+    const result = await provider.probeConfigStatus();
+
+    expect(result).toEqual({ kind: 'error', errorCode: 'runtime-not-supported' });
+  });
+
   it('getConfigStatus returns baseUrl and hasToken without leaking token', async () => {
     const provider = new SiyuanExtensionProvider();
-    vi.spyOn(provider as { pingExtension: () => Promise<boolean> }, 'pingExtension').mockResolvedValue(true);
+    const privateProvider = provider as unknown as ProviderPrivateApi;
+    vi.spyOn(privateProvider, 'pingExtension').mockResolvedValue(true);
     vi.spyOn(
-      provider as { postRelayRequest: () => Promise<unknown> },
+      privateProvider,
       'postRelayRequest',
     ).mockResolvedValue({
       type: 'nanoflow.siyuan.config-status-result',
@@ -136,7 +181,8 @@ describe('siyuan-extension-provider', () => {
 
   it('getConfigStatus returns null when extension ping fails (uninstalled)', async () => {
     const provider = new SiyuanExtensionProvider();
-    vi.spyOn(provider as { pingExtension: () => Promise<boolean> }, 'pingExtension').mockResolvedValue(false);
+    const privateProvider = provider as unknown as ProviderPrivateApi;
+    vi.spyOn(privateProvider, 'pingExtension').mockResolvedValue(false);
 
     const status = await provider.getConfigStatus();
 

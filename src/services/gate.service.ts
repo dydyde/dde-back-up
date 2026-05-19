@@ -262,15 +262,25 @@ export class GateService {
       gateCurrentIndex.set(safeIndex);
     }
 
-    // 【修复 2026-04-20】保留 safeIndex+1 的前缀（包含“当前正在展示/动画中的条目”）。
+    // 【修复 2026-04-20】保留 handled + current 的前缀（包含“当前正在展示/动画中的条目”）。
     // 之前的实现只保留 slice(0, safeIndex)，当用户在当前条目触发 markAsCompleted 时，
     // pendingBlackBoxEntries 计算信号会同步剔除该条目，effect 立即重算队列，
     // 把当前位置的条目从 gatePendingItems 中移除；随后 finalizeActionTransition
     // 仍然执行 currentIndex + 1，导致跳过一条未审查的条目，并使总数提前归零、
     // 表现为“只滑一次大门就直接进入项目”。
-    // 这里显式锁定 handled + current（正在飞出的条目），让增量合并只影响尾部未审查项。
-    const inFlightCount = this.actionInFlight ? 1 : 0;
-    const preserveCount = Math.min(safeIndex + inFlightCount, currentItems.length);
+    // 2026-05-19 补充：仅在“非 authoritative 的瞬时清空”里锁定 current。
+    // 手机端恢复/远端拉取过程中，signal 可能短暂归零；若此时丢掉 current，大门会在
+    // 用户未点击已读/完成的情况下 completeGateSession('queue-empty')。但 authoritative
+    // remote 刷新若确认当前条目已被别处完成/删除，则不应继续保留 ghost 卡片。
+    const preserveCurrentDuringTransientEmpty =
+      source !== 'remote'
+      && latestPending.length === 0
+      && safeIndex < currentItems.length;
+    const currentReviewItemCount = safeIndex < currentItems.length
+      && (this.actionInFlight !== null || preserveCurrentDuringTransientEmpty)
+      ? 1
+      : 0;
+    const preserveCount = Math.min(safeIndex + currentReviewItemCount, currentItems.length);
     const preservedPrefix = currentItems.slice(0, preserveCount);
     const preservedIds = new Set(preservedPrefix.map(item => item.id));
     const nextUnprocessed = latestPending.filter(item => !preservedIds.has(item.id));
@@ -282,7 +292,9 @@ export class GateService {
         before: currentItems.length,
         after: nextItems.length,
         handled: safeIndex,
-        inFlight: inFlightCount
+        currentPreserved: currentReviewItemCount === 1,
+        preserveCurrentDuringTransientEmpty,
+        inFlight: this.actionInFlight !== null
       });
     }
 

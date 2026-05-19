@@ -5,6 +5,7 @@ import { normalizePreview } from './siyuan-preview-utils';
 import type { SiyuanBlockPreview, SiyuanChildBlockPreview, SiyuanPreviewErrorCode } from '../external-source.model';
 import {
   SiyuanProviderError,
+  type SiyuanExtensionConfigProbeResult,
   type SiyuanExtensionConfigStatus,
   type SiyuanPreviewProvider,
   type SiyuanPushConfigInput,
@@ -134,22 +135,38 @@ export class SiyuanExtensionProvider implements SiyuanPreviewProvider {
    * - hasToken 仅为布尔，绝不回传 token 明文。
    */
   async getConfigStatus(): Promise<SiyuanExtensionConfigStatus | null> {
-    if (typeof window === 'undefined') return null;
-    if (!await this.pingExtension()) return null;
+    const result = await this.probeConfigStatus();
+    return result.kind === 'ok' ? result.status : null;
+  }
+
+  async probeConfigStatus(): Promise<SiyuanExtensionConfigProbeResult> {
+    if (typeof window === 'undefined') return { kind: 'unavailable' };
+    if (!await this.pingExtension()) return { kind: 'unavailable' };
     try {
       const response = await this.postRelayRequest({
         requestType: 'nanoflow.siyuan.get-config-status',
         responseType: 'nanoflow.siyuan.config-status-result',
       });
-      if (response.ok !== true || !response.data) return null;
+      if (response.ok !== true || !response.data) {
+        return { kind: 'error', errorCode: this.readErrorCode(response.errorCode) };
+      }
       const baseUrl = this.readBoundedString(response.data.baseUrl, SIYUAN_CONFIG.MAX_URI_LENGTH);
       return {
-        baseUrl,
-        hasToken: response.data.hasToken === true,
+        kind: 'ok',
+        status: {
+          baseUrl,
+          hasToken: response.data.hasToken === true,
+        },
       };
-    } catch {
-      // 包括超时（SiyuanProviderError('extension-unavailable')）与未知错误，UI 一律视为"不支持/不可用"。
-      return null;
+    } catch (error) {
+      if (error instanceof SiyuanProviderError) {
+        if (error.code === 'extension-unavailable') {
+          // ping 成功但 config-status 超时，多半是旧扩展尚未实现该页面配置通道。
+          return { kind: 'unsupported' };
+        }
+        return { kind: 'error', errorCode: error.code };
+      }
+      return { kind: 'error', errorCode: 'unknown' };
     }
   }
 

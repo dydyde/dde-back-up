@@ -12,6 +12,12 @@ export interface SiyuanExtensionConfigStatus {
   hasToken: boolean;
 }
 
+export type SiyuanExtensionConfigProbeResult =
+  | { kind: 'ok'; status: SiyuanExtensionConfigStatus }
+  | { kind: 'unsupported' }
+  | { kind: 'unavailable' }
+  | { kind: 'error'; errorCode: SiyuanPreviewErrorCode };
+
 export interface SiyuanPushConfigInput {
   baseUrl: string;
   /** undefined 表示不改动 token；空字符串表示清除扩展中已保存的 token。 */

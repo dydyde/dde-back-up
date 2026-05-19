@@ -168,6 +168,10 @@ describe('SettingsModalComponent', () => {
     diagnoseConnection: vi.fn().mockResolvedValue({ ok: true, mode: 'extension-relay' }),
     pushExtensionConfig: vi.fn().mockResolvedValue({ ok: true }),
     getExtensionConfigStatus: vi.fn().mockResolvedValue({ baseUrl: 'http://127.0.0.1:6806', hasToken: false }),
+    probeExtensionConfigStatus: vi.fn().mockResolvedValue({
+      kind: 'ok',
+      status: { baseUrl: 'http://127.0.0.1:6806', hasToken: false },
+    }),
   };
 
   beforeEach(async () => {
@@ -349,18 +353,79 @@ describe('SettingsModalComponent', () => {
     expect(component.siyuanConnectionStatus()).toContain('扩展未安装或未启用');
   });
 
-  it('should surface an "extension not supported" badge when getConfigStatus returns null', async () => {
-    mockSiyuanPreview.getExtensionConfigStatus.mockResolvedValueOnce(null);
+  it('should surface an "extension not supported" badge when config-status probing reports unsupported', async () => {
+    mockSiyuanPreview.probeExtensionConfigStatus.mockResolvedValueOnce({ kind: 'unsupported' });
 
     await component.loadSiyuanConfig();
     fixture.detectChanges();
 
     const badge = fixture.nativeElement.querySelector('[data-testid="siyuan-extension-status"]') as HTMLElement | null;
     expect(badge).toBeTruthy();
-    expect(badge!.textContent ?? '').toContain('扩展未安装或版本过旧');
+    expect(badge!.textContent ?? '').toContain('扩展连接可用，但缺少页面配置通道');
     const saveBtn = fixture.nativeElement.querySelector('[data-testid="siyuan-save-to-extension"]') as HTMLButtonElement | null;
     expect(saveBtn).toBeTruthy();
     expect(saveBtn!.disabled).toBe(true);
+  });
+
+  it('should refresh a stale unsupported SiYuan extension badge after a successful relay connection test', async () => {
+    component.siyuanRuntimeMode.set('extension-relay');
+    component.siyuanExtensionStatus.set(null);
+    mockSiyuanPreview.diagnoseConnection.mockResolvedValueOnce({ ok: true, mode: 'extension-relay' });
+    mockSiyuanPreview.probeExtensionConfigStatus.mockResolvedValueOnce({
+      kind: 'ok',
+      status: {
+        baseUrl: 'http://127.0.0.1:6806',
+        hasToken: true,
+      },
+    });
+
+    await component.testSiyuanConnection();
+    fixture.detectChanges();
+
+    const badge = fixture.nativeElement.querySelector('[data-testid="siyuan-extension-status"]') as HTMLElement | null;
+    expect(badge).toBeTruthy();
+    expect(badge!.textContent ?? '').toContain('扩展已配置');
+    expect(badge!.textContent ?? '').not.toContain('扩展未安装或版本过旧');
+    expect(component.siyuanConnectionStatus()).toContain('思源预览通道可用');
+  });
+
+  it('should distinguish a reachable SiYuan extension from an unsupported page config channel', async () => {
+    component.siyuanRuntimeMode.set('extension-relay');
+    component.siyuanExtensionStatus.set(null);
+    mockSiyuanPreview.diagnoseConnection.mockResolvedValueOnce({ ok: true, mode: 'extension-relay' });
+    mockSiyuanPreview.probeExtensionConfigStatus.mockResolvedValueOnce({ kind: 'unsupported' });
+
+    await component.testSiyuanConnection();
+    fixture.detectChanges();
+
+    const badge = fixture.nativeElement.querySelector('[data-testid="siyuan-extension-status"]') as HTMLElement | null;
+    const saveBtn = fixture.nativeElement.querySelector('[data-testid="siyuan-save-to-extension"]') as HTMLButtonElement | null;
+    expect(badge).toBeTruthy();
+    expect(badge!.textContent ?? '').toContain('扩展连接可用，但缺少页面配置通道');
+    expect(badge!.textContent ?? '').not.toContain('扩展未安装或版本过旧');
+    expect(saveBtn).toBeTruthy();
+    expect(saveBtn!.disabled).toBe(true);
+  });
+
+  it('should keep the existing extension badge when config-status probing fails transiently', async () => {
+    component.siyuanRuntimeMode.set('extension-relay');
+    mockSiyuanPreview.diagnoseConnection.mockResolvedValueOnce({ ok: true, mode: 'extension-relay' });
+    mockSiyuanPreview.probeExtensionConfigStatus.mockResolvedValueOnce({
+      kind: 'error',
+      errorCode: 'unknown',
+    });
+
+    await component.testSiyuanConnection();
+    fixture.detectChanges();
+
+    const badge = fixture.nativeElement.querySelector('[data-testid="siyuan-extension-status"]') as HTMLElement | null;
+    const saveBtn = fixture.nativeElement.querySelector('[data-testid="siyuan-save-to-extension"]') as HTMLButtonElement | null;
+    expect(badge).toBeTruthy();
+    expect(badge!.textContent ?? '').toContain('读取配置状态失败');
+    expect(badge!.textContent ?? '').not.toContain('缺少页面配置通道');
+    expect(component.siyuanConnectionStatus()).toContain('读取扩展配置状态失败');
+    expect(saveBtn).toBeTruthy();
+    expect(saveBtn!.disabled).toBe(false);
   });
 
   function findButtonByText(text: string): HTMLButtonElement {

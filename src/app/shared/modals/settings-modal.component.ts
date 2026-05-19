@@ -28,6 +28,13 @@ interface TaskAttachmentMetadata {
   mimeType: string;
 }
 
+interface SiyuanExtensionStatusView {
+  baseUrl?: string;
+  hasToken: boolean;
+  configChannelAvailable?: boolean;
+  readError?: boolean;
+}
+
 const SIYUAN_TOKEN_MASK = '••••••••';
 
 @Component({
@@ -928,9 +935,9 @@ export class SettingsModalComponent {
    * 扩展中已保存的配置状态：
    * - undefined：尚未加载（首次渲染前）
    * - null：扩展未安装/未注入/旧版本不支持 get-config-status
-   * - 对象：扩展可达，hasToken 反映扩展侧实际授权
+    * - 对象：扩展可达，hasToken 反映扩展侧实际授权；configChannelAvailable=false 表示连接可用但页面配置通道不可用；readError=true 表示连接可用但状态读取失败
    */
-  readonly siyuanExtensionStatus = signal<{ baseUrl?: string; hasToken: boolean } | null | undefined>(undefined);
+  readonly siyuanExtensionStatus = signal<SiyuanExtensionStatusView | null | undefined>(undefined);
   readonly isSavingSiyuanToExtension = signal(false);
   /**
    * relay 模式下用户在输入框中暂存的 token 明文（仅内存，永不写入 IndexedDB）。
@@ -938,11 +945,16 @@ export class SettingsModalComponent {
    */
   private readonly siyuanPendingToken = signal<string>('');
 
-  readonly siyuanExtensionSupported = computed(() => this.siyuanExtensionStatus() !== null);
+  readonly siyuanExtensionSupported = computed(() => {
+    const status = this.siyuanExtensionStatus();
+    return status !== undefined && status !== null && status.configChannelAvailable !== false;
+  });
   readonly siyuanExtensionStatusMessage = computed(() => {
     const status = this.siyuanExtensionStatus();
     if (status === undefined) return '正在读取扩展状态…';
     if (status === null) return '扩展未安装或版本过旧（缺少页面配置通道），请安装/更新扩展后刷新页面';
+    if (status.configChannelAvailable === false) return '扩展连接可用，但缺少页面配置通道；请在扩展 Options 中配置，或更新扩展后刷新页面';
+    if (status.readError === true) return '扩展连接可用，但读取配置状态失败；可直接保存到扩展后重试';
     if (!status.hasToken) return '扩展已就绪，但尚未配置思源 Token，请在下方填写后点击"保存到扩展"';
     const baseUrl = status.baseUrl ?? SIYUAN_CONFIG.DEFAULT_BASE_URL;
     return `扩展已配置：${baseUrl}（Token 已写入扩展，页面不留存）`;
@@ -951,6 +963,8 @@ export class SettingsModalComponent {
     const status = this.siyuanExtensionStatus();
     if (status === undefined) return 'bg-slate-50 dark:bg-stone-700 text-slate-500 dark:text-stone-300';
     if (status === null) return 'bg-rose-50 dark:bg-rose-950/30 text-rose-700 dark:text-rose-300';
+    if (status.configChannelAvailable === false) return 'bg-amber-50 dark:bg-amber-950/30 text-amber-700 dark:text-amber-300';
+    if (status.readError === true) return 'bg-amber-50 dark:bg-amber-950/30 text-amber-700 dark:text-amber-300';
     if (!status.hasToken) return 'bg-amber-50 dark:bg-amber-950/30 text-amber-700 dark:text-amber-300';
     return 'bg-emerald-50 dark:bg-emerald-950/30 text-emerald-700 dark:text-emerald-300';
   });
@@ -995,19 +1009,54 @@ export class SettingsModalComponent {
   }
 
   /** 拉取扩展中已保存的 baseUrl/hasToken 状态，供徽标渲染。 */
-  private async refreshSiyuanExtensionStatus(): Promise<void> {
+  private async refreshSiyuanExtensionStatus(): Promise<SiyuanExtensionStatusView | null> {
     try {
-      const status = await this.siyuanPreview.getExtensionConfigStatus();
-      this.siyuanExtensionStatus.set(status);
-      // 扩展若已配置 baseUrl，则同步回 UI 显示（不影响 IndexedDB 中保存的 baseUrl）。
-      if (status?.baseUrl) {
-        this.siyuanBaseUrl.set(status.baseUrl);
+      const probe = await this.siyuanPreview.probeExtensionConfigStatus();
+      if (probe.kind === 'ok') {
+        this.siyuanExtensionStatus.set(probe.status);
+        // 扩展若已配置 baseUrl，则同步回 UI 显示（不影响 IndexedDB 中保存的 baseUrl）。
+        if (probe.status.baseUrl) {
+          this.siyuanBaseUrl.set(probe.status.baseUrl);
+        }
+        return probe.status;
       }
+
+      if (probe.kind === 'unsupported') {
+        const unsupportedStatus: SiyuanExtensionStatusView = {
+          baseUrl: this.siyuanBaseUrl() || SIYUAN_CONFIG.DEFAULT_BASE_URL,
+          hasToken: false,
+          configChannelAvailable: false,
+        };
+        this.siyuanExtensionStatus.set(unsupportedStatus);
+        return unsupportedStatus;
+      }
+
+      if (probe.kind === 'unavailable') {
+        this.siyuanExtensionStatus.set(null);
+        return null;
+      }
+
+      const errorStatus: SiyuanExtensionStatusView = {
+        baseUrl: this.siyuanBaseUrl() || SIYUAN_CONFIG.DEFAULT_BASE_URL,
+        hasToken: false,
+        readError: true,
+      };
+      this.logger.warn('SettingsModal', '读取扩展配置状态失败', {
+        code: probe.errorCode,
+      });
+      this.siyuanExtensionStatus.set(errorStatus);
+      return errorStatus;
     } catch (error) {
       this.logger.warn('SettingsModal', '读取扩展配置状态失败', {
         message: error instanceof Error ? error.message : 'unknown',
       });
-      this.siyuanExtensionStatus.set(null);
+      const errorStatus: SiyuanExtensionStatusView = {
+        baseUrl: this.siyuanBaseUrl() || SIYUAN_CONFIG.DEFAULT_BASE_URL,
+        hasToken: false,
+        readError: true,
+      };
+      this.siyuanExtensionStatus.set(errorStatus);
+      return errorStatus;
     }
   }
 
@@ -1125,8 +1174,22 @@ export class SettingsModalComponent {
     try {
       const result = await this.siyuanPreview.diagnoseConnection();
       if (result.ok) {
+        if (result.mode === 'extension-relay') {
+          const status = await this.refreshSiyuanExtensionStatus();
+          if (status?.readError) {
+            this.siyuanConnectionStatus.set('思源预览通道可用，但读取扩展配置状态失败，请稍后重试');
+            return;
+          }
+          if (status === null) {
+            this.siyuanConnectionStatus.set('思源预览通道可用，但扩展配置状态已失效，请刷新页面后重试');
+            return;
+          }
+        }
         this.siyuanConnectionStatus.set(result.mode === 'cache-only' ? '当前为仅缓存与深链模式' : '思源预览通道可用');
         return;
+      }
+      if (result.mode === 'extension-relay' && result.errorCode === 'extension-unavailable') {
+        this.siyuanExtensionStatus.set(null);
       }
       const message = this.formatSiyuanDiagnosisMessage(result.errorCode);
       this.siyuanConnectionStatus.set(message);
