@@ -1,4 +1,4 @@
-import { vi, describe, it, expect, beforeEach } from 'vitest';
+import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { Injector } from '@angular/core';
 import { LocalBackupService } from './local-backup.service';
 import { LoggerService } from './logger.service';
@@ -27,20 +27,13 @@ describe('LocalBackupService', () => {
   beforeEach(() => {
     localStorage.clear();
     exportServiceMock.recordLocalBackupSuccess.mockReset();
-    const injector = Injector.create({
-      providers: [
-        { provide: LocalBackupService, useClass: LocalBackupService },
-        { provide: LoggerService, useValue: { category: () => mockLoggerCategory } },
-        { provide: ToastService, useValue: { info: vi.fn(), warning: vi.fn(), error: vi.fn(), success: vi.fn() } },
-        { provide: ExportService, useValue: exportServiceMock },
-        { provide: UiStateService, useValue: { isMobile: vi.fn(() => false) } },
-        { provide: PreferenceService, useValue: { get: vi.fn(), set: vi.fn(), syncLocalBackupSettings: vi.fn() } },
-        { provide: SentryLazyLoaderService, useValue: { captureException: vi.fn() } },
-        { provide: DisasterBackupService, useValue: disasterBackupServiceMock },
-      ],
-    });
-    service = injector.get(LocalBackupService);
+    service = createService();
     disasterBackupServiceMock.buildLocalBlob.mockReset();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    Reflect.deleteProperty(window as unknown as Record<string, unknown>, 'showDirectoryPicker');
   });
 
   describe('初始状态', () => {
@@ -108,6 +101,57 @@ describe('LocalBackupService', () => {
       expect(result).toHaveProperty('success');
       expect(result.success).toBe(false);
     });
+
+    it('选择目录时使用稳定 picker 配置，便于浏览器记住上次目录', async () => {
+      const handle = { name: 'backups', kind: 'directory' } as unknown as FileSystemDirectoryHandle;
+      window.showDirectoryPicker = vi.fn(async () => handle);
+      service = createService();
+
+      const result = await service.requestDirectoryAccess();
+
+      expect(result.success).toBe(true);
+      expect(window.showDirectoryPicker).toHaveBeenCalledWith(expect.objectContaining({
+        id: 'nanoflow-local-backup',
+        mode: 'readwrite',
+        startIn: 'documents',
+      }));
+      expect(service.directoryName()).toBe('backups');
+      expect(service.hasSavedHandle()).toBe(true);
+    });
+  });
+
+  describe('自动备份恢复', () => {
+    it('项目提供者接入时应恢复刷新前已开启的自动备份', () => {
+      vi.useFakeTimers();
+      const getProjects = () => [{ id: 'p1', name: 'Test', tasks: [], connections: [] }];
+      const startSpy = vi.spyOn(service, 'startAutoBackup');
+      setPrivateSignal(service, '_isAuthorized', true);
+      setPrivateSignal(service, '_autoBackupEnabled', true);
+
+      service.setProjectsProvider(getProjects);
+
+      expect(startSpy).toHaveBeenCalledWith(getProjects, undefined, { silent: true });
+      service.stopAutoBackup();
+    });
+
+    it('自动备份定时器不应在无用户手势时请求目录权限', async () => {
+      vi.useFakeTimers();
+      const handle = createDirectoryHandleMock('backups', 'prompt');
+      (service as unknown as { directoryHandle: FileSystemDirectoryHandle }).directoryHandle = handle;
+      setPrivateSignal(service, '_isAuthorized', true);
+
+      service.startAutoBackup(
+        () => [{ id: 'p1', name: 'Test', tasks: [], connections: [] }],
+        1000,
+        { silent: true },
+      );
+      await vi.advanceTimersByTimeAsync(1000);
+
+      expect(handle.queryPermission).toHaveBeenCalledWith({ mode: 'readwrite' });
+      expect(handle.requestPermission).not.toHaveBeenCalled();
+      expect(disasterBackupServiceMock.buildLocalBlob).not.toHaveBeenCalled();
+      service.stopAutoBackup();
+    });
   });
 
   describe('performBackup', () => {
@@ -155,4 +199,36 @@ describe('LocalBackupService', () => {
       expect(writes).toHaveLength(1);
     });
   });
+
+  function setPrivateSignal<T>(target: LocalBackupService, key: string, value: T): void {
+    (target as unknown as Record<string, { set(next: T): void }>)[key].set(value);
+  }
+
+  function createDirectoryHandleMock(name: string, permission: PermissionState): FileSystemDirectoryHandle {
+    return {
+      name,
+      kind: 'directory',
+      queryPermission: vi.fn(async () => permission),
+      requestPermission: vi.fn(async () => permission),
+      getFileHandle: vi.fn(),
+      removeEntry: vi.fn(),
+      values: vi.fn(),
+    } as unknown as FileSystemDirectoryHandle;
+  }
+
+  function createService(): LocalBackupService {
+    const injector = Injector.create({
+      providers: [
+        { provide: LocalBackupService, useClass: LocalBackupService },
+        { provide: LoggerService, useValue: { category: () => mockLoggerCategory } },
+        { provide: ToastService, useValue: { info: vi.fn(), warning: vi.fn(), error: vi.fn(), success: vi.fn() } },
+        { provide: ExportService, useValue: exportServiceMock },
+        { provide: UiStateService, useValue: { isMobile: vi.fn(() => false) } },
+        { provide: PreferenceService, useValue: { get: vi.fn(), set: vi.fn(), syncLocalBackupSettings: vi.fn() } },
+        { provide: SentryLazyLoaderService, useValue: { captureException: vi.fn() } },
+        { provide: DisasterBackupService, useValue: disasterBackupServiceMock },
+      ],
+    });
+    return injector.get(LocalBackupService);
+  }
 });

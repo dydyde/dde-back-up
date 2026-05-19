@@ -35,7 +35,27 @@
 
 ---
 
-## 部署到 Vercel（推荐）
+## 部署到 Cloudflare Pages（推荐）
+
+NanoFlow 当前推荐使用 Cloudflare Pages Direct Upload：GitHub Actions 负责构建、测试、产物门禁和 Wrangler 上传，Cloudflare Pages 只负责静态资源分发。
+
+推荐路径：
+
+1. 在 Cloudflare Pages 创建 Direct Upload 项目，例如 `nanoflow`。
+2. 在 GitHub Actions Secrets 写入：
+   - `CLOUDFLARE_API_TOKEN`
+   - `CLOUDFLARE_ACCOUNT_ID`
+   - `CLOUDFLARE_PAGES_PROJECT_NAME`
+   - `NG_APP_SUPABASE_URL`
+   - `NG_APP_SUPABASE_ANON_KEY`
+3. 需要预览环境时，在 GitHub Environment `NanoFlow-Preview` 写入同名 Supabase preview secrets。
+4. 合并到 `main` 后由 [.github/workflows/deploy-cloudflare-pages.yml](../.github/workflows/deploy-cloudflare-pages.yml) 部署 `dist/browser`。
+
+完整迁移门禁、缓存头、PWA、Supabase Auth / CORS 和回滚策略见：[cloudflare-migration-plan.md](cloudflare-migration-plan.md)。
+
+---
+
+## 部署到 Vercel（备选）
 
 [![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2Fdydyde%2Fdde&env=NG_APP_SUPABASE_URL,NG_APP_SUPABASE_ANON_KEY&project-name=my-nanoflow&repository-name=my-nanoflow)
 

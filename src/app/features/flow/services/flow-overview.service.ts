@@ -48,6 +48,8 @@ export class FlowOverviewService {
   private hasManualBoxMovement: boolean = false;
   private overviewBoxViewportBounds: go.Rect | null = null;
   private overviewReleaseViewportBounds: go.Rect | null = null;
+  private overviewReleaseShouldAnchor = false;
+  private overviewPostDragAnchorSuppressionBounds: go.Rect | null = null;
   private isApplyingOverviewViewportUpdate: boolean = false;
   private overviewUpdateQueuedWhileApplying: boolean = false;
   private overviewScheduleUpdate: ((source: 'viewport' | 'document') => void) | null = null;
@@ -382,6 +384,8 @@ export class FlowOverviewService {
     this.isOverviewBoxDragging = false;
     this.overviewBoxViewportBounds = null;
     this.overviewReleaseViewportBounds = null;
+    this.overviewReleaseShouldAnchor = false;
+    this.overviewPostDragAnchorSuppressionBounds = null;
     this.isApplyingOverviewViewportUpdate = false;
     this.overviewUpdateQueuedWhileApplying = false;
     this.overviewInteractionLastApplyAt = 0;
@@ -490,18 +494,6 @@ export class FlowOverviewService {
       return Math.max(1e-4, Math.min(0.5, scale));
     };
     
-    const lerp = (a: number, b: number, t: number): number => a + (b - a) * t;
-    
-    const SCALE_LERP_FACTOR_SHRINK = 0.45;
-    const SCALE_LERP_FACTOR_GROW = 0.18;
-    
-    const smartLerp = (current: number, target: number): number => {
-      if (current / target > 2 || target / current > 2) {
-        return target;
-      }
-      const t = target < current ? SCALE_LERP_FACTOR_SHRINK : SCALE_LERP_FACTOR_GROW;
-      return lerp(current, target, t);
-    };
 
     /**
      * 【2026-05-11 根因修复】scale 更新策略：仅在「真正发生持续 box 拖拽位移」时
@@ -546,6 +538,14 @@ export class FlowOverviewService {
     this.overview.centerRect(nodeBounds);
     
     // 动态扩展边界（无限画布核心）
+    const viewportBoundsAlmostEqual = (left: go.Rect, right: go.Rect): boolean => {
+      const epsilon = 1;
+      return Math.abs(left.x - right.x) < epsilon
+        && Math.abs(left.y - right.y) < epsilon
+        && Math.abs(left.width - right.width) < epsilon
+        && Math.abs(left.height - right.height) < epsilon;
+    };
+
     const calculateExtendedBounds = (baseBounds: go.Rect, viewportBounds: go.Rect): go.Rect => {
       const overflowLeft = Math.max(0, baseBounds.x - viewportBounds.x);
       const overflowRight = Math.max(0, viewportBounds.right - baseBounds.right);
@@ -776,23 +776,24 @@ export class FlowOverviewService {
               }
             }
 
-            // 【2026-05-09 根因修复】统一用 viewportBounds 作为唯一居中锚点。
-            //
-            // 之前条件 `usingManualViewportBounds || isViewportOutside` 假设：
-            //   "viewport 在节点群内时，worldBounds≈nodeBounds，几何中心和
-            //    viewportBounds.center 几乎重合，可以交给 contentAlignment: Spot.Center"
-            // 但 worldBounds = nodeBounds ∪ viewportBounds 在节点群非对称延展时
-            // 与 viewportBounds.center 偏差很大，导致：
-            //   - 拖拽/点击：apply 这里调 centerRect(viewportBounds) → 概览相对
-            //     viewport 居中；
-            //   - 松手后 rAF 触发 render：Spot.Center 把 worldBounds 重新居中 →
-            //     概览整体偏移 → 概览框相对容器跳到 worldBounds.center 与
-            //     viewportBounds.center 的差值方向 → "松手跳回去 / 缩略块和主
-            //     视图脱节" 的视觉跳变。
-            // 修复：构造函数已移除 contentAlignment: Spot.Center；这里也无条件
-            // 以 viewportBounds 为锚点，让拖拽中、释放帧、稳态、resize 全程
-            // 共享同一居中规则，从根源消除模式切换。
-            this.overview.centerRect(worldBounds);
+            // 拖拽中和实际拖动刚释放后的同位置刷新都不重居中，避免底图
+            // 追着白框跑或在异步 ViewportBoundsChanged 中把白框拉回。
+            // 当主图 viewport 真正改变时再恢复普通锚定，保留非拖拽同步能力。
+            const suppressedPostDragBounds = this.overviewPostDragAnchorSuppressionBounds;
+            const shouldSuppressSettledPostDragAnchor = !usingManualViewportBounds
+              && !!suppressedPostDragBounds
+              && suppressedPostDragBounds.isReal()
+              && viewportBoundsAlmostEqual(viewportBounds, suppressedPostDragBounds);
+            if (!usingManualViewportBounds && suppressedPostDragBounds && !shouldSuppressSettledPostDragAnchor) {
+              this.overviewPostDragAnchorSuppressionBounds = null;
+            }
+
+            const shouldAnchorOverviewOnViewport = !usingFakeViewportBounds
+              && !shouldSuppressSettledPostDragAnchor
+              && (!usingReleaseViewportBounds || this.overviewReleaseShouldAnchor);
+            if (shouldAnchorOverviewOnViewport) {
+              this.overview.centerRect(viewportBounds);
+            }
           }
         }
         
@@ -820,8 +821,18 @@ export class FlowOverviewService {
           }
         }
 
-        if (usingReleaseViewportBounds) {
-          this.overviewReleaseViewportBounds = null;
+        if (usingReleaseViewportBounds && releaseViewportBounds) {
+          const observedViewportBounds = this.diagram.viewportBounds;
+          const observedCaughtUp = observedViewportBounds.isReal()
+            && Math.abs(observedViewportBounds.x - releaseViewportBounds.x) < 1
+            && Math.abs(observedViewportBounds.y - releaseViewportBounds.y) < 1;
+          if (observedCaughtUp) {
+            if (!this.overviewReleaseShouldAnchor) {
+              this.overviewPostDragAnchorSuppressionBounds = releaseViewportBounds.copy();
+            }
+            this.overviewReleaseViewportBounds = null;
+            this.overviewReleaseShouldAnchor = false;
+          }
         }
       } finally {
         this.isApplyingOverviewViewportUpdate = false;
@@ -1178,28 +1189,34 @@ export class FlowOverviewService {
       const stableCenter = computeStableDocCenterFromClient(clientX, clientY);
       if (!stableCenter) return;
 
-      const centerX = stableCenter.x;
-      const centerY = stableCenter.y;
-      const boxCenter = new go.Point(centerX, centerY);
       const desiredPos = new go.Point(
-        centerX - manualDragViewportSize.w / 2,
-        centerY - manualDragViewportSize.h / 2
+        stableCenter.x - manualDragViewportSize.w / 2,
+        stableCenter.y - manualDragViewportSize.h / 2
       );
 
-      moveOverviewBoxToCenter(boxCenter);
-
-      if (!this.diagram.position.equals(desiredPos)) {
+      let acceptedPosition = this.diagram.position;
+      if (!acceptedPosition.equals(desiredPos)) {
+        const previousPosition = acceptedPosition.copy();
         this.diagram.position = desiredPos;
+        acceptedPosition = this.diagram.position;
         // 【2026-05-11】检测到实际位移，启用 smartLerp 平滑动画（仅在真实拖拽中）。
-        this.hasManualBoxMovement = true;
+        this.hasManualBoxMovement = this.hasManualBoxMovement || !acceptedPosition.equals(previousPosition);
       }
+
+      // Diagram.position 可能被 GoJS 的 positionComputation / 滚动边界修正；
+      // 小地图白框和 fake viewport 必须使用实际接受的位置，避免阻挡后回弹或残影。
+      const acceptedBoxCenter = new go.Point(
+        acceptedPosition.x + manualDragViewportSize.w / 2,
+        acceptedPosition.y + manualDragViewportSize.h / 2,
+      );
+      moveOverviewBoxToCenter(acceptedBoxCenter);
 
       // 【2026-04-20 回归修复】同步推导 fakeViewportBounds，确保 applyOverviewUpdate
       // 在部分浏览器 ViewportBoundsChanged 被合并/延迟的情况下仍能跟手刷新 scale
       // 与 fixedBounds，让小地图里的任务块随预览框位置实时重新排布。
-      // 这里直接传 boxCenter 作为 centerOverride，第二参（fallbackDocPt）用不到 ——
+      // 这里直接传 acceptedBoxCenter 作为 centerOverride，第二参（fallbackDocPt）用不到 ——
       // 拖拽中我们已知准确白框中心，无需 fallback。
-      updateOverviewBoxViewportBounds(boxCenter);
+      updateOverviewBoxViewportBounds(acceptedBoxCenter);
     };
 
     const endManualBoxDrag = (): void => {
@@ -1344,9 +1361,21 @@ export class FlowOverviewService {
       isDraggingBox = false;
       isMouseDraggingBox = false;
       if (wasBoxDragReset) {
-        this.overviewReleaseViewportBounds = this.overviewBoxViewportBounds?.isReal()
-          ? this.overviewBoxViewportBounds.copy()
-          : null;
+        const shouldAnchorRelease = !this.hasManualBoxMovement;
+        const actualViewportBounds = this.diagram?.viewportBounds;
+        const actualPosition = this.diagram?.position;
+        const hasActualPosition = !!actualPosition
+          && Number.isFinite(actualPosition.x)
+          && Number.isFinite(actualPosition.y);
+        this.overviewReleaseViewportBounds = actualViewportBounds?.isReal() && hasActualPosition
+          ? new go.Rect(actualPosition.x, actualPosition.y, actualViewportBounds.width, actualViewportBounds.height)
+          : this.overviewBoxViewportBounds?.isReal()
+            ? this.overviewBoxViewportBounds.copy()
+            : null;
+        this.overviewReleaseShouldAnchor = shouldAnchorRelease;
+        this.overviewPostDragAnchorSuppressionBounds = shouldAnchorRelease || !this.overviewReleaseViewportBounds
+          ? null
+          : this.overviewReleaseViewportBounds.copy();
       }
       this.isOverviewBoxDragging = false;
       this.isOverviewInteracting = false;

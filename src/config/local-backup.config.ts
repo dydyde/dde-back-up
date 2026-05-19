@@ -40,6 +40,8 @@ export const LOCAL_BACKUP_CONFIG = {
   
   /** 目录选择器选项 */
   DIRECTORY_PICKER_OPTIONS: {
+    /** 稳定 picker id 让浏览器记住上次选择的位置 */
+    id: 'nanoflow-local-backup',
     /** 默认起始目录 */
     startIn: 'documents' as const,
     /** 访问模式 */

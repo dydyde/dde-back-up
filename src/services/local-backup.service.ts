@@ -45,6 +45,20 @@ const IDB_KEYS = {
   DIRECTORY_HANDLE: 'nanoflow.local-backup.directory-handle',
 } as const;
 
+type LocalBackupProjectSnapshot = { id: string; name: string; tasks: unknown[]; connections: unknown[] };
+
+interface PermissionCheckOptions {
+  request?: boolean;
+}
+
+interface BackupRunOptions {
+  requestPermission?: boolean;
+}
+
+interface AutoBackupStartOptions {
+  silent?: boolean;
+}
+
 // ============================================
 // 服务实现
 // ============================================
@@ -63,9 +77,10 @@ export class LocalBackupService implements OnDestroy {
   
   // 内部状态
   private directoryHandle: FileSystemDirectoryHandle | null = null;
+  private restoreHandlePromise: Promise<boolean> | null = null;
   private autoBackupTimer: ReturnType<typeof setInterval> | null = null;
   /** 用于自动备份的项目获取函数（持久化后恢复使用） */
-  private getProjectsFn: (() => { id: string; name: string; tasks: unknown[]; connections: unknown[] }[]) | null = null;
+  private getProjectsFn: (() => LocalBackupProjectSnapshot[]) | null = null;
   
   // 响应式状态信号
   private readonly _isAuthorized = signal(false);
@@ -144,7 +159,7 @@ export class LocalBackupService implements OnDestroy {
     // 先从 localStorage 加载基础状态
     this.loadPersistedState();
     // 然后从 IndexedDB 恢复 DirectoryHandle（异步）
-    this.restoreFromIndexedDB();
+    this.restoreHandlePromise = this.restoreFromIndexedDB();
   }
   
   ngOnDestroy(): void {
@@ -169,10 +184,7 @@ export class LocalBackupService implements OnDestroy {
       this.logger.info('请求目录访问授权...');
       
       // 调用 File System Access API
-      this.directoryHandle = await window.showDirectoryPicker!({
-        mode: 'readwrite',
-        startIn: 'documents',
-      });
+      this.directoryHandle = await window.showDirectoryPicker!(LOCAL_BACKUP_CONFIG.DIRECTORY_PICKER_OPTIONS);
       
       const directoryName = this.directoryHandle.name;
       
@@ -185,6 +197,10 @@ export class LocalBackupService implements OnDestroy {
       // 持久化到 IndexedDB 和 localStorage
       await this.saveDirectoryHandleToIDB();
       this.savePersistedState();
+
+      if (this._autoBackupEnabled() && this.getProjectsFn) {
+        this.startAutoBackup(this.getProjectsFn, undefined, { silent: true });
+      }
       
       this.logger.info('目录授权成功', { directoryName });
       this.toast.success(`已选择备份目录：${directoryName}`);
@@ -211,7 +227,9 @@ export class LocalBackupService implements OnDestroy {
    * 检查并恢复目录权限
    * 浏览器重启后需要重新获取权限
    */
-  async checkAndRestorePermission(): Promise<boolean> {
+  async checkAndRestorePermission(options: PermissionCheckOptions = {}): Promise<boolean> {
+    await this.ensureDirectoryHandleLoaded();
+
     if (!this.directoryHandle) {
       return false;
     }
@@ -226,7 +244,12 @@ export class LocalBackupService implements OnDestroy {
         return true;
       }
       
-      // 尝试请求权限（需要用户手势触发）
+      if (options.request === false) {
+        this._isAuthorized.set(false);
+        return false;
+      }
+
+      // 尝试请求权限（必须由用户手势触发）
       const request = await this.directoryHandle.requestPermission({ mode: 'readwrite' });
       this._permissionState.set(request);
       
@@ -251,7 +274,7 @@ export class LocalBackupService implements OnDestroy {
   async resumePermission(): Promise<boolean> {
     if (!this.directoryHandle) {
       // 尝试从 IndexedDB 恢复 handle
-      const restored = await this.restoreFromIndexedDB();
+      const restored = await this.ensureDirectoryHandleLoaded();
       if (!restored || !this.directoryHandle) {
         this.toast.error('未找到保存的备份目录，请重新选择');
         return false;
@@ -313,7 +336,9 @@ export class LocalBackupService implements OnDestroy {
    * 执行本地备份
    * @param projects 要备份的项目列表
    */
-  async performBackup(projects: { id: string; name: string; tasks: unknown[]; connections: unknown[] }[]): Promise<LocalBackupResult> {
+  async performBackup(projects: LocalBackupProjectSnapshot[], options: BackupRunOptions = {}): Promise<LocalBackupResult> {
+    await this.ensureDirectoryHandleLoaded();
+
     if (!this.directoryHandle) {
       return { success: false, error: '未授权目录访问，请先选择备份目录' };
     }
@@ -323,7 +348,7 @@ export class LocalBackupService implements OnDestroy {
     }
     
     // 检查权限
-    const hasPermission = await this.checkAndRestorePermission();
+    const hasPermission = await this.checkAndRestorePermission({ request: options.requestPermission !== false });
     if (!hasPermission) {
       this._isAuthorized.set(false);
       return { success: false, error: '目录访问权限已过期，请重新授权' };
@@ -518,8 +543,9 @@ export class LocalBackupService implements OnDestroy {
    * @param intervalMs 备份间隔（毫秒）
    */
   startAutoBackup(
-    getProjects: () => { id: string; name: string; tasks: unknown[]; connections: unknown[] }[],
-    intervalMs?: number
+    getProjects: () => LocalBackupProjectSnapshot[],
+    intervalMs?: number,
+    options: AutoBackupStartOptions = {},
   ): void {
     if (!this._isAuthorized()) {
       this.logger.warn('未授权目录，无法启动自动备份');
@@ -537,7 +563,7 @@ export class LocalBackupService implements OnDestroy {
     this.autoBackupTimer = setInterval(async () => {
       const projects = getProjects();
       if (projects.length > 0) {
-        const result = await this.performBackup(projects);
+        const result = await this.performBackup(projects, { requestPermission: false });
         if (result.success) {
           this.logger.debug('自动备份成功', { filename: result.filename });
         } else {
@@ -551,7 +577,9 @@ export class LocalBackupService implements OnDestroy {
     this.savePersistedState();
     
     this.logger.info('自动备份已启动', { intervalMs: interval });
-    this.toast.success('自动备份已开启');
+    if (!options.silent) {
+      this.toast.success('自动备份已开启');
+    }
   }
   
   /**
@@ -577,6 +605,9 @@ export class LocalBackupService implements OnDestroy {
   setAutoBackupInterval(intervalMs: number): void {
     this._autoBackupIntervalMs.set(intervalMs);
     this.savePersistedState();
+    if (this._autoBackupEnabled() && this._isAuthorized() && this.getProjectsFn) {
+      this.startAutoBackup(this.getProjectsFn, intervalMs, { silent: true });
+    }
   }
   
   // ============================================
@@ -752,9 +783,13 @@ export class LocalBackupService implements OnDestroy {
           this._isAuthorized.set(true);
           this.logger.info('DirectoryHandle 权限仍然有效，已自动恢复', { name: handle.name });
           
-          // 如果之前启用了自动备份，显示提示（但不自动启动，需要 getProjectsFn）
           if (this._autoBackupEnabled()) {
-            this.logger.info('等待设置项目获取函数后恢复自动备份');
+            if (this.getProjectsFn) {
+              this.startAutoBackup(this.getProjectsFn, undefined, { silent: true });
+              this.logger.info('自动备份已随目录权限恢复');
+            } else {
+              this.logger.info('等待设置项目获取函数后恢复自动备份');
+            }
           }
           
           return true;
@@ -778,6 +813,15 @@ export class LocalBackupService implements OnDestroy {
       return false;
     }
   }
+
+  private async ensureDirectoryHandleLoaded(): Promise<boolean> {
+    if (this.directoryHandle) return true;
+    if (!this.restoreHandlePromise) {
+      this.restoreHandlePromise = this.restoreFromIndexedDB();
+    }
+    await this.restoreHandlePromise;
+    return !!this.directoryHandle;
+  }
   
   /**
    * 清除 IndexedDB 中的 DirectoryHandle
@@ -795,13 +839,13 @@ export class LocalBackupService implements OnDestroy {
    * 设置项目获取函数（用于权限恢复后自动启动备份）
    * 应在应用初始化时调用
    */
-  setProjectsProvider(getProjects: () => { id: string; name: string; tasks: unknown[]; connections: unknown[] }[]): void {
+  setProjectsProvider(getProjects: () => LocalBackupProjectSnapshot[]): void {
     this.getProjectsFn = getProjects;
     
     // 如果权限已授权且自动备份已启用，立即启动
     if (this._isAuthorized() && this._autoBackupEnabled() && !this.autoBackupTimer) {
       this.logger.info('权限已授权，正在恢复自动备份...');
-      this.startAutoBackup(getProjects);
+      this.startAutoBackup(getProjects, undefined, { silent: true });
     }
   }
 }

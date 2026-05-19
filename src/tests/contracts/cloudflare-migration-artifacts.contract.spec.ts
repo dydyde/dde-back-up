@@ -95,8 +95,30 @@ describe('Cloudflare migration artifact contracts', () => {
     expect(workflow).toContain('npm run quality:guard:build-deterministic');
     expect(workflow).toContain('wrangler@${WRANGLER_VERSION} pages dev dist/browser');
     expect(workflow).toContain('scripts/smoke/cloudflare-header-smoke.sh');
+    expect(workflow).toContain('wrangler.workers-static-assets.dry-run.toml');
+    expect(workflow).toContain('wrangler@${WRANGLER_VERSION} deploy --config wrangler.workers-static-assets.dry-run.toml --dry-run');
     expect(workflow).not.toContain('CLOUDFLARE_API_TOKEN');
     expect(workflow).not.toContain('SENTRY_AUTH_TOKEN');
+  });
+
+  it('keeps the Workers Static Assets fallback as a non-production dry-run path', () => {
+    const config = read('wrangler.workers-static-assets.dry-run.toml');
+    const worker = read('cloudflare/workers-static-assets/shell-worker.js');
+
+    expect(config).toContain('name = "nanoflow-workers-static-assets-dry-run"');
+    expect(config).toContain('main = "cloudflare/workers-static-assets/shell-worker.js"');
+    expect(config).toContain('workers_dev = false');
+    expect(config).toContain('directory = "./dist/browser"');
+    expect(config).toContain('binding = "ASSETS"');
+    expect(config).toContain('not_found_handling = "single-page-application"');
+    expect(config).toContain('run_worker_first = ["/*"]');
+    expect(config).not.toContain('routes');
+    expect(config).not.toContain('account_id');
+    expect(worker).toContain('env.ASSETS.fetch(request)');
+    expect(worker).toContain("headers.delete('Link')");
+    expect(worker).toContain("'/ngsw.json'");
+    expect(worker).toContain("'/version.json'");
+    expect(worker).toContain("'no-store, no-cache, must-revalidate'");
   });
 
   it('keeps the Vercel prebuilt recovery workflow manual and gated', () => {
@@ -309,6 +331,15 @@ describe('Cloudflare migration artifact contracts', () => {
     expect(dnsPrefetch).toBe(supabaseUrl);
     expect(setEnv).toContain('supabasePreconnectPattern');
     expect(setEnv).toContain('supabaseDnsPrefetchPattern');
+  });
+
+  it('keeps repo index.html environment-driven instead of checking in live production values', () => {
+    const indexHtml = read('index.html');
+
+    expect(indexHtml).toContain("var CANONICAL_ORIGIN = '';\n");
+    expect(indexHtml).toContain('https://your-project.supabase.co');
+    expect(indexHtml).toContain('YOUR_SUPABASE_ANON_KEY');
+    expect(indexHtml).not.toContain('https://fkhihclpghmmtbbywvoj.supabase.co');
   });
 
   it('deterministic guard normalizes volatile ngsw timestamp while comparing stable SW content', () => {

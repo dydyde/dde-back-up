@@ -125,7 +125,7 @@ NG_APP_SUPABASE_ANON_KEY=your-anon-key
 
 > 最快部署自己的实例，直接看：[docs/deploy-private-instance.md](docs/deploy-private-instance.md)
 >
-> 支持一键部署到 **Vercel**（推荐）、**Netlify** 或 **Railway**。
+> 推荐部署到 **Cloudflare Pages**（GitHub Actions Direct Upload）；**Vercel**、**Netlify**、**Railway** 保留为备选或回滚路径。
 
 ### 想用语音转写
 
@@ -590,7 +590,7 @@ Gate 现在会在冷启动、进入 reviewing 和页面重新可见时主动做�
 - **SiYuan 知识锚点**：完成 anchor app integration、relay options storage 加固，并连续补齐多轮 validation / review feedback
 - **同步修复收口**：补强 project sync terminal failures、retry bounds 与 ownership checks，继续稳定 Black Box sync / recording
 - **Gate / Android 小组件**：恢复 Gate 已读冷却，并修复 MIUI stale empty state 下的小组件强制刷新路径
-- **Cloudflare / 同步协议**：继续推进 Cloudflare migration，补齐 sync RPC safeguards 与 protocol refactor 收口
+- **Cloudflare / 同步协议**：Cloudflare Pages Direct Upload 迁移链路已成为推荐发布路径，继续补齐 custom domain、Realtime 弱网和迁移后观察门禁
 - **CI / 测试 / 文档**：分片基线、隔离修复、deploy workflow rerun 统计与 README 更新持续同步
 
 按 `origin/main` 最近 30 条合并 / 推送记录整理如下：
@@ -634,8 +634,8 @@ Gate 现在会在冷启动、进入 reviewing 和页面重新可见时主动做�
 
 | 文档 | 说明 |
 |------|------|
-| [docs/deploy-private-instance.md](docs/deploy-private-instance.md) | 部署私有实例（Vercel / Netlify / Railway） |
-| [docs/cloudflare-migration-plan.md](docs/cloudflare-migration-plan.md) | Cloudflare Pages 迁移方案与门禁 |
+| [docs/deploy-private-instance.md](docs/deploy-private-instance.md) | 部署私有实例（Cloudflare Pages / Vercel / Netlify / Railway） |
+| [docs/cloudflare-migration-plan.md](docs/cloudflare-migration-plan.md) | Cloudflare Pages 迁移方案、门禁与迁移后建议 |
 | [TRANSCRIBE-TROUBLESHOOTING.md](TRANSCRIBE-TROUBLESHOOTING.md) | 语音转写异常排查 |
 | [scripts/README.md](scripts/README.md) | 数据库初始化、脚本用途、测试矩阵说明 |
 
@@ -831,7 +831,8 @@ npm run build:strict
 
 | 平台 | 配置文件 |
 |------|----------|
-| Vercel（推荐） | [vercel.json](vercel.json) |
+| Cloudflare Pages（推荐） | [.github/workflows/deploy-cloudflare-pages.yml](.github/workflows/deploy-cloudflare-pages.yml)、[docs/cloudflare-migration-plan.md](docs/cloudflare-migration-plan.md) |
+| Vercel（回滚 / 备选） | [vercel.json](vercel.json)、[.github/workflows/vercel-prebuilt-recovery.yml](.github/workflows/vercel-prebuilt-recovery.yml) |
 | Netlify | [netlify.toml](netlify.toml) |
 | Railway | [railway.json](railway.json) |
 

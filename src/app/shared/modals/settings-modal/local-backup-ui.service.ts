@@ -46,6 +46,14 @@ export class LocalBackupUIService {
     await this.localBackupService.requestDirectoryAccess();
   }
 
+  async handleResumeLocalBackupPermission(projectsProvider: () => Project[]): Promise<void> {
+    this.localBackupService.setProjectsProvider(projectsProvider);
+    const granted = await this.localBackupService.resumePermission();
+    if (granted && this.localBackupService.autoBackupEnabled()) {
+      this.localBackupService.startAutoBackup(projectsProvider, undefined, { silent: true });
+    }
+  }
+
   /**
    * 取消本地备份授权
    */

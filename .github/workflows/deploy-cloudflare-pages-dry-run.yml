@@ -125,6 +125,11 @@ jobs:
           done
           bash scripts/smoke/cloudflare-header-smoke.sh http://127.0.0.1:8788
 
+      - name: Run Workers Static Assets dry-run
+        run: |
+          set -euo pipefail
+          npx --yes wrangler@${WRANGLER_VERSION} deploy --config wrangler.workers-static-assets.dry-run.toml --dry-run --outdir tmp/workers-static-assets-dry-run
+
       - name: Summary
         run: |
           echo "## Cloudflare dry-run summary" >> "$GITHUB_STEP_SUMMARY"
@@ -134,3 +139,4 @@ jobs:
           echo "- header rules: $(grep -cE '^/($|[^[:space:]])' dist/browser/_headers || echo 0)" >> "$GITHUB_STEP_SUMMARY"
           echo "- deterministic guard: passed" >> "$GITHUB_STEP_SUMMARY"
           echo "- local Pages smoke: passed" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Workers Static Assets dry-run: passed" >> "$GITHUB_STEP_SUMMARY"

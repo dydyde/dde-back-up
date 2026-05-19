@@ -1,11 +1,11 @@
 # NanoFlow × SiYuan Knowledge Anchor 策划案
 
-> **版本**：v1.3
-> **日期**：2026-04-28
-> **状态**：Implementation-ready  
+> **版本**：v1.4
+> **日期**：2026-05-18
+> **状态**：已进一步落地，需应用生产迁移并补齐 Focus 专属入口与 E2E 验证
 > **定位**：思源笔记是知识源头（Source of Truth），NanoFlow 是执行工作台（Execution Workspace）  
 > **核心决策**：NanoFlow 只保存思源块指针与少量元数据，不嵌入思源 UI，不在 MVP 同步正文到云端，不在 MVP 做双向写回。
-> **v1.3 变更提示**：如已有原型使用 `siyuan-preview-cache:{linkId}`，本版改为 `siyuan-preview-cache:{linkId}:{blockId}`，属于本机缓存 key 的破坏性调整；尚未落地实现时直接采用新 key。
+> **v1.4 审查提示**：当前实现已进一步采用用户隔离的 `siyuan-preview-cache:{userId}:{linkId}:{blockId}`，并兼容迁移旧的 `siyuan-preview-cache:{linkId}:{blockId}`；这是比 v1.3 更安全的本机缓存 key。
 
 ---
 
@@ -63,6 +63,61 @@ MVP 是否成立，不以“能否完整复制思源体验”为标准，而以�
 3. **P2 桌面扩展 Relay**：解决 HTTPS PWA 访问本地思源的 Mixed Content 障碍。
 4. **P3 多端体验收敛**：移动端 Bottom Sheet、Focus / Dock 降噪、多锚点。
 5. **P4 可选增强**：本地 bridge、桌面壳、显式 opt-in 写回。
+
+### 0.4 当前实施审查快照（2026-05-18）
+
+本节是对当前代码库的执行审查，不替代后续开发计划。结论：**P0 / P1 / P2 主链路已经落地；本轮已补本地 stale-write 迁移、Dock deep-link-only 行为、移动端长按菜单、预览 in-flight 去重和直接回归测试；仍需把迁移应用到目标 Supabase 环境，并补 Focus 专属入口、多锚点管理与 E2E 验证。**
+
+| 阶段 | 当前状态 | 已落地证据 | 仍需补齐 |
+|------|------|------|------|
+| Phase 0 锚点绑定与深链回跳 | 基本完成 | `src/app/core/external-sources/external-source-link.service.ts`、`src/app/core/external-sources/siyuan/siyuan-link-parser.ts`、`src/app/shared/components/knowledge-anchor/knowledge-anchor.component.ts`；文本卡片、文本编辑器、Flow 任务详情、Parking Dock 已接入 `app-knowledge-anchor` | 任务卡外的批量管理入口尚无；绑定入口当前仍偏技术化 |
+| Phase 1 预览模型与缓存框架 | 大部分完成 | `external-source.model.ts`、`external-source-cache.service.ts`、`siyuan-preview.service.ts`、`knowledge-anchor-popover.*`；缓存 key 已包含 `userId/linkId/blockId`，并有旧 key 迁移；本轮已补同锚点 in-flight 去重与组件测试 | 仍缺真实扩展/真实思源的端到端验收 |
+| Phase 2 浏览器扩展 Relay | 大部分完成 | `extensions/siyuan-relay` v0.2.0、content-script origin allowlist、API allowlist、页面到扩展单向配置通道、`SiyuanExtensionProvider` | 需要补真实扩展安装/未安装的 E2E 或手工验收记录；文档中 `externally_connectable` 应理解为当前 content-script relay 的 origin allowlist 等价控制 |
+| Phase 3 移动端 / Focus / Dock | 部分完成 | 移动端 Bottom Sheet 和长按菜单已在 `KnowledgeAnchorComponent` 中实现；Dock 已接入 compact + deep-link-only 模式 | Focus 专属入口未接入；多锚点 UI、role 标注、排序 UI 未实现 |
+| Phase 4 安全增强与可选写回 | 未开始 | 当前仍保持只读优先，无默认写回 | 本地 bridge、桌面壳、`setBlockAttrs` opt-in 写回均应继续后置 |
+
+#### 已执行且符合最佳实践的部分
+
+1. **数据边界正确**：Supabase `external_source_links` 只保存指针和轻量元数据；预览正文、token、本地错误状态保存在设备本机，符合 Source of Truth 与隐私边界。
+2. **Offline-first 主链路成立**：新增、解除、导入锚点都先写本地 Store / IndexedDB，再通过 pending 队列推送；失败进入本机重试与死信队列。
+3. **安全输入收敛**：思源 block ID 使用白名单正则，拒绝换行、路径穿越和非 `siyuan://` 协议；服务端约束已在 `20260504152000_external_source_links_lowercase_block_ids.sql` 收紧为小写块 ID。
+4. **Mixed Content 方案选择正确**：主路径采用浏览器扩展 Relay，页面端不直接从 HTTPS PWA fetch 本地 HTTP 思源内核。
+5. **Relay attack surface 收敛**：扩展只允许固定本机 baseUrl、固定 API allowlist、固定消息类型；页面配置通道只回传 `hasToken`，不回传 token 明文。
+6. **UI 运行时成本可控**：桌面 Overlay 通过动态 import 懒加载，移动端不加载 hover 逻辑；符合移动端默认轻量的约束。
+7. **导入导出与灾备已纳入锚点**：`export.service.ts`、`import.service.ts`、`disaster-backup.service.ts` 已处理 `externalSourceLinks`，不会把锚点排除在本地迁移与灾备之外。
+
+#### 未完成或需要优化的部分
+
+1. **P3 Focus 专属入口未落地**：计划要求 Focus 中只显示一行来源和精简摘要，但当前未发现 Focus 独立组件接入 `KnowledgeAnchorComponent`。Dock 的 focus-like 详情已改为 deep-link-only，不等同于完整 Focus 入口。
+2. **生产迁移待应用**：本轮已新增 `20260518162000_external_source_links_stale_write_protection.sql`，但目标 Supabase 环境仍需执行迁移并做 remote-newer/stale-pending 行为验证。
+3. **多锚点仅数据模型就绪**：Store 和服务支持多条 link，但 UI 只取 `firstLink` 展示；role、排序、多个锚点的可视管理仍未完成。
+4. **E2E 覆盖不足**：已有服务、解析器、Provider、扩展合约与本轮新增组件测试；仍缺真实/模拟扩展场景 E2E、Focus 中不自动展开预览的 E2E。
+5. **预览并发策略已补关键路径**：本轮已在 `SiyuanPreviewService` 增加按 `userId/linkId/blockId/forceRefresh` 分组的 in-flight 去重；后续仍应观察真实扩展通道下的取消与超时行为。
+6. **文档表结构需对齐实现**：计划中 `task_id` 写作 `text`，实际迁移为 `uuid` 外键引用 `public.tasks(id)`；当前项目任务 ID 本身是 UUID 字符串，这个实现更利于 RLS 与引用完整性，文档应以后者为准。
+7. **配置常量命名存在历史并存**：文档早期示例出现 `SIYUAN_PREVIEW_CONFIG.MAX_CHILD_BLOCKS = 5`，实现已统一到 `SIYUAN_CONFIG.MAX_PREVIEW_CHILDREN = 10` 与 `MAX_PREVIEW_CHARS = 1200`；后续文档应避免再引入第二套配置名。
+
+#### 剩余任务的最佳实践重排
+
+剩余工作不应按“看起来缺哪个 UI 就先补哪个 UI”推进，而应按数据安全、专注体验、交互完整性、验证闭环的顺序推进。
+
+| 优先级 | 剩余任务 | 最佳实践判断 | 具体改善要求 | 验收方式 |
+|------|------|------|------|------|
+| P0 | `external_source_links` stale-write 防护 | 本地已补，生产待应用。当前客户端已经做 LWW merge，但 pending 队列通过普通 upsert 推送旧 payload 时，服务端必须有“旧写不覆盖新写”的最后防线。 | 已新增 `20260518162000_external_source_links_stale_write_protection.sql`：当现有行 `updated_at > NEW.updated_at + skew` 时保留旧行；软删除同时间窗内删除优先，防止旧 pending 复活锚点。 | 在目标 Supabase 执行迁移后，构造 remote newer + local stale pending 的数据库用例，确认旧 label/role/delete 不覆盖新行；确认唯一冲突仍可合并。 |
+| P1 | Focus compact 接入 | 部分完成。组件已具备 `previewMode="deep-link-only"`，Dock 已使用；Focus 独立入口仍需接入。 | 在真正的 Focus 任务展示面接入 `KnowledgeAnchorComponent`，使用 deep-link-only 或等价模式；只显示一行来源和“打开思源”，默认不触发 hover Overlay。 | Focus 组件测试断言锚点可见、不会自动 attach Overlay、打开思源入口可用、任务操作不被阻塞。 |
+| P1 | Knowledge Anchor 组件测试 | 部分完成。本轮已补 deep-link-only 与移动端长按直接测试。 | 继续补 hover 宽限、Overlay 生命周期、Esc 恢复焦点、快速切换锚点不串内容、移动 Sheet 刷新/解除关联。 | `knowledge-anchor` 组件和 popover service 至少各有直接 spec；使用 mock provider，不依赖真实思源或真实扩展。 |
+| P1 | 移动端长按菜单 | 已补基础路径。移动端最佳实践不是模拟 hover，而是明确 click/long-press 两条路径。 | 已使用 pointer 长按计时，移动超过阈值取消；普通点击仍打开 Sheet；菜单包含预览、打开思源、刷新缓存、解除关联。后续可补更完整的可访问性与视觉验收。 | 本轮组件测试已覆盖长按打开菜单、后续 click 抑制、拖动取消。 |
+| P1 | 预览请求 in-flight 去重 | 已补基础路径。 | 已在 `SiyuanPreviewService` 增加按 `userId/linkId/blockId/forceRefresh` 分组的 in-flight map；同 key 复用 Promise，不同 key 仍通过 active request guard 防串内容。 | 本轮服务测试已覆盖相同锚点并发只调用一次 provider，以及 force refresh 与普通刷新分离。 |
+| P2 | 扩展 Relay 安装/降级验收 | 需要补。静态契约测试已经存在，但用户真实路径还缺“安装扩展、未安装扩展、旧扩展”的端到端记录。 | 增加 Playwright 或手工验收清单：扩展不可用时显示降级态；旧扩展不支持 `get-config-status` 时设置页提示更新；token 只写入扩展 storage，不进入 IndexedDB。 | E2E 可模拟 content-script message；真实扩展安装路径至少保留手工验收记录和截图位置。 |
+| P2 | 多锚点 UI | 继续后置。模型已支持多锚点，但 UI 复杂度高，不应在 Focus 和基础测试补齐前展开。 | 先保留 MVP 单锚点展示；多锚点启用时再补 role 选择、排序、删除、默认主锚点。若允许同一块不同 role，需要先迁移唯一索引。 | 多锚点启用前通过 feature flag 或显式版本门禁；迁移前检查重复数据。 |
+| P3 | Phase 4 写回/bridge | 保持暂缓。当前只读主路径未完全验收前，写回会把风险推向思源 Source of Truth。 | 不做默认写回；未来只允许 opt-in 写 `custom-*` 属性，且必须有撤销和关闭开关。bridge/桌面壳仅在扩展 relay 稳定后评估。 | 写回功能进入设计前，先完成只读链路的安全验收和 Focus/Dock/移动端验收。 |
+
+#### 剩余任务的代码落地边界
+
+1. **先硬化数据，再补交互**：`external_source_links` 的 stale-write 防护应早于多锚点 UI，否则多端编辑 role/sortOrder/删除时会放大旧 pending 的覆盖风险。
+2. **Focus 不能只传 `compact=true`**：当前 `compact` 只改变视觉密度，不改变 hover 行为；直接接入会违反“Focus 不自动展开阅读流”的产品原则。
+3. **移动端长按不要复用桌面 Popover**：长按菜单是命令入口，Sheet 是预览入口，二者状态分离，避免 hover 逻辑进入触屏路径。
+4. **扩展安全以 allowlist 为单事实源**：`manifest.content_scripts.matches`、content-script `BUILTIN_ALLOWED_ORIGINS`、页面侧 contract tests 必须同步更新，不能只改其中一个。
+5. **测试优先补风险分支**：服务层已覆盖本地先写、pending、死信、重复合并；下一步测试应优先补 UI 生命周期、扩展不可用降级、stale pending 防护，而不是只补快照式渲染。
 
 ---
 
@@ -443,7 +498,7 @@ type LocalSiyuanPreviewCache = {
 |------|------|------|
 | `id` | `text` | 客户端 `crypto.randomUUID()` 字符串 |
 | `user_id` | `uuid` | RLS 隔离字段 |
-| `task_id` | `text` | 关联任务，沿用客户端生成字符串 ID |
+| `task_id` | `uuid` | 关联任务，引用 `public.tasks(id)`；任务 ID 仍由客户端 `crypto.randomUUID()` 生成 |
 | `source_type` | `text` | 首版固定为 `siyuan-block` |
 | `target_id` | `text` | 思源 block ID |
 | `uri` | `text` | 深链 URI |
@@ -484,23 +539,23 @@ WHERE deleted_at IS NULL;
 
 ```text
 external-source-links:{userId}
-siyuan-preview-cache:{linkId}:{blockId}
+siyuan-preview-cache:{userId}:{linkId}:{blockId}
 siyuan-local-config:{userId}
 ```
 
-> **实现注意**：本功能尚未落地时直接采用 `siyuan-preview-cache:{linkId}:{blockId}`，无需迁移。下方“缓存迁移说明”只适用于已有原型、内测版本或历史分支已经写入 `siyuan-preview-cache:{linkId}` 的情况。
+> **实现注意**：当前实现已经采用 `siyuan-preview-cache:{userId}:{linkId}:{blockId}`。如果从旧原型迁移，只允许读取并补写 `siyuan-preview-cache:{linkId}:{blockId}` 这类本机旧 key，不能把旧缓存同步到云端。
 
 清理策略：
 
-1. 删除锚点时软删除云端指针，并删除当前设备该 `linkId` 下的所有 `siyuan-preview-cache:{linkId}:{blockId}`。
-2. 每条 `siyuan-preview-cache:{linkId}:{blockId}` 记录必须保存 `fetchedAt`、`blockId` 与可选 `sourceUpdatedAt`，用于判断缓存时效并防止跨块误命中。
+1. 删除锚点时软删除云端指针，并删除当前设备该用户下该 `linkId` 的所有 `siyuan-preview-cache:{userId}:{linkId}:{blockId}`。
+2. 每条 `siyuan-preview-cache:{userId}:{linkId}:{blockId}` 记录必须保存 `fetchedAt`、`blockId` 与可选 `sourceUpdatedAt`，用于判断缓存时效并防止跨块误命中。
 3. 用户点击“清除本机缓存”时只清理 preview cache，不删除锚点。
 4. 用户点击“忘记本机思源配置”时删除 token / baseUrl / runtimeMode，不影响已绑定锚点。
 
 缓存迁移说明：
 
-1. 如果该能力首次实现时尚未上线旧版 `siyuan-preview-cache:{linkId}`，直接采用新 key，无需迁移。
-2. 如果已有旧版本机缓存，启动时可以按 `linkId -> ExternalSourceLink.targetId` 补写新 key；无法确认 `blockId` 的旧缓存必须丢弃。
+1. 如果该能力首次实现时尚未上线旧版 `siyuan-preview-cache:{linkId}` 或 `siyuan-preview-cache:{linkId}:{blockId}`，直接采用用户隔离新 key，无需迁移。
+2. 如果已有旧版本机缓存，启动时可以按 `linkId -> ExternalSourceLink.targetId` 补写 `siyuan-preview-cache:{userId}:{linkId}:{blockId}`；无法确认 `blockId` 或 `userId` 的旧缓存必须丢弃。
 3. 迁移只发生在当前设备本地，不产生云端同步，不影响锚点指针。
 4. 对只匹配 `linkId` 或只匹配 `blockId` 的旧缓存，运行时按 cache miss 处理；后台清理可按 `CACHE_STALE_MS`、锚点删除事件、`MAX_PREVIEW_CACHE_ENTRIES` 上限或用户“清除本机缓存”统一回收，避免频繁替换锚点后本机缓存无界增长。
 
@@ -752,7 +807,7 @@ type SiyuanExtensionResponse = {
 
 扩展安全要求：
 
-1. `externally_connectable` 只允许 NanoFlow 正式域名、本地开发域名和明确配置的预览域名。
+1. 如果采用 `externally_connectable`，只允许 NanoFlow 正式域名、本地开发域名和明确配置的预览域名；当前实现采用 content-script relay，因此由 `manifest.content_scripts.matches` 和 content-script 内部 origin allowlist 共同承担同等边界。
 2. 扩展只暴露 `get-preview` / `test-connection` 等受限消息，不提供通用代理。
 3. 扩展持有 token 时使用浏览器扩展 storage，并避免在 console、错误上报、消息响应中泄露。
 4. 响应体只返回预览所需字段，不返回完整 API 原始响应。
@@ -1318,7 +1373,8 @@ const SIYUAN_PREVIEW_CONFIG = {
 1. 当前阶段的降级路径已经可用。
 2. 没有把 token、正文缓存或原始 API 响应同步到 Supabase。
 3. Focus / Dock / 移动端不存在阻塞性回归。
-4. 相关测试已覆盖错误处理、离线同步、provider fallback、安全校验等关键分支；新增服务层方法、provider 选择、错误码映射、同步 payload 序列化这些核心分支覆盖率不低于 80%，且“建议测试覆盖”表中每一层至少有 1 个直接覆盖用例。
+4. `external_source_links` 的云端写入必须证明旧 pending payload 不会覆盖较新的远端行，尤其是 `target_id`、`uri`、`role`、`sort_order`、`deleted_at`。
+5. 相关测试已覆盖错误处理、离线同步、provider fallback、安全校验等关键分支；新增服务层方法、provider 选择、错误码映射、同步 payload 序列化这些核心分支覆盖率不低于 80%，且“建议测试覆盖”表中每一层至少有 1 个直接覆盖用例。
 
 ---
 
@@ -1345,8 +1401,9 @@ const SIYUAN_PREVIEW_CONFIG = {
 3. 外部来源层不直接耦合任务 Markdown 内容。
 4. Provider 抽象可以区分 extension/direct/cache-only 三种模式。
 5. 锚点新增、更新、删除走本地先写与 LWW 同步路径。
-6. 预览缓存 key 同时包含 `linkId` 与 `blockId`，避免同任务多锚点或锚点替换后的跨块误命中。
-7. 不新增门面 Store，不破坏现有 Task / Project / Connection Store 边界。
+6. 预览缓存 key 同时包含 `userId`、`linkId` 与 `blockId`，避免账号切换、同任务多锚点或锚点替换后的跨块误命中。
+7. 云端写入具备 stale-write 防护：旧的 pending upsert / RPC payload 不得复活已删除锚点，也不得回滚较新的 `role`、`sortOrder` 或 `targetId`。
+8. 不新增门面 Store，不破坏现有 Task / Project / Connection Store 边界。
 
 ### 14.3 安全验收
 
@@ -1363,9 +1420,9 @@ const SIYUAN_PREVIEW_CONFIG = {
 | 层级 | 覆盖点 |
 |------|------|
 | 单元测试 | 链接解析、block ID 校验、provider 选择、错误码映射、Kramdown 摘要裁剪 |
-| 服务测试 | 本地先写；离线新增后恢复同步；软删除；缓存清理；精确块缓存命中；缓存键不匹配时拒绝过期预览；快速切换锚点时丢弃迟到响应；断言 Supabase 同步 payload 不含 `content` / `markdown` / `kramdown` / `plainText` |
-| 组件测试 | 任务卡锚点展示、Hover Popover 打开/关闭、锚点到浮层的 mouseleave 宽限期、OverlayRef attach / detach / dispose 生命周期、快速切换锚点不泄漏 Overlay 实例、Popover / Sheet 状态、Focus compact 模式、当前块可用但路径或子块失败的降级态 |
-| E2E | 粘贴链接绑定、hover 锚点显示对应块预览、快速 hover 多锚点不串内容、点击深链、扩展不可用降级、离线绑定后恢复同步、移动端 Sheet |
+| 服务测试 | 本地先写；离线新增后恢复同步；软删除；缓存清理；精确块缓存命中；缓存键不匹配时拒绝过期预览；快速切换锚点时丢弃迟到响应；同 key in-flight 刷新去重；旧 pending 不覆盖较新远端锚点；断言 Supabase 同步 payload 不含 `content` / `markdown` / `kramdown` / `plainText` |
+| 组件测试 | 任务卡锚点展示、Hover Popover 打开/关闭、锚点到浮层的 mouseleave 宽限期、Esc 关闭并恢复焦点、OverlayRef attach / detach / dispose 生命周期、快速切换锚点不泄漏 Overlay 实例、Popover / Sheet 状态、移动端长按菜单取消规则、Focus compact/deep-link-only 模式、当前块可用但路径或子块失败的降级态 |
+| E2E | 粘贴链接绑定、hover 锚点显示对应块预览、快速 hover 多锚点不串内容、点击深链、扩展不可用降级、旧扩展配置通道降级、离线绑定后恢复同步、移动端 Sheet、Focus 中不自动展开预览 |
 
 ### 14.5 API 合约验收
 

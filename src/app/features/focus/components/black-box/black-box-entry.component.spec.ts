@@ -1,5 +1,5 @@
 import { TestBed } from '@angular/core/testing';
-import { Injector, runInInjectionContext } from '@angular/core';
+import { Injector, runInInjectionContext, signal } from '@angular/core';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { BlackBoxEntryComponent } from './black-box-entry.component';
 import type { BlackBoxEntry } from '../../../../../models';
@@ -27,7 +27,9 @@ describe('BlackBoxEntryComponent', () => {
   let injector: Injector;
 
   beforeEach(() => {
-    injector = TestBed.configureTestingModule({}).inject(Injector);
+    injector = TestBed.configureTestingModule({
+      imports: [BlackBoxEntryComponent],
+    }).inject(Injector);
   });
 
   it('云端用户 pending 条目应显示待同步标识', () => {
@@ -72,6 +74,23 @@ describe('BlackBoxEntryComponent', () => {
     });
     expect(component.shouldShowSyncPendingIndicator()).toBe(false);
     expect(component.shouldShowSyncConflictIndicator()).toBe(false);
+  });
+
+  it('pending → synced 后 DOM 中不应继续保留 sync-pending-indicator', () => {
+    const fixture = TestBed.createComponent(BlackBoxEntryComponent);
+    const entrySignal = signal(createEntry({ syncStatus: 'pending' }));
+    fixture.componentInstance.entry = entrySignal as unknown as typeof fixture.componentInstance.entry;
+    fixture.detectChanges();
+
+    expect(fixture.nativeElement.querySelector('[data-testid="sync-pending-indicator"]')).not.toBeNull();
+
+    entrySignal.set(createEntry({
+      syncStatus: 'synced',
+      updatedAt: '2026-05-08T10:00:05.000Z',
+    }));
+    fixture.detectChanges();
+
+    expect(fixture.nativeElement.querySelector('[data-testid="sync-pending-indicator"]')).toBeNull();
   });
 
   // 2026-05-16 取证：syncDebugAttribute 必须暴露 syncStatus + updatedAt，

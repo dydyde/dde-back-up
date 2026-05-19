@@ -106,6 +106,7 @@ describe('SettingsModalComponent', () => {
     isAvailable: signal(false),
     isAuthorized: signal(false),
     hasSavedHandle: signal(false),
+    needsPermissionResume: signal(false),
     directoryName: signal<string | null>(null),
     autoBackupEnabled: signal(false),
     autoBackupIntervalMs: signal(30 * 60 * 1000),

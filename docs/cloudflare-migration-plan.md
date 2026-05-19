@@ -1,13 +1,13 @@
 # NanoFlow 迁移 Cloudflare Pages 策划案
 
-> 版本：2026-04-28  
+> 版本：2026-05-18
 > 适用项目：NanoFlow / Angular 19 重客户端 PWA  
 > 目标：剥离 Vercel 托管与构建链路，将前端静态产物迁移到 Cloudflare Pages，并把构建、测试、Sentry Source Map 上传放到 GitHub Actions。  
 > 约束：这是个人项目。迁移方案以可落地、低维护、可回滚为准，不引入面向团队/企业审计的重流程。
 
 ## 1. 执行结论
 
-NanoFlow 适合迁移到 Cloudflare Pages，但审查报告中的部分建议需要修正后再落地。
+NanoFlow 适合迁移到 Cloudflare Pages；仓库侧 Direct Upload 发布链路已经落地，剩余工作集中在控制台配置、custom domain、真实登录回调和阶段 4 线上观察。
 
 最终建议：
 
@@ -58,6 +58,35 @@ NanoFlow 适合迁移到 Cloudflare Pages，但审查报告中的部分建议需
 - 旧 origin / export-only 本地写保护继续收口：`TaskOperationAdapterService` 与 `ProjectOperationService` 已接入 `WriteGuardService.isExportOnly()`，在旧入口导出模式下阻断新增、编辑、移动、删除、项目元数据更新等本地 mutation，不创建乐观快照、不标记本地变更；RetryQueue / ActionQueue 云端 flush 仍由 `assertWritable()` 阻断。
 - 新增手动 `vercel-prebuilt-recovery.yml`：仅 `workflow_dispatch`，默认构建 `legacy-export-only` 旧 Vercel artifact（`NG_APP_DEPLOYMENT_TARGET=vercel-legacy`、`NG_APP_ORIGIN_GATE_MODE=export-only`），只有 `deploy=true` 且输入确认 token 后才执行 `vercel pull` / `vercel build` / `vercel deploy --prebuilt --prod`。
 - Realtime 迁移观测性继续收口：通道错误与降级到轮询分别写入 `realtime_channel_error`、`realtime_fallback_polling_started` breadcrumb；heartbeat timeout/disconnected 仍由 Supabase client heartbeat breadcrumb 记录。
+
+### 1.2 当前审查与完成状态（2026-05-18）
+
+本轮复核结论：仓库侧 Cloudflare Pages Direct Upload 迁移主链路已经可以作为默认生产发布路径；继续阻塞“完全收口”的不是仓库内缺少部署脚本，而是控制台/线上环境类验证，例如 GitHub Secrets、custom domain、真实 Auth 回调、弱网 Realtime、多标签 single-writer 和阶段 4 观察窗口。
+
+已完成并复核的最佳实践项：
+
+- **远端数据库同步更新已完成**：生产 Supabase 项目 `fkhihclpghmmtbbywvoj` 已应用 `20260518162000_external_source_links_stale_write_protection.sql`；MCP 复查 `prevent_external_source_links_stale_write` 函数存在，`trg_external_source_links_prevent_stale_write` 触发器存在且启用。该项补上 SiYuan / external source 指针的服务端 stale-write 最后防线，避免旧离线 pending upsert 回滚较新的 `role`、`sort_order`、`deleted_at`。
+- **Cloudflare 官方约束复核通过**：Context7 查询到的 Cloudflare Pages 文档仍以 Wrangler / API Token / Account ID 作为 Direct Upload CI 主路径；`_headers` 的 `! Link` 是关闭自动 Link header 生成的官方写法；`_headers` 仍有 100 条规则上限；Pages Functions 存在时不支持 Dashboard Direct Upload。当前仓库选择 `wrangler@3.114.0`、`public/_headers`、`dist/browser`、无 Pages Functions 的静态 SPA 路径与这些约束一致。
+- **CI/CD 实现优先级正确**：`.github/workflows/deploy-cloudflare-pages.yml` 已拆分 secret-free test job 与 build/deploy job；Cloudflare token 只出现在 deploy step；deploy 后等待 `/` 与 `/version.json` 健康，再跑 header smoke。`.github/workflows/deploy-cloudflare-pages-dry-run.yml` 可在不读取发布 token 的情况下跑 deterministic build、artifact guard 和本地 Pages smoke。
+- **预览环境策略已从早期 `PREVIEW_*` 草案收敛为 GitHub Environment**：当前事实源是 `NanoFlow-Preview` 环境中同名 `NG_APP_SUPABASE_URL` / `NG_APP_SUPABASE_ANON_KEY` secrets；合同测试明确禁止 `PREVIEW_NG_APP_*` 和生产 fallback 表达式进入 workflow。这比 `PREVIEW_* || PROD_*` 更不容易误把 PR preview 打到生产项目。
+- **PWA / 缓存 / 产物门禁已落地**：`public/_headers` 使 app shell、`ngsw.json`、SW 脚本、`version.json` no-store，hash bundle immutable，非 hash public assets revalidate；artifact guard 覆盖 `version.json`、`artifact-manifest.json`、TWA assetlinks、无 `_redirects`、无 sourcemap、无 Pages Functions、安全 worker 不进 `ngsw.json`。
+- **Vercel 已降级为应急回滚路径**：`vercel-prebuilt-recovery.yml` 仅允许 `workflow_dispatch`，默认生成 `legacy-export-only` artifact，且需要确认 token 才会执行 `vercel deploy --prebuilt --prod`；这符合“Vercel 只保留短期回滚，不再作为推荐生产构建平台”的目标。
+
+仍需人工/线上验收的项：
+
+- GitHub Settings 中 Cloudflare、Supabase、GoJS、Sentry、TWA fingerprint secrets 是否完整写入，必须在仓库外确认。
+- custom domain / TLS / DNS / zone rules 尚未在本轮验证；`nanoflow.pages.dev` 可作为生产 smoke origin，但 custom domain active 后必须再次跑 header smoke、Playwright smoke，并收敛 `pages.dev` 的生产写入入口。
+- Auth Magic Link / OAuth 真实回调、Supabase Storage CORS、Edge Function CORS 在最终 custom domain 上仍需 live smoke。
+- Realtime 弱网、后台标签页、BlackBox 独立 realtime、同时间戳 cursor、多标签 single-writer、Flow 大图性能和 stale SW 负向路径仍属于端到端迁移验收，不应被静态合同测试替代。
+- Sentry 生产 environment 的 `heartbeat_timeout`、`realtime_fallback_polling_started`、`remote_newer_conflict`、`ghost_write_rejected`、`stale_layout_dropped` 等指标，需要在阶段 4 观察窗口确认。
+
+迁移后建议：
+
+- README 和部署入口以 **Cloudflare Pages + GitHub Actions Direct Upload** 作为默认推荐；Vercel / Netlify / Railway 保留为备选或回滚说明，不再写“Vercel（推荐）”。
+- 首版继续保持 `ENABLE_SENTRY_SOURCEMAPS=false`；只有完成 post-inject rename 或 JS cache 降级方案后，才启用 Sentry Source Map inject/upload。
+- custom domain 生效后，按“先 Pages URL smoke，再 custom domain smoke，再移除 `pages.dev` 写入 allow-list”的顺序收口，不把 `pages.dev` 留成第二个生产入口。
+- Vercel 回滚窗口结束后，关闭 Vercel 自动部署或仅保留手动 recovery workflow；旧域若继续可访问，必须是 export-only/read-only。
+- 稳定 7 天后再刷新性能基线；稳定 6 个月内做一次 Workers Static Assets non-production dry-run，确认未来仍有迁移退路。
 
 迁移动因不是“Vercel 不能托管 Angular”，而是当前项目的计算和风险边界不适合继续绑在 Vercel Git 构建上：
 
@@ -242,24 +271,23 @@ Cloudflare 官方已经提供 Pages → Workers Static Assets 的迁移指南，
 阶段 0 必须做一次轻量评估，结论写入迁移 PR：
 
 - 当前是否需要 Worker-only 能力：Durable Objects、Queues、Rate Limiting、Smart Placement、Workers Observability、路径级 Worker code-first routing。若答案为否，首版继续 Pages。
-- 若 6 个月内可能需要 edge logic，先准备 Workers Static Assets dry-run 分支，不要等生产 Pages 稳定后临时改架构。
-- Workers 备选配置草案使用 `dist/browser`，而不是重新设计构建输出：
+- 若 6 个月内可能需要 edge logic，先准备 Workers Static Assets dry-run 分支，不要等生产 Pages 稳定后临时改架构；当前仓库已用 `wrangler.workers-static-assets.dry-run.toml` 固化这个备选入口。
+- Workers 备选配置使用 `dist/browser`，而不是重新设计构建输出；只允许 dry-run workflow 调用，不进入 production deploy：
 
-  ```jsonc
-  {
-    "name": "nanoflow-workers-static-assets",
-    "main": "src/worker.ts",
-    "compatibility_date": "2026-04-29",
-    "assets": {
-      "directory": "./dist/browser",
-      "binding": "ASSETS",
-      "not_found_handling": "single-page-application",
-      "run_worker_first": ["/api/*", "!/assets/*"]
-    }
-  }
+  ```toml
+  name = "nanoflow-workers-static-assets-dry-run"
+  main = "cloudflare/workers-static-assets/shell-worker.js"
+  compatibility_date = "2026-05-18"
+  workers_dev = false
+
+  [assets]
+  directory = "./dist/browser"
+  binding = "ASSETS"
+  not_found_handling = "single-page-application"
+  run_worker_first = ["/*"]
   ```
 
-- 备选配置不得进入首版 production deploy。阶段 4 稳定后 6 个月内跑一次 Workers dry-run：上传同一份 deterministic artifact，验证 SPA deep link、missing asset、`_headers`/`_redirects`、SW 更新、`version.json`、TWA assetlinks 和 Supabase Auth callback。
+- 备选配置不得进入首版 production deploy。dry-run Worker 只代理 `env.ASSETS.fetch(request)` 并补齐 `_headers` 中的关键 freshness/security 语义，包括 no-store app shell、删除 `Link` header、hash bundle immutable、非 hash public assets revalidate。阶段 4 稳定后 6 个月内再用同一份 deterministic artifact 执行一次 non-production Workers dry-run，验证 SPA deep link、missing asset、SW 更新、`version.json`、TWA assetlinks 和 Supabase Auth callback。
 - 如果未来从 Pages 迁到 Workers，必须重新处理 custom domain：Workers custom domain 要求域名 nameserver 由 Cloudflare 管理；这会影响“仅子域 CNAME”的最小迁移路径。
 
 ### 4.2 输出目录
@@ -615,8 +643,8 @@ NG_APP_GOJS_LICENSE_KEY
 | `CLOUDFLARE_PAGES_PROJECT_NAME` | Pages 项目名，例如 `nanoflow` |
 | `NG_APP_SUPABASE_URL` | Angular build-time Supabase URL |
 | `NG_APP_SUPABASE_ANON_KEY` | Angular build-time Supabase anon key |
-| `PREVIEW_NG_APP_SUPABASE_URL` | 同仓 PR preview 需要：专用 Supabase URL |
-| `PREVIEW_NG_APP_SUPABASE_ANON_KEY` | 同仓 PR preview 需要：专用 anon key |
+| `NanoFlow-Preview / NG_APP_SUPABASE_URL` | GitHub Environment `NanoFlow-Preview` 中的 preview Supabase URL |
+| `NanoFlow-Preview / NG_APP_SUPABASE_ANON_KEY` | GitHub Environment `NanoFlow-Preview` 中的 preview anon key |
 | `NG_APP_SENTRY_DSN` | 前端 Sentry DSN |
 | `NG_APP_GOJS_LICENSE_KEY` | GoJS license key，没有则保留水印 |
 | `SENTRY_AUTH_TOKEN` | 可选：上传 Source Map |
@@ -631,16 +659,17 @@ GitHub Variables：
 | Variable | 默认值 | 用途 |
 | --- | --- | --- |
 | `ENABLE_SENTRY_SOURCEMAPS` | `false` | 是否启用 Sentry sourcemap inject/upload |
-| `ALLOW_PROD_SUPABASE_FOR_PREVIEW_SMOKE` | `false` | 临时允许同仓 PR preview 使用生产 Supabase；默认必须为 `false`，且只有配合 `READ_ONLY_PREVIEW`、RLS/RPC 隔离和自动清理才允许 |
 | `READ_ONLY_PREVIEW` | `true` | PR preview 构建的默认 mutation fail-closed 开关；只有独立 Preview Supabase 项目且 e2e 需要写入时才允许关闭 |
 | `CANONICAL_PRODUCTION_ORIGIN` | `https://app.nanoflow.app`（示例） | 唯一可写生产 origin；生产 bundle 的最早期脚本必须以它为准 |
 | `CLOUDFLARE_CUSTOM_DOMAIN_ORIGIN` | 空 | custom domain 已绑定且 TLS active 后再设置，例如 `https://app.nanoflow.app`；未设置时 post-deploy smoke 只跑 Pages URL |
 
-PR preview 默认必须使用独立 Supabase Preview Project。使用生产 Supabase + preview-bot 只能作为临时例外：必须显式设置 `ALLOW_PROD_SUPABASE_FOR_PREVIEW_SMOKE=true`，同时 `READ_ONLY_PREVIEW=true`，并在应用层禁止 cloud push/RPC/Edge Function mutation，数据库 RLS/RPC 层只允许 preview-bot 写隔离 namespace 且有自动清理。**不要用 GitHub expression 的 `preview_secret || production_secret` 作为 fallback**：`PREVIEW_*` secret 缺失时会静默打到生产项目，是本迁移的阻断风险。workflow 草案还应避免普通 PR preview 把生产 Supabase secret 写入 job env；只有非 PR 事件或显式 opt-in 时才展开生产 Supabase secret。
+PR preview 默认必须使用独立 Supabase Preview Project。当前仓库实现方式是 GitHub Environment `NanoFlow-Preview`：同名 `NG_APP_SUPABASE_URL` / `NG_APP_SUPABASE_ANON_KEY` 在 preview environment 中覆盖生产 secrets，workflow 不再使用 `PREVIEW_NG_APP_*` 或 `preview || production` fallback。使用生产 Supabase + preview-bot 只能作为未来临时例外：必须同时满足 `READ_ONLY_PREVIEW=true`、应用层禁止 cloud push/RPC/Edge Function mutation、数据库 RLS/RPC 层只允许 preview-bot 写隔离 namespace 且有自动清理。**不要用 GitHub expression 的 `preview_secret || production_secret` 作为 fallback**，它会把配置缺失伪装成成功，并可能把 PR preview 打到生产项目。
 
 敏感 token 的暴露面按 step 收敛：`SENTRY_AUTH_TOKEN` / `SENTRY_ORG` / `SENTRY_PROJECT` 只给 Sentry upload step，`CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID` 只给 deploy step；`npm ci`、测试和 build 阶段只暴露会进入前端 bundle 的 `NG_APP_*` 和非敏感变量。这样同仓 PR 即使修改构建脚本，也不应在 build/test 阶段读到发布 token。
 
 ### 5.3 Workflow 草案
+
+> 2026-05-18 注：本节保留原始设计草案用于解释风险边界；当前仓库事实源是 `.github/workflows/deploy-cloudflare-pages.yml` 与 `.github/workflows/deploy-cloudflare-pages-dry-run.yml`。现行 workflow 采用 GitHub Environment `NanoFlow-Preview` 隔离 preview Supabase secrets，不再使用 `PREVIEW_NG_APP_*` 变量名。
 
 新增 `.github/workflows/deploy-cloudflare-pages.yml`。核心原则：**测试 job 不依赖生产 secret；构建/部署 job 只在 secret 可用且事件安全时运行**。这样 fork PR 在 `validate-env:prod` 阶段不会因为拿不到 repository secrets 而失败。
 
@@ -1509,10 +1538,10 @@ OnPush / Signals 桥接门禁：
 - [x] 按 §4.6 路径创建 Direct Upload 项目，避免误选 Git integration。（2026-04-29 已确认项目存在且不是 Git integration。）
 - [x] 确认项目名，例如 `nanoflow`，记录 `nanoflow.pages.dev`。（2026-04-29 已按用户提供的 canonical writable origin 记录；线上 API 操作仍等待有效 token。）
 - [x] 创建最小权限 `CLOUDFLARE_API_TOKEN`。（2026-04-29 权限修正后，Wrangler Direct Upload 已成功。建议本次部署完成后轮换该 token。）
-- [ ] 在 GitHub Secrets 写入 Cloudflare、Supabase、GoJS、Sentry、Android TWA fingerprint 变量；PR preview 必须优先使用 `PREVIEW_NG_APP_SUPABASE_URL` / `PREVIEW_NG_APP_SUPABASE_ANON_KEY`，缺失时 fail-fast，不得静默回退生产 Supabase。（阻塞：需要仓库 Settings 权限或有效 GitHub/Cloudflare/Supabase 控制台操作。）
-- [ ] 设置 GitHub Variables：`ENABLE_SENTRY_SOURCEMAPS=false`、`ALLOW_PROD_SUPABASE_FOR_PREVIEW_SMOKE=false`；`CLOUDFLARE_CUSTOM_DOMAIN_ORIGIN` 等 custom domain TLS active 后再填。
+- [ ] 在 GitHub Secrets 写入 Cloudflare、Supabase、GoJS、Sentry、Android TWA fingerprint 变量；PR preview 使用 GitHub Environment `NanoFlow-Preview` 中的同名 Supabase secrets，缺失时 fail-fast，不得静默回退生产 Supabase。（阻塞：需要仓库 Settings 权限或有效 GitHub/Cloudflare/Supabase 控制台操作。）
+- [ ] 设置 GitHub Variables：`ENABLE_SENTRY_SOURCEMAPS=false`；`READ_ONLY_PREVIEW=true`；`CLOUDFLARE_CUSTOM_DOMAIN_ORIGIN` 等 custom domain TLS active 后再填。
 - [ ] 确认 Direct Upload production branch 为 `main`；必要时用 API 设置。
-- [ ] **Workers Static Assets 备选路径评估**：按 §4.1.2 记录是否需要 Workers-only 能力；首版若仍选 Pages，创建一个不部署 production 的 Workers dry-run backlog，包含 `assets.directory=./dist/browser`、`binding=ASSETS`、`not_found_handling=single-page-application` 和 `run_worker_first` 决策。
+- [x] **Workers Static Assets 备选路径评估**：按 §4.1.2 记录是否需要 Workers-only 能力；首版仍选 Pages，但已新增 `wrangler.workers-static-assets.dry-run.toml` 与 `cloudflare/workers-static-assets/shell-worker.js`，dry-run workflow 只执行 `wrangler deploy --dry-run`，不发布 production。配置固定 `assets.directory=./dist/browser`、`binding=ASSETS`、`not_found_handling=single-page-application`、`run_worker_first=["/*"]`，并由合同测试禁止 routes/account_id 进入 dry-run fallback。
 - [x] **Canonical origin 决策**：在 `app.nanoflow.app` / `www.nanoflow.app` / `nanoflow.app` 中只选择一个生产可写 origin，写入 `CANONICAL_PRODUCTION_ORIGIN`；其他 origin 明确 redirect 或 read-only/export-only。（2026-04-29 首轮 production smoke / writable origin 暂定 `https://nanoflow.pages.dev`；custom domain active 后仍必须执行 `pages.dev` 收敛。）
 - [ ] **同域 DNS 分裂脑门禁**：若沿用同一 custom domain，阶段 3 只能部署同一份 `dist/browser` 到 Vercel 与 Cloudflare；DNS 稳定前不允许合并业务版本、schema 语义或同步协议变更。
 - [ ] 在 Supabase Auth redirect allow-list 加入 custom domain、临时 Pages production smoke origin、preview、本地开发域名，并记录 custom domain smoke 通过后移除 `pages.dev` 的收敛任务。
@@ -1555,7 +1584,7 @@ OnPush / Signals 桥接门禁：
 - [x] 新增 `.github/workflows/deploy-cloudflare-pages-dry-run.yml` 或 workflow_dispatch dry-run mode：不执行 Wrangler deploy，不读取 Cloudflare/Sentry token，只跑 build、deterministic guard、artifact guards、header 文件静态校验和 `wrangler pages dev` 本地 smoke。该 dry-run 必须可由维护者在升级 Angular/Wrangler/Node 前单独运行。
 - [x] 明确 `workflow_dispatch` 行为：默认只 test/build/guards；只有 `deploy=true` 且分支为 `main` 才生产部署。
 - [x] PR preview deploy 条件限制为同仓库 PR，不使用 `pull_request_target`；fork PR 只跑 test job，不执行 `validate-env:prod`。
-- [x] workflow 使用显式的 `Select Supabase build env` step：PR preview 若缺少 `PREVIEW_NG_APP_SUPABASE_URL` / `PREVIEW_NG_APP_SUPABASE_ANON_KEY` 且 `ALLOW_PROD_SUPABASE_FOR_PREVIEW_SMOKE` 不是 `true`，必须直接失败。
+- [x] workflow 使用显式的 `Select Supabase build env` step：PR preview 通过 GitHub Environment `NanoFlow-Preview` 读取同名 Supabase secrets；缺少 `NG_APP_SUPABASE_URL` / `NG_APP_SUPABASE_ANON_KEY` 时直接失败，合同测试禁止 `PREVIEW_NG_APP_*` 与生产 fallback 进入 workflow。
 - [x] workflow 敏感 token 下沉到 step：`SENTRY_AUTH_TOKEN` 只给 Sentry upload step，`CLOUDFLARE_API_TOKEN` 只给 deploy step；`npm ci`、test、build 不应读到发布 token。
 - [x] 固定 `wrangler` 和 Sentry CLI 版本，并为 Direct Upload 增加最多 3 次 retry。
 - [x] Direct Upload deploy step 后增加等待式 health check：Wrangler/API 返回成功后，循环请求 `/` 与 `/version.json`，直到返回 200 且 `version.json.gitSha` 可读，再进入 header smoke / Playwright smoke。生产部署前先执行 `wrangler pages deployment list`，确认没有明显未完成或异常的上一轮 deployment。
@@ -1601,7 +1630,7 @@ OnPush / Signals 桥接门禁：
 ### 阶段 2：Preview 验证
 
 - [ ] 同仓库 PR 创建后 GitHub Actions 部署 `pr-<number>.<project>.pages.dev`；fork PR 只跑 build/test，不拿部署 secret。
-- [ ] 确认 PR preview 使用独立测试 Supabase；如果暂时使用生产 Supabase，必须显式设置 `ALLOW_PROD_SUPABASE_FOR_PREVIEW_SMOKE=true` + `READ_ONLY_PREVIEW=true`，且应用/RLS/RPC 都证明 mutation fail-closed 或隔离。
+- [ ] 确认 PR preview 使用 GitHub Environment `NanoFlow-Preview` 中的独立测试 Supabase；当前 workflow 不支持生产 Supabase preview fallback。若未来临时引入生产 preview-bot 例外，必须另开 PR 增加显式变量、`READ_ONLY_PREVIEW=true`、应用/RLS/RPC fail-closed 和自动清理证据。
 - [ ] 对 preview 执行 Playwright smoke。
 - [ ] 在 Playwright smoke 前确认 preview deployment health check 已通过；不能把 Wrangler/API 200 或 Dashboard Success 当成页面已可用。
 - [ ] 验证 preview 返回 `X-Robots-Tag: noindex` 或 HTML `noindex,nofollow`，但 production custom domain 不带该 preview noindex。
@@ -1691,7 +1720,7 @@ OnPush / Signals 桥接门禁：
 - [ ] 如需要 SEO 收敛，稳定 72 小时后给旧 Vercel 域加入 `X-Robots-Tag: noindex` 或友好跳转说明。
 - [ ] **Performance baseline 重置**（§16.16 的具体触发）：稳定满 7 天 + 无回滚后再跑 `npm run test:baseline:update`，并在 commit message 中说明 "post-cloudflare-migration baseline reset, prior baseline captured on Vercel edge"。提前重置会污染基线为不稳定窗口数据；7 天内禁止刷新。责任人：迁移 PR 的作者。
 - [ ] **Supabase 收紧型 migration（批次 B）发布**（§16.10.3 / 阶段 0 的延迟项）：阶段 0 标记为"批次 B / 不向后兼容"的 migration，仅在阶段 4 稳定 24h 后单独 PR 发布；与前端发布禁止同窗口。
-- [ ] 更新 README、部署文档和性能基线 URL。
+- [x] 更新 README、部署文档和迁移后建议；性能基线 URL 等阶段 4 观察窗口结束后再单独刷新。（2026-05-18 README 已改为 Cloudflare Pages 推荐路径，Vercel 降为回滚/备选。）
 
 ## 13. 验收标准
 
@@ -2277,7 +2306,7 @@ NanoFlow 当前 Realtime 已开启：`FEATURE_FLAGS.REALTIME_ENABLED = true`，`
 
 **方案 A：Supabase Branching（官方功能）。** 适合中等以上预算项目，PR 自动派生 schema 分支与隔离数据。需要 Supabase Pro 计划。个人项目通常不选。
 
-**方案 B：独立 Supabase Preview Project（默认强制）。** 创建一个 `nanoflow-preview` 项目，PR preview 走它的 URL/anon key（即策划案中的 `PREVIEW_NG_APP_SUPABASE_URL`）。
+**方案 B：独立 Supabase Preview Project（默认强制）。** 创建一个 `nanoflow-preview` 项目，PR preview 走它的 URL/anon key。当前仓库通过 GitHub Environment `NanoFlow-Preview` 注入同名 `NG_APP_SUPABASE_URL` / `NG_APP_SUPABASE_ANON_KEY`；不要再引入 `PREVIEW_NG_APP_*` 与生产 fallback 表达式。
 
 - 优点：完全隔离，不影响生产用户。
 - 缺点：需要手动同步 schema。可写一个 `scripts/sync-preview-schema.sh`，在 CI 里 pin 到生产 schema 的某个 commit。

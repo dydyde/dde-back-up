@@ -643,12 +643,19 @@ const SIYUAN_TOKEN_MASK = '••••••••';
                           <div class="text-[11px] font-bold text-amber-900 dark:text-amber-300 truncate max-w-[120px]">{{ localBackupService.directoryName() }}</div>
                           @if (localBackupService.isAuthorized()) {
                             <div class="text-[9px] text-green-600 dark:text-green-400">✓ 已授权</div>
+                          } @else if (localBackupService.needsPermissionResume()) {
+                            <div class="text-[9px] text-amber-600 dark:text-amber-400">需要恢复权限</div>
                           } @else {
                             <div class="text-[9px] text-amber-600 dark:text-amber-400">开启备份时自动授权</div>
                           }
                         </div>
                       </div>
-                      <button (click)="handleRevokeLocalBackup()" class="text-[10px] font-bold text-amber-600 hover:text-amber-800 px-2">取消</button>
+                      <div class="flex items-center gap-1 shrink-0">
+                        @if (localBackupService.needsPermissionResume()) {
+                          <button (click)="resumeLocalBackupPermission()" class="text-[10px] font-bold text-amber-700 hover:text-amber-900 px-2">恢复</button>
+                        }
+                        <button (click)="handleRevokeLocalBackup()" class="text-[10px] font-bold text-amber-600 hover:text-amber-800 px-2">取消</button>
+                      </div>
                     </div>
                     
                     <div class="flex flex-wrap items-center justify-between px-1 gap-x-3 gap-y-1.5">
@@ -1463,6 +1470,10 @@ export class SettingsModalComponent {
    */
   async toggleAutoBackup(): Promise<void> {
     await this.localBackupUI.toggleAutoBackup(() => this.projects());
+  }
+
+  async resumeLocalBackupPermission(): Promise<void> {
+    await this.localBackupUI.handleResumeLocalBackupPermission(() => this.projects());
   }
   
   // ============================================

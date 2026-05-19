@@ -107,6 +107,7 @@ describe('FlowOverviewService', () => {
   let delayViewportCommit: boolean;
   let viewportListener: (() => void) | null;
   let diagramRequestUpdate: ReturnType<typeof vi.fn>;
+  let diagramPositionClamp: ((position: InstanceType<typeof go.Point>) => InstanceType<typeof go.Point>) | null;
   let originalRequestAnimationFrame: typeof globalThis.requestAnimationFrame | undefined;
   let originalCancelAnimationFrame: typeof globalThis.cancelAnimationFrame | undefined;
 
@@ -126,6 +127,7 @@ describe('FlowOverviewService', () => {
     delayViewportCommit = false;
     viewportListener = null;
     diagramRequestUpdate = vi.fn();
+    diagramPositionClamp = null;
 
     originalRequestAnimationFrame = globalThis.requestAnimationFrame;
     originalCancelAnimationFrame = globalThis.cancelAnimationFrame;
@@ -198,7 +200,7 @@ describe('FlowOverviewService', () => {
     expect(overview.contentAlignment).toBeUndefined();
   });
 
-  it('松开小地图预览框后仍按最后拖拽视口重绘，避免内容弹跳', () => {
+  it('实际拖动松手后不应重居中 overview 内容，避免远距离拖动回弹', () => {
     const overview = service.overviewInstance as unknown as {
       centerRect: ReturnType<typeof vi.fn>;
     };
@@ -212,12 +214,12 @@ describe('FlowOverviewService', () => {
     dispatchPointer('pointerup', 120, 90);
     vi.runOnlyPendingTimers();
 
-    expect(overview.centerRect.mock.calls.length).toBe(callsBeforeRelease + 1);
-    const finalCenteredBounds = overview.centerRect.mock.calls.at(-1)?.[0] as InstanceType<typeof go.Rect>;
-    expectCenteredBoundsToContainViewport(finalCenteredBounds, diagramPosition.x, diagramPosition.y);
+    expect(overview.centerRect.mock.calls.length).toBe(callsBeforeRelease);
+    expect(diagramPosition.x).toBe(100);
+    expect(diagramPosition.y).toBe(70);
   });
 
-  it('pointerup 后的 lostpointercapture 不应清空待同步的释放视口', () => {
+  it('pointerup 后的 lostpointercapture 不应触发额外重居中', () => {
     const overview = service.overviewInstance as unknown as {
       centerRect: ReturnType<typeof vi.fn>;
     };
@@ -232,12 +234,12 @@ describe('FlowOverviewService', () => {
     dispatchPointer('lostpointercapture', 120, 90);
     vi.runOnlyPendingTimers();
 
-    expect(overview.centerRect.mock.calls.length).toBe(callsBeforeRelease + 1);
-    const finalCenteredBounds = overview.centerRect.mock.calls.at(-1)?.[0] as InstanceType<typeof go.Rect>;
-    expectCenteredBoundsToContainViewport(finalCenteredBounds, diagramPosition.x, diagramPosition.y);
+    expect(overview.centerRect.mock.calls.length).toBe(callsBeforeRelease);
+    expect(diagramPosition.x).toBe(100);
+    expect(diagramPosition.y).toBe(70);
   });
 
-  it('observed viewport 延迟追上前不应提前丢失释放锁', () => {
+  it('observed viewport 延迟追上前不应用 stale viewport 重居中', () => {
     const overview = service.overviewInstance as unknown as {
       centerRect: ReturnType<typeof vi.fn>;
     };
@@ -252,22 +254,32 @@ describe('FlowOverviewService', () => {
     vi.runOnlyPendingTimers();
 
     const callsAfterRelease = overview.centerRect.mock.calls.length;
-    const releaseCall = overview.centerRect.mock.calls.at(-1)?.[0] as InstanceType<typeof go.Rect>;
-    expectCenteredBoundsToContainViewport(releaseCall, diagramPosition.x, diagramPosition.y);
 
     viewportListener?.();
     vi.runOnlyPendingTimers();
 
-    expect(overview.centerRect.mock.calls.length).toBeGreaterThan(callsAfterRelease);
-    const staleObservedCall = overview.centerRect.mock.calls.at(-1)?.[0] as InstanceType<typeof go.Rect>;
-    expectCenteredBoundsToContainViewport(staleObservedCall, diagramPosition.x, diagramPosition.y);
+    expect(overview.centerRect.mock.calls.length).toBe(callsAfterRelease);
 
     delayViewportCommit = false;
     commitObservedViewportPosition();
     vi.runOnlyPendingTimers();
 
-    const caughtUpCall = overview.centerRect.mock.calls.at(-1)?.[0] as InstanceType<typeof go.Rect>;
-    expectCenteredBoundsToContainViewport(caughtUpCall, diagramPosition.x, diagramPosition.y);
+    const callsAfterCaughtUp = overview.centerRect.mock.calls.length;
+    expect(callsAfterCaughtUp).toBe(callsAfterRelease);
+
+    viewportListener?.();
+    vi.runOnlyPendingTimers();
+
+    expect(overview.centerRect.mock.calls.length).toBe(callsAfterCaughtUp);
+
+    diagramPosition = new go.Point(diagramPosition.x + 40, diagramPosition.y + 30);
+    observedViewportPosition = diagramPosition.copy();
+    viewportListener?.();
+    vi.runOnlyPendingTimers();
+
+    expect(overview.centerRect.mock.calls.length).toBeGreaterThan(callsAfterCaughtUp);
+    const followUpCall = overview.centerRect.mock.calls.at(-1)?.[0] as InstanceType<typeof go.Rect>;
+    expectCenteredBoundsToContainViewport(followUpCall, diagramPosition.x, diagramPosition.y);
   });
 
   it('点击小地图预览框但不移动时不应改变主视图位置', () => {
@@ -286,12 +298,11 @@ describe('FlowOverviewService', () => {
     expectCenteredBoundsToContainViewport(finalCenteredBounds, 0, 0);
   });
 
-  it('松开后续视口刷新仍以 viewport 中心为锚（避免方向不定的跳变）', () => {
+  it('实际拖动松手后的同位置异步刷新不应再次重居中', () => {
     const overview = service.overviewInstance as unknown as {
       centerRect: ReturnType<typeof vi.fn>;
     };
 
-    // 拖拽预览框，让 diagram.position 远离节点群，使 viewportBounds 落在 nodeBounds 之外
     dispatchPointer('pointerdown', 20, 20);
     vi.runOnlyPendingTimers();
     dispatchPointer('pointermove', 500, 400);
@@ -303,13 +314,21 @@ describe('FlowOverviewService', () => {
     const releaseX = diagramPosition.x;
     const releaseY = diagramPosition.y;
 
-    // 模拟松手后第二帧的 ViewportBoundsChanged（位置不再变，但 GoJS 会再触发一次）
+    viewportListener?.();
+    vi.runOnlyPendingTimers();
+    viewportListener?.();
+    vi.runOnlyPendingTimers();
+
+    expect(overview.centerRect.mock.calls.length).toBe(callsAfterRelease);
+
+    diagramPosition = new go.Point(releaseX + 60, releaseY + 40);
+    observedViewportPosition = diagramPosition.copy();
     viewportListener?.();
     vi.runOnlyPendingTimers();
 
     expect(overview.centerRect.mock.calls.length).toBeGreaterThan(callsAfterRelease);
     const followUpCall = overview.centerRect.mock.calls.at(-1)?.[0] as InstanceType<typeof go.Rect>;
-    expectCenteredBoundsToContainViewport(followUpCall, releaseX, releaseY);
+    expectCenteredBoundsToContainViewport(followUpCall, diagramPosition.x, diagramPosition.y);
   });
 
   it('viewport 在节点群内点击不动并回放后续刷新时，预览框始终以 viewport 为锚（消除根因型跳变）', () => {
@@ -349,7 +368,7 @@ describe('FlowOverviewService', () => {
     expect(diagramPosition.y).toBe(0);
   });
 
-  it('should intercept default pointerup to prevent GoJS double-centering on release', () => {
+  it('should intercept default pointerup without release-time re-centering', () => {
     const overview = service.overviewInstance as unknown as {
       centerRect: ReturnType<typeof vi.fn>;
     };
@@ -358,12 +377,15 @@ describe('FlowOverviewService', () => {
 
     dispatchPointer('pointerdown', 20, 20);
     vi.runOnlyPendingTimers();
+    const callsBeforeRelease = overview.centerRect.mock.calls.length;
+
     dispatchPointer('pointerup', 120, 90);
     vi.runOnlyPendingTimers();
 
     expect(bubblePointerUp).not.toHaveBeenCalled();
-    const finalCenteredBounds = overview.centerRect.mock.calls.at(-1)?.[0] as InstanceType<typeof go.Rect>;
-    expectCenteredBoundsToContainViewport(finalCenteredBounds, 100, 70);
+    expect(overview.centerRect.mock.calls.length).toBe(callsBeforeRelease);
+    expect(diagramPosition.x).toBe(100);
+    expect(diagramPosition.y).toBe(70);
   });
 
   it('should apply pointerup coordinates when the final pointermove is missing', () => {
@@ -373,11 +395,12 @@ describe('FlowOverviewService', () => {
 
     dispatchPointer('pointerdown', 20, 20);
     vi.runOnlyPendingTimers();
+    const callsBeforeRelease = overview.centerRect.mock.calls.length;
+
     dispatchPointer('pointerup', 120, 90);
     vi.runOnlyPendingTimers();
 
-    const finalCenteredBounds = overview.centerRect.mock.calls.at(-1)?.[0] as InstanceType<typeof go.Rect>;
-    expectCenteredBoundsToContainViewport(finalCenteredBounds, 100, 70);
+    expect(overview.centerRect.mock.calls.length).toBe(callsBeforeRelease);
     expect(diagramPosition.x).toBe(100);
     expect(diagramPosition.y).toBe(70);
   });
@@ -474,10 +497,11 @@ describe('FlowOverviewService', () => {
     expect(diagramPosition.y).toBe(70);
     expect(diagramPosition.x).not.toBe(positionBeforeMove.x);
 
-    // 松手帧 centerRect 也应锚定到与 diagram.position 一致的 viewportBounds，
-    // 不出现"小地图缩略块在某区域、主视图却看不到那些块"的脱节现象。
-    const finalCenteredBounds = overview.centerRect.mock.calls.at(-1)?.[0] as InstanceType<typeof go.Rect>;
-    expectCenteredBoundsToContainViewport(finalCenteredBounds, 100, 70);
+    // 松手帧不再主动重居中；主视图位置仍必须由最后一次指针坐标决定，避免缩放变化造成漂移。
+    const callsAfterRelease = overview.centerRect.mock.calls.length;
+    viewportListener?.();
+    vi.runOnlyPendingTimers();
+    expect(overview.centerRect.mock.calls.length).toBeGreaterThanOrEqual(callsAfterRelease);
   });
 
   it('【根因回归 2026-05-11】press → release（不移动）后 overview.scale 必须严格保持稳定（消除 smartLerp 残差跳动）', () => {
@@ -720,6 +744,73 @@ describe('FlowOverviewService', () => {
     vi.runOnlyPendingTimers();
   });
 
+  it('【性能修复】拖拽遇到位置约束时白框跟随实际视口，避免回弹残影', () => {
+    const overview = service.overviewInstance as unknown as {
+      box: { position: InstanceType<typeof go.Point> };
+    };
+    diagramPositionClamp = (position) => new go.Point(
+      Math.min(position.x, 40),
+      Math.min(position.y, 30),
+    );
+
+    dispatchPointer('pointerdown', 20, 20);
+    vi.runOnlyPendingTimers();
+    diagramRequestUpdate.mockClear();
+
+    dispatchPointer('pointermove', 120, 90);
+    vi.runOnlyPendingTimers();
+
+    expect(diagramPosition.x).toBe(40);
+    expect(diagramPosition.y).toBe(30);
+    expect(overview.box.position.x).toBe(390);
+    expect(overview.box.position.y).toBe(290);
+    expect(diagramRequestUpdate).not.toHaveBeenCalled();
+
+    dispatchPointer('pointerup', 120, 90);
+    vi.runOnlyPendingTimers();
+  });
+  it('【性能修复】边界阻挡后的 pointerup 不应把真实拖拽误判为点击不动', () => {
+    const overview = service.overviewInstance as unknown as {
+      centerRect: ReturnType<typeof vi.fn>;
+    };
+    diagramPositionClamp = (position) => new go.Point(
+      Math.min(position.x, 40),
+      Math.min(position.y, 30),
+    );
+
+    dispatchPointer('pointerdown', 20, 20);
+    vi.runOnlyPendingTimers();
+    dispatchPointer('pointermove', 80, 60);
+    vi.runOnlyPendingTimers();
+    const callsBeforeBlockedRelease = overview.centerRect.mock.calls.length;
+
+    dispatchPointer('pointerup', 500, 400);
+    vi.runOnlyPendingTimers();
+
+    expect(diagramPosition.x).toBe(40);
+    expect(diagramPosition.y).toBe(30);
+    expect(overview.centerRect.mock.calls.length).toBe(callsBeforeBlockedRelease);
+  });
+  it('【性能修复】拖拽过程中不重居中 overview 内容，让预览框可以贴近边缘', () => {
+    const overview = service.overviewInstance as unknown as {
+      centerRect: ReturnType<typeof vi.fn>;
+    };
+
+    dispatchPointer('pointerdown', 20, 20);
+    vi.runOnlyPendingTimers();
+    const callsAfterPress = overview.centerRect.mock.calls.length;
+
+    dispatchPointer('pointermove', 120, 90);
+    vi.runOnlyPendingTimers();
+
+    expect(overview.centerRect.mock.calls.length).toBe(callsAfterPress);
+
+    dispatchPointer('pointerup', 120, 90);
+    vi.runOnlyPendingTimers();
+
+    expect(overview.centerRect.mock.calls.length).toBe(callsAfterPress);
+  });
+
   it('【性能修复】拖拽期间必须复用 overview 容器 rect，避免每次 pointermove 触发布局读', () => {
     const rectSpy = vi.fn(() => ({
       left: 0,
@@ -839,9 +930,10 @@ describe('FlowOverviewService', () => {
         return diagramPosition;
       },
       set position(value: InstanceType<typeof go.Point>) {
-        diagramPosition = value.copy();
+        const acceptedPosition = diagramPositionClamp ? diagramPositionClamp(value) : value;
+        diagramPosition = acceptedPosition.copy();
         if (!delayViewportCommit) {
-          observedViewportPosition = value.copy();
+          observedViewportPosition = acceptedPosition.copy();
         }
         viewportListener?.();
       },

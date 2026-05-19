@@ -11,6 +11,10 @@ import { shortenSiyuanBlockId } from '../../../core/external-sources/siyuan/siyu
 import type { KnowledgeAnchorPopoverService } from './knowledge-anchor-popover.service';
 
 const SHEET_PREVIEW_FALLBACK: SiyuanPreviewResult = { status: 'error', errorCode: 'unknown' };
+const LONG_PRESS_DELAY_MS = 450;
+const LONG_PRESS_MOVE_TOLERANCE_PX = 8;
+
+type KnowledgeAnchorPreviewMode = 'full' | 'deep-link-only';
 
 /**
  * 懒加载 popover service：CDK Overlay + ConnectedPositionStrategy 仅在桌面端 hover/focus 时需要，
@@ -43,6 +47,11 @@ function loadPopoverModule(): Promise<typeof import('./knowledge-anchor-popover.
           (mouseleave)="onMouseLeave()"
           (focus)="onFocus($event, link)"
           (blur)="onMouseLeave()"
+          (contextmenu)="onContextMenu($event, link)"
+          (pointerdown)="onPointerDown($event, link)"
+          (pointermove)="onPointerMove($event)"
+          (pointerup)="onPointerEnd()"
+          (pointercancel)="onPointerEnd()"
           (click)="onChipClick($event, link)">
           <span aria-hidden="true">📎</span>
           <span class="truncate">思源 {{ displayLabel(link) }}</span>
@@ -103,6 +112,27 @@ function loadPopoverModule(): Promise<typeof import('./knowledge-anchor-popover.
           </div>
         </section>
       }
+
+      @if (actionMenuOpen() && menuLink(); as link) {
+        <div class="fixed inset-0 z-[62] bg-black/20" aria-hidden="true" (click)="closeActionMenu()"></div>
+        <section
+          role="dialog"
+          aria-modal="true"
+          aria-label="思源锚点操作"
+          class="fixed inset-x-4 bottom-4 z-[63] rounded-xl border border-slate-200 bg-white p-2 shadow-2xl dark:border-stone-700 dark:bg-stone-900"
+          data-testid="knowledge-anchor-action-menu">
+          @if (previewMode() === 'full') {
+            <button type="button" class="menu-action" (click)="previewFromMenu(link)">预览</button>
+          }
+          <button type="button" class="menu-action" (click)="openFromMenu(link)">打开思源</button>
+          @if (previewMode() === 'full') {
+            <button type="button" class="menu-action" (click)="refreshFromMenu(link)">刷新缓存</button>
+          }
+          @if (editable()) {
+            <button type="button" class="menu-action menu-action-danger" (click)="removeFromMenu(link)">解除关联</button>
+          }
+        </section>
+      }
     </div>
   `,
   styles: [`
@@ -112,6 +142,11 @@ function loadPopoverModule(): Promise<typeof import('./knowledge-anchor-popover.
     .knowledge-anchor--compact .knowledge-anchor-chip { padding: .12rem .35rem; font-size: 9px; }
     .sheet-action { border-radius: .6rem; border: 1px solid rgb(226 232 240); padding: .5rem .25rem; font-size: 11px; font-weight: 700; color: rgb(71 85 105); }
     .sheet-action-danger { color: rgb(225 29 72); }
+    .menu-action { display: block; width: 100%; border-radius: .625rem; padding: .7rem .85rem; text-align: left; font-size: 13px; font-weight: 700; color: rgb(51 65 85); }
+    .menu-action:hover, .menu-action:focus-visible { background: rgb(248 250 252); outline: none; }
+    :host-context(.dark) .menu-action { color: rgb(231 229 228); }
+    :host-context(.dark) .menu-action:hover, :host-context(.dark) .menu-action:focus-visible { background: rgb(41 37 36); }
+    .menu-action-danger { color: rgb(225 29 72); }
   `],
 })
 export class KnowledgeAnchorComponent implements OnDestroy {
@@ -125,6 +160,7 @@ export class KnowledgeAnchorComponent implements OnDestroy {
   readonly isMobile = input(false);
   readonly editable = input(false);
   readonly compact = input(false);
+  readonly previewMode = input<KnowledgeAnchorPreviewMode>('full');
   readonly linksVersion = this.linkService.links;
   readonly links = computed(() => {
     this.linksVersion();
@@ -134,12 +170,18 @@ export class KnowledgeAnchorComponent implements OnDestroy {
   readonly sheetOpen = signal(false);
   readonly activeLink = signal<ExternalSourceLink | null>(null);
   readonly sheetResult = signal<SiyuanPreviewResult>({ status: 'loading' });
+  readonly actionMenuOpen = signal(false);
+  readonly menuLink = signal<ExternalSourceLink | null>(null);
   pendingInput = '';
   /**
    * 触发底部 sheet 的元素引用，关闭后将焦点 restore 回原位，符合 dialog/aria-modal 规范。
    * cdkTrapFocusAutoCapture 也能恢复焦点，但当用户中途切换 chip 时，这个手动引用更稳。
    */
   private originChip: HTMLElement | null = null;
+  private menuOriginChip: HTMLElement | null = null;
+  private longPressTimer: ReturnType<typeof setTimeout> | null = null;
+  private longPressStart: { x: number; y: number; link: ExternalSourceLink; origin: HTMLElement | null } | null = null;
+  private suppressNextClick = false;
   /**
    * 已加载的 popover service 实例缓存。仅在 ngOnDestroy 时触发清理时短路使用，
    * 不主动 await 以避免 destroy 阻塞。
@@ -147,6 +189,7 @@ export class KnowledgeAnchorComponent implements OnDestroy {
   private popoverInstance: KnowledgeAnchorPopoverService | null = null;
 
   ngOnDestroy(): void {
+    this.cancelLongPress();
     // popover 仅在桌面 hover 路径加载，未加载即未使用，无需清理。
     this.popoverInstance?.closeForHost(this.host.nativeElement);
     this.previewService.abortActive();
@@ -158,6 +201,10 @@ export class KnowledgeAnchorComponent implements OnDestroy {
    */
   @HostListener('document:keydown.escape')
   onDocumentEscape(): void {
+    if (this.actionMenuOpen()) {
+      this.closeActionMenu();
+      return;
+    }
     if (this.sheetOpen()) this.closeSheet();
   }
 
@@ -170,7 +217,7 @@ export class KnowledgeAnchorComponent implements OnDestroy {
   }
 
   onMouseEnter(event: MouseEvent, link: ExternalSourceLink): void {
-    if (this.isMobile()) return;
+    if (this.isMobile() || this.previewMode() === 'deep-link-only') return;
     void this.withPopover((p) => p.scheduleOpen(link, event.currentTarget as HTMLElement))
       .catch((error) => {
         this.previewService.abortActive();
@@ -182,7 +229,7 @@ export class KnowledgeAnchorComponent implements OnDestroy {
   }
 
   onFocus(event: FocusEvent, link: ExternalSourceLink): void {
-    if (this.isMobile()) return;
+    if (this.isMobile() || this.previewMode() === 'deep-link-only') return;
     void this.withPopover((p) => p.scheduleOpen(link, event.currentTarget as HTMLElement))
       .catch((error) => {
         this.previewService.abortActive();
@@ -201,11 +248,55 @@ export class KnowledgeAnchorComponent implements OnDestroy {
 
   onChipClick(event: Event, link: ExternalSourceLink): void {
     event.stopPropagation();
+    if (this.suppressNextClick) {
+      event.preventDefault();
+      this.suppressNextClick = false;
+      return;
+    }
+    if (this.previewMode() === 'deep-link-only') {
+      this.open(link);
+      return;
+    }
     if (this.isMobile()) {
       this.openSheet(link, event.currentTarget as HTMLElement);
       return;
     }
     this.open(link);
+  }
+
+  onContextMenu(event: MouseEvent, link: ExternalSourceLink): void {
+    if (!this.isMobile()) return;
+    event.preventDefault();
+    event.stopPropagation();
+    this.cancelLongPress();
+    this.openActionMenu(link, event.currentTarget as HTMLElement);
+  }
+
+  onPointerDown(event: PointerEvent, link: ExternalSourceLink): void {
+    if (!this.isMobile() || event.pointerType === 'mouse') return;
+    this.cancelLongPress();
+    const origin = event.currentTarget instanceof HTMLElement ? event.currentTarget : null;
+    this.longPressStart = { x: event.clientX, y: event.clientY, link, origin };
+    this.longPressTimer = setTimeout(() => {
+      const start = this.longPressStart;
+      if (!start) return;
+      this.suppressNextClick = true;
+      this.openActionMenu(start.link, start.origin);
+      this.cancelLongPress();
+    }, LONG_PRESS_DELAY_MS);
+  }
+
+  onPointerMove(event: PointerEvent): void {
+    if (!this.longPressStart) return;
+    const distanceX = Math.abs(event.clientX - this.longPressStart.x);
+    const distanceY = Math.abs(event.clientY - this.longPressStart.y);
+    if (distanceX > LONG_PRESS_MOVE_TOLERANCE_PX || distanceY > LONG_PRESS_MOVE_TOLERANCE_PX) {
+      this.cancelLongPress();
+    }
+  }
+
+  onPointerEnd(): void {
+    this.cancelLongPress();
   }
 
   open(link: ExternalSourceLink): void {
@@ -231,6 +322,15 @@ export class KnowledgeAnchorComponent implements OnDestroy {
     this.originChip = null;
   }
 
+  closeActionMenu(): void {
+    this.actionMenuOpen.set(false);
+    this.menuLink.set(null);
+    if (this.menuOriginChip instanceof HTMLElement && this.menuOriginChip.isConnected) {
+      this.menuOriginChip.focus();
+    }
+    this.menuOriginChip = null;
+  }
+
   async refreshSheet(link: ExternalSourceLink): Promise<void> {
     this.sheetResult.set({ status: 'loading' });
     try {
@@ -249,18 +349,55 @@ export class KnowledgeAnchorComponent implements OnDestroy {
     return SIYUAN_ERROR_MESSAGES[code] ?? SIYUAN_ERROR_MESSAGES.unknown;
   }
 
-  private openSheet(link: ExternalSourceLink, origin?: HTMLElement): void {
+  previewFromMenu(link: ExternalSourceLink): void {
+    const origin = this.menuOriginChip ?? undefined;
+    this.closeActionMenu();
+    this.openSheet(link, origin);
+  }
+
+  openFromMenu(link: ExternalSourceLink): void {
+    this.closeActionMenu();
+    this.open(link);
+  }
+
+  refreshFromMenu(link: ExternalSourceLink): void {
+    const origin = this.menuOriginChip ?? undefined;
+    this.closeActionMenu();
+    this.openSheet(link, origin, true);
+  }
+
+  async removeFromMenu(link: ExternalSourceLink): Promise<void> {
+    this.closeActionMenu();
+    await this.remove(link);
+  }
+
+  private openSheet(link: ExternalSourceLink, origin?: HTMLElement, forceRefresh = false): void {
     this.originChip = origin ?? null;
     this.activeLink.set(link);
     this.sheetOpen.set(true);
     this.sheetResult.set({ status: 'loading' });
-    void this.previewService.preview(link)
+    void this.previewService.preview(link, { forceRefresh })
       .then(result => {
         if (this.activeLink()?.id === link.id) this.sheetResult.set(result);
       })
       .catch(() => {
         if (this.activeLink()?.id === link.id) this.sheetResult.set(SHEET_PREVIEW_FALLBACK);
       });
+  }
+
+  private openActionMenu(link: ExternalSourceLink, origin?: HTMLElement | null): void {
+    this.closeSheet();
+    this.menuOriginChip = origin ?? null;
+    this.menuLink.set(link);
+    this.actionMenuOpen.set(true);
+  }
+
+  private cancelLongPress(): void {
+    if (this.longPressTimer) {
+      clearTimeout(this.longPressTimer);
+      this.longPressTimer = null;
+    }
+    this.longPressStart = null;
   }
 
   /**

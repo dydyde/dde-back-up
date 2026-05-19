@@ -1728,6 +1728,12 @@ export class BlackBoxSyncService {
       return false;
     }
 
+    // 本地快时钟可能让旧 pending 的 updatedAt 晚于服务端 canonical synced。
+    // 若业务字段已经等价，必须保留内存里的收敛状态并回写 IDB，避免刷新面板后徽标复活。
+    if (this.hasEquivalentEntryState(hydrated, inMemory)) {
+      return true;
+    }
+
     if (this.hasSameInstant(hydrated.updatedAt, inMemory.updatedAt)) {
       return true;
     }

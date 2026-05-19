@@ -25,6 +25,7 @@ import { LoggerService } from '../../../services/logger.service';
 import { DynamicModalService } from '../../../services/dynamic-modal.service';
 import { AppProjectCoordinatorService } from '../services/app-project-coordinator.service';
 import { DockEngineService } from '../../../services/dock-engine.service';
+import { LocalBackupService } from '../../../services/local-backup.service';
 // 【重要】@defer 使用的组件必须直接引用源文件，禁止走 barrel（index.ts）
 // barrel 会把所有子组件一起 re-export，导致 esbuild 代码分割时 AOT 元数据丢失，
 // 触发运行时 JIT 编译失败（TextStageCardComponent / FlowView 等）
@@ -459,6 +460,7 @@ export class ProjectShellComponent implements OnInit, OnDestroy {
   private readonly modalLoader = inject(ModalLoaderService);
   private readonly dynamicModal = inject(DynamicModalService);
   private readonly projectCoord = inject(AppProjectCoordinatorService);
+  private readonly localBackupService = inject(LocalBackupService);
   private readonly handoffCoordinator = inject(HandoffCoordinatorService);
   private readonly launchSnapshot = inject(LaunchSnapshotService);
   private readonly loggerService = inject(LoggerService);
@@ -519,6 +521,7 @@ export class ProjectShellComponent implements OnInit, OnDestroy {
   });
   
   ngOnInit() {
+    this.localBackupService.setProjectsProvider(() => this.projectState.getProjectsWithCurrentData());
     // 【P2-38 修复】使用 NavigationEnd 事件统一处理路由变化
     // 父子路由结构下，projectId 在 this.route.params，taskId 在 firstChild.params
     // 通过 Router.events 可以同时捕获父路由和子路由的变化

@@ -296,7 +296,8 @@ const consoleMotion = PARKING_CONFIG.MOTION.console;
                 [taskId]="card.taskId"
                 [isMobile]="viewportSize().width <= 640"
                 [editable]="false"
-                [compact]="true">
+                [compact]="true"
+                previewMode="deep-link-only">
               </app-knowledge-anchor>
 
               <div class="flex items-center justify-between pt-4 border-t border-stone-800">

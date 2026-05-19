@@ -28,6 +28,7 @@ export class SiyuanPreviewService {
   private readonly logger = inject(LoggerService).category('SiyuanPreview');
   private activeRequest?: ActivePreviewRequest;
   private requestSeq = 0;
+  private readonly inFlight = new Map<string, Promise<SiyuanPreviewResult>>();
 
   async diagnoseConnection(): Promise<{ ok: boolean; mode: 'extension-relay' | 'direct' | 'cache-only'; errorCode?: SiyuanPreviewErrorCode }> {
     const config = await this.cache.loadConfig();
@@ -72,7 +73,7 @@ export class SiyuanPreviewService {
       const stale = Date.now() - new Date(cached.fetchedAt).getTime() > SIYUAN_CONFIG.CACHE_STALE_MS;
       // 只在缓存过期时触发后台刷新，遵守 CACHE_STALE_MS 预算并避免每次悬停都打 API。
       if (stale) {
-        void this.refresh(link).catch(error => {
+        void this.refreshDeduped(link, undefined, false).catch(error => {
           this.logger.debug('后台刷新思源预览失败，继续使用本机缓存', {
             linkId: link.id,
             blockId: link.targetId,
@@ -82,12 +83,28 @@ export class SiyuanPreviewService {
       }
       return { status: 'ready', preview: cached, stale };
     }
-    return this.refresh(link, cached ?? undefined);
+    return this.refreshDeduped(link, cached ?? undefined, options?.forceRefresh === true);
   }
 
   abortActive(): void {
     this.activeRequest?.controller.abort();
     this.activeRequest = undefined;
+  }
+
+  private refreshDeduped(
+    link: ExternalSourceLink,
+    fallback: LocalSiyuanPreviewCache | undefined,
+    forceRefresh: boolean,
+  ): Promise<SiyuanPreviewResult> {
+    const key = this.previewRequestKey(link, forceRefresh);
+    const existing = this.inFlight.get(key);
+    if (existing) return existing;
+
+    const request = this.refresh(link, fallback).finally(() => {
+      this.inFlight.delete(key);
+    });
+    this.inFlight.set(key, request);
+    return request;
   }
 
   async refresh(link: ExternalSourceLink, fallback?: LocalSiyuanPreviewCache): Promise<SiyuanPreviewResult> {
@@ -130,6 +147,10 @@ export class SiyuanPreviewService {
     // 显式选择 extension-relay 的用户可能正是为了避免 token 落到 direct 模式的 fetch 流量里，
     // 因此扩展不可用时不再静默 fallback；直接告知扩展不可用，让用户在设置里改 runtimeMode。
     return await this.extensionProvider.isAvailable() ? this.extensionProvider : null;
+  }
+
+  private previewRequestKey(link: ExternalSourceLink, forceRefresh: boolean): string {
+    return `${this.cache.ownerId()}:${link.id}:${link.targetId}:${forceRefresh ? 'force' : 'normal'}`;
   }
 
   private isCurrent(link: ExternalSourceLink, controller: AbortController, requestSeq: number, blockId: string): boolean {
