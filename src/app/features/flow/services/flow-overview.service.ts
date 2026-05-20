@@ -739,12 +739,19 @@ export class FlowOverviewService {
       }
 
       const currentPosition = this.diagram.position;
+      const diagramHasMovedAway = !currentPosition
+        || !Number.isFinite(currentPosition.x)
+        || !Number.isFinite(currentPosition.y)
+        || Math.abs(currentPosition.x - this.overviewReleaseViewportBounds.x) > 1
+        || Math.abs(currentPosition.y - this.overviewReleaseViewportBounds.y) > 1;
+
       const observedHasCaughtUpToDiagramPosition = !!currentPosition
         && Number.isFinite(currentPosition.x)
         && Number.isFinite(currentPosition.y)
         && Math.abs(observedViewportBounds.x - currentPosition.x) < 1
         && Math.abs(observedViewportBounds.y - currentPosition.y) < 1;
-      if (!observedHasCaughtUpToDiagramPosition) {
+
+      if (!diagramHasMovedAway && !observedHasCaughtUpToDiagramPosition) {
         return;
       }
 
@@ -987,7 +994,8 @@ export class FlowOverviewService {
             const { bounds: worldBounds, reusedStableBounds } = resolveWorldBoundsForViewport(
               candidateWorldBounds,
               viewportBounds,
-              shouldReuseStableBoundsForMainPan
+              isPassiveObservedViewportUpdate
+                || shouldReuseStableBoundsForMainPan
                 || shouldReuseStableBoundsForBoxDrag
                 || (manualMovementViewport && isViewportOutside && !viewportContainsNodeCenter),
               shouldReuseStableBoundsForMainPan || shouldReuseStableBoundsForBoxDrag,
@@ -1471,8 +1479,14 @@ export class FlowOverviewService {
       this.hasManualBoxMovement = false;
       rejectedDragBoundary = null;
 
-      manualDragViewportSize = { w: vb.width, h: vb.height };
-      const viewportCenter = vb.center;
+        manualDragViewportSize = { w: vb.width, h: vb.height };
+
+      // 使用 diagram.position (+ vb 宽高折中) 计算无延迟的实时视口中心，
+      // 避免 diagram.viewportBounds 异步更新滞后导致紧随主图拖拽后点击小地图发生的"概率回跳"。
+      const viewportCenter = new go.Point(
+        this.diagram.position.x + vb.width / 2,
+        this.diagram.position.y + vb.height / 2
+      );
 
       // 【2026-05-09 根因修复】捕获稳定 transform 参数。
       // 这些值在整个拖拽周期内保持不变，确保 client → doc 映射恒定，
@@ -1529,6 +1543,17 @@ export class FlowOverviewService {
       );
 
       let acceptedPosition = this.diagram.position;
+
+      // Pre-clamp desiredPos against any active rejected drag boundary to prevent jitter/out-of-bounds writes
+      if (rejectedDragBoundary && acceptedPosition.equals(rejectedDragBoundary.acceptedPosition)) {
+        if (axisStillRejected(desiredPos.x, acceptedPosition.x, rejectedDragBoundary.blockX)) {
+          desiredPos.x = acceptedPosition.x;
+        }
+        if (axisStillRejected(desiredPos.y, acceptedPosition.y, rejectedDragBoundary.blockY)) {
+          desiredPos.y = acceptedPosition.y;
+        }
+      }
+
       let acceptedMovement = false;
       let attemptedPositionWrite = false;
       if (shouldSkipRejectedPositionWrite(desiredPos, acceptedPosition)) {
