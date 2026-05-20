@@ -1,5 +1,6 @@
 import { Injectable } from '@angular/core';
 import { Task } from '../models';
+import { FLOATING_TREE_CONFIG } from '../config/layout.config';
 import { GoJSNodeData, GoJSLinkData } from '../app/features/flow/services/flow-diagram-config.service';
 
 /**
@@ -20,6 +21,11 @@ export interface LineageLinkData extends GoJSLinkData {
   rootAncestorIndex: number;
   /** 家族专属颜色 */
   familyColor: string;
+}
+
+interface RootLineage {
+  rootId: string;
+  rootIndex: number;
 }
 
 /**
@@ -79,6 +85,14 @@ export class LineageColorService {
   private readonly HEX_LIGHTEN_MIX = 0.2;
   /** HEX 颜色压暗时的混合比例 */
   private readonly HEX_DARKEN_MIX = 0.18;
+  /** FNV-1a 32-bit hash 初始值，用于按根 ID 稳定派生家族色 */
+  private readonly HASH_OFFSET_BASIS = 0x811c9dc5;
+  /** FNV-1a 32-bit hash 乘数 */
+  private readonly HASH_PRIME = 0x01000193;
+  /** 稳定色相的饱和度浮动范围，避免大量根节点落在近似颜色上 */
+  private readonly STABLE_SATURATION_SPREAD = 15;
+  /** 稳定色相的亮度浮动范围，保持深浅模式下的可读性 */
+  private readonly STABLE_LIGHTNESS_SPREAD = 13;
 
   // ========== 【2026-04-24 性能优化】血缘计算结果缓存 ==========
   /**
@@ -87,7 +101,7 @@ export class LineageColorService {
    * 因此对 lineageCache / rootColorMap 按“父子结构签名”缓存，减少重复追溯。
    */
   private cachedStructureKey = '';
-  private cachedLineage: Map<string, { rootId: string; rootIndex: number }> | null = null;
+  private cachedLineage: Map<string, RootLineage> | null = null;
   private cachedRootColorMap: Map<string, string> | null = null;
 
   private computeStructureKey(tasks: Task[]): string {
@@ -96,6 +110,48 @@ export class LineageColorService {
       .map(task => `${task.id}>${task.parentId || ''}`)
       .sort()
       .join(';');
+  }
+
+  private computeLineageForStructure(tasks: Task[]): {
+    lineageCache: Map<string, RootLineage>;
+    rootColorMap: Map<string, string>;
+  } {
+    const taskMap = new Map<string, Task>();
+    tasks.forEach(task => taskMap.set(task.id, task));
+
+    const lineageCache = new Map<string, RootLineage>();
+    const rootNodes: string[] = [];
+
+    for (const task of tasks) {
+      this.traceRootAncestor(task.id, taskMap, lineageCache, rootNodes);
+    }
+
+    rootNodes.sort();
+    this.applySortedRootIndexes(lineageCache, rootNodes);
+
+    return {
+      lineageCache,
+      rootColorMap: this.buildRootColorMap(rootNodes),
+    };
+  }
+
+  private applySortedRootIndexes(
+    lineageCache: Map<string, RootLineage>,
+    rootNodes: string[],
+  ): void {
+    const sortedRootIndexMap = new Map<string, number>();
+    rootNodes.forEach((rootId, index) => sortedRootIndexMap.set(rootId, index));
+
+    for (const [taskId, lineage] of lineageCache) {
+      const sortedIndex = sortedRootIndexMap.get(lineage.rootId) ?? 0;
+      lineageCache.set(taskId, { rootId: lineage.rootId, rootIndex: sortedIndex });
+    }
+  }
+
+  private buildRootColorMap(rootNodes: string[]): Map<string, string> {
+    const rootColorMap = new Map<string, string>();
+    rootNodes.forEach(rootId => rootColorMap.set(rootId, this.generateStableFamilyColor(rootId)));
+    return rootColorMap;
   }
   
   /**
@@ -121,47 +177,16 @@ export class LineageColorService {
     // 【2026-04-24 性能优化】父子结构未变化时直接复用上次缓存的 lineageCache + rootColorMap，
     // 只对 nodeDataArray / linkDataArray 做一次 map 注入。
     const structureKey = this.computeStructureKey(tasks);
-    let lineageCache: Map<string, { rootId: string; rootIndex: number }>;
+    let lineageCache: Map<string, RootLineage>;
     let rootColorMap: Map<string, string>;
 
     if (structureKey === this.cachedStructureKey && this.cachedLineage && this.cachedRootColorMap) {
       lineageCache = this.cachedLineage;
       rootColorMap = this.cachedRootColorMap;
     } else {
-      // 步骤1：构建任务映射和父子关系
-      const taskMap = new Map<string, Task>();
-      tasks.forEach(task => taskMap.set(task.id, task));
-
-      // 步骤2：追溯每个任务的始祖节点
-      lineageCache = new Map<string, { rootId: string; rootIndex: number }>();
-      const rootNodes: string[] = []; // 记录始祖节点
-
-      for (const task of tasks) {
-        this.traceRootAncestor(task.id, taskMap, lineageCache, rootNodes);
-      }
-
-      // 步骤2.5：按 ID 排序始祖节点，确保颜色分配与加载顺序无关
-      rootNodes.sort();
-
-      // 重建排序后的 rootIndex 映射
-      const sortedRootIndexMap = new Map<string, number>();
-      rootNodes.forEach((rootId, index) => {
-        sortedRootIndexMap.set(rootId, index);
-      });
-
-      // 更新 lineageCache 中的 rootIndex 为排序后的值
-      for (const [taskId, lineage] of lineageCache) {
-        const sortedIndex = sortedRootIndexMap.get(lineage.rootId) ?? 0;
-        lineageCache.set(taskId, { rootId: lineage.rootId, rootIndex: sortedIndex });
-      }
-
-      // 步骤3：计算每个始祖节点的家族颜色
-      const totalRoots = rootNodes.length;
-      rootColorMap = new Map<string, string>();
-
-      rootNodes.forEach((rootId, index) => {
-        rootColorMap.set(rootId, this.generateFamilyColor(index, totalRoots));
-      });
+      const computedLineage = this.computeLineageForStructure(tasks);
+      lineageCache = computedLineage.lineageCache;
+      rootColorMap = computedLineage.rootColorMap;
 
       this.cachedStructureKey = structureKey;
       this.cachedLineage = lineageCache;
@@ -205,7 +230,7 @@ export class LineageColorService {
   /**
    * 追溯任务的始祖节点
    * 
-   * 使用递归向上追溯 parentId 链，直到找到没有父节点的任务（始祖）
+  * 使用迭代向上追溯 parentId 链，直到找到没有父节点的任务（始祖）
    * 结果会被缓存以避免重复计算
    * 
    * @param taskId 当前任务 ID
@@ -217,35 +242,46 @@ export class LineageColorService {
   private traceRootAncestor(
     taskId: string,
     taskMap: Map<string, Task>,
-    cache: Map<string, { rootId: string; rootIndex: number }>,
+    cache: Map<string, RootLineage>,
     rootNodes: string[]
   ): string {
-    // 检查缓存
-    const cached = cache.get(taskId);
-    if (cached) {
-      return cached.rootId;
+    const initialCached = cache.get(taskId);
+    if (initialCached) return initialCached.rootId;
+
+    const path: string[] = [];
+    const visited = new Set<string>();
+    let currentId = taskId;
+    let rootId = taskId;
+    let depth = 0;
+
+    while (true) {
+      const cached = cache.get(currentId);
+      if (cached) {
+        rootId = cached.rootId;
+        break;
+      }
+
+      if (visited.has(currentId)) {
+        rootId = currentId;
+        break;
+      }
+
+      visited.add(currentId);
+      path.push(currentId);
+
+      const task = taskMap.get(currentId);
+      if (!task?.parentId || depth >= FLOATING_TREE_CONFIG.MAX_SUBTREE_DEPTH) {
+        rootId = currentId;
+        break;
+      }
+
+      currentId = task.parentId;
+      depth += 1;
     }
-    
-    const task = taskMap.get(taskId);
-    if (!task) {
-      // 任务不存在，将自己作为始祖
-      const rootIndex = this.getOrAddRootIndex(taskId, rootNodes);
-      cache.set(taskId, { rootId: taskId, rootIndex });
-      return taskId;
-    }
-    
-    if (!task.parentId) {
-      // 没有父节点，这就是始祖
-      const rootIndex = this.getOrAddRootIndex(taskId, rootNodes);
-      cache.set(taskId, { rootId: taskId, rootIndex });
-      return taskId;
-    }
-    
-    // 递归追溯父节点
-    const rootId = this.traceRootAncestor(task.parentId, taskMap, cache, rootNodes);
-    const rootIndex = cache.get(rootId)?.rootIndex ?? 0;
-    cache.set(taskId, { rootId, rootIndex });
-    
+
+    const rootIndex = this.getOrAddRootIndex(rootId, rootNodes);
+    path.forEach(pathTaskId => cache.set(pathTaskId, { rootId, rootIndex }));
+
     return rootId;
   }
   
@@ -289,6 +325,26 @@ export class LineageColorService {
     const hue = (this.HUE_OFFSET + index * goldenAngle) % 360;
     
     return `hsl(${Math.round(hue)}, ${this.SATURATION}%, ${this.LIGHTNESS}%)`;
+  }
+
+  private generateStableFamilyColor(rootId: string): string {
+    const hash = this.hashRootId(rootId);
+    const hue = (this.HUE_OFFSET + (hash % 360)) % 360;
+    const saturation = this.SATURATION - 7 + ((hash >>> 9) % this.STABLE_SATURATION_SPREAD);
+    const lightness = this.LIGHTNESS - 7 + ((hash >>> 18) % this.STABLE_LIGHTNESS_SPREAD);
+
+    return `hsl(${hue}, ${saturation}%, ${lightness}%)`;
+  }
+
+  private hashRootId(rootId: string): number {
+    let hash = this.HASH_OFFSET_BASIS;
+
+    for (let index = 0; index < rootId.length; index += 1) {
+      hash ^= rootId.charCodeAt(index);
+      hash = Math.imul(hash, this.HASH_PRIME);
+    }
+
+    return hash >>> 0;
   }
   
   /**

@@ -128,6 +128,7 @@ describe('generate-launch-html', () => {
     expect(launchHtml).toContain('bg-slate-50');
     expect(launchHtml).toContain('overflow-hidden');
     expect(launchHtml).toContain('<body class="bg-slate-50 text-slate-900 dark:bg-slate-900 h-screen w-screen overflow-hidden">');
+    expect(launchHtml).toContain('id="snapshot-shell"');
   });
 
   it('throws when entry scripts are missing because launch alias must bootstrap the app directly', () => {

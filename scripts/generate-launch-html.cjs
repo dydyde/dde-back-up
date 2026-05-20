@@ -7,12 +7,13 @@ const DEFAULT_TEMPLATE_PATH = path.join(__dirname, '..', 'public', 'launch.html'
 const DEFAULT_OUTPUT_PATH = path.join(DEFAULT_DIST_DIR, 'launch.html');
 
 const DEFAULT_LAUNCH_LOADER_MARKUP = `
-<div style="display:flex;align-items:center;justify-content:center;height:100%;min-height:100dvh;">
+<div id="loader-spinner" class="loader-center" style="display:flex;align-items:center;justify-content:center;height:100%;min-height:100dvh;">
   <div style="text-align:center;">
     <div style="width:32px;height:32px;border:3px solid var(--loader-skeleton-base,#e7e5e4);border-top-color:#4f46e5;border-radius:50%;animation:loader-spin 0.8s linear infinite;margin:0 auto 12px;"></div>
     <div id="loader-status" style="font-size:13px;color:#78716c;">正在打开 NanoFlow...</div>
   </div>
 </div>
+<div id="snapshot-shell" class="snapshot-shell" hidden aria-hidden="true"></div>
 <style>@keyframes loader-spin { to { transform: rotate(360deg); } }</style>
 `.trim();
 

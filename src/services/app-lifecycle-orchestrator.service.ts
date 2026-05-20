@@ -12,6 +12,7 @@ import { FocusStartupProbeService } from './focus-startup-probe.service';
 import { FOCUS_CONFIG } from '../config/focus.config';
 import { reloadViaForceClearCache } from '../utils/force-clear-cache';
 import { getRemainingBrowserNetworkResumeDelayMs } from '../utils/browser-network-suspension';
+import { readRuntimePlatformSnapshot } from '../utils/runtime-platform';
 
 export type AppResumeReason =
   | 'visibility-threshold'
@@ -71,6 +72,8 @@ export class AppLifecycleOrchestratorService {
   private hasShownResumeVersionPrompt = false;
 
   private visibilityHandler: (() => void) | null = null;
+  private focusHandler: (() => void) | null = null;
+  private blurHandler: (() => void) | null = null;
   private pageshowHandler: ((event: PageTransitionEvent) => void) | null = null;
   private onlineHandler: (() => void) | null = null;
   private _focusStartupProbe?: FocusStartupProbeService;
@@ -133,7 +136,7 @@ export class AppLifecycleOrchestratorService {
 
     this.visibilityHandler = () => {
       if (document.visibilityState === 'hidden') {
-        this.hiddenAt = Date.now();
+        this.hiddenAt ??= Date.now();
         void this.simpleSync.suspendRemoteTransport();
         return;
       }
@@ -151,6 +154,35 @@ export class AppLifecycleOrchestratorService {
       }
     };
 
+    this.blurHandler = () => {
+      if (!this.shouldUseWindowFocusResumeFallback()) {
+        return;
+      }
+
+      if (this.hiddenAt !== null) {
+        return;
+      }
+
+      this.hiddenAt = Date.now();
+      void this.simpleSync.suspendRemoteTransport();
+    };
+
+    this.focusHandler = () => {
+      if (document.visibilityState === 'hidden' || !this.hiddenAt) {
+        return;
+      }
+
+      const duration = Date.now() - this.hiddenAt;
+      this.hiddenAt = null;
+      this.lastBackgroundDurationMs = duration;
+
+      const reason: AppResumeReason = duration >= APP_LIFECYCLE_CONFIG.RESUME_THRESHOLD_MS
+        ? 'visibility-threshold'
+        : 'visibility-quick';
+
+      void this.triggerResume(reason);
+    };
+
     this.pageshowHandler = (event: PageTransitionEvent) => {
       // BFCache 恢复场景优先触发恢复编排
       if (!event.persisted) {
@@ -165,15 +197,26 @@ export class AppLifecycleOrchestratorService {
     };
 
     this.onlineHandler = () => {
+      if (document.visibilityState === 'hidden' || this.hiddenAt !== null) {
+        return;
+      }
+
       void this.triggerResume('online');
     };
 
     document.addEventListener('visibilitychange', this.visibilityHandler);
+    window.addEventListener('blur', this.blurHandler);
+    window.addEventListener('focus', this.focusHandler);
     window.addEventListener('pageshow', this.pageshowHandler as EventListener);
     window.addEventListener('online', this.onlineHandler);
 
     this.initialized = true;
     this.logger.info('Lifecycle orchestrator initialized');
+  }
+
+  private shouldUseWindowFocusResumeFallback(): boolean {
+    const platform = readRuntimePlatformSnapshot();
+    return platform.isAndroid || platform.os === 'ios' || platform.isStandalone;
   }
 
   markVersionReady(): void {
@@ -915,6 +958,16 @@ export class AppLifecycleOrchestratorService {
     if (this.visibilityHandler) {
       document.removeEventListener('visibilitychange', this.visibilityHandler);
       this.visibilityHandler = null;
+    }
+
+    if (this.blurHandler) {
+      window.removeEventListener('blur', this.blurHandler);
+      this.blurHandler = null;
+    }
+
+    if (this.focusHandler) {
+      window.removeEventListener('focus', this.focusHandler);
+      this.focusHandler = null;
     }
 
     if (this.pageshowHandler) {

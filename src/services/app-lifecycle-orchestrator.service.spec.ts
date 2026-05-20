@@ -50,6 +50,7 @@ describe('AppLifecycleOrchestratorService', () => {
     captureMessage: ReturnType<typeof vi.fn>;
   };
   let originalRequestIdleCallbackDescriptor: PropertyDescriptor | undefined;
+  let originalMatchMediaDescriptor: PropertyDescriptor | undefined;
   const originalResumeInteractionFirst = FEATURE_FLAGS.RESUME_INTERACTION_FIRST_V1;
   const originalPulseDedup = FEATURE_FLAGS.RESUME_PULSE_DEDUP_V1;
 
@@ -57,6 +58,22 @@ describe('AppLifecycleOrchestratorService', () => {
     Object.defineProperty(document, 'visibilityState', {
       value: state,
       configurable: true,
+    });
+  };
+
+  const setStandaloneDisplayMode = (): void => {
+    Object.defineProperty(window, 'matchMedia', {
+      configurable: true,
+      value: vi.fn((query: string) => ({
+        matches: query === '(display-mode: standalone)',
+        media: query,
+        onchange: null,
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      } as MediaQueryList)),
     });
   };
 
@@ -73,6 +90,7 @@ describe('AppLifecycleOrchestratorService', () => {
       localStorage.removeItem('nanoflow.lifecycle.auto-reload');
     }
     originalRequestIdleCallbackDescriptor = Object.getOwnPropertyDescriptor(window, 'requestIdleCallback');
+    originalMatchMediaDescriptor = Object.getOwnPropertyDescriptor(window, 'matchMedia');
     Object.defineProperty(window, 'requestIdleCallback', {
       configurable: true,
       writable: true,
@@ -173,6 +191,11 @@ describe('AppLifecycleOrchestratorService', () => {
       Object.defineProperty(window, 'requestIdleCallback', originalRequestIdleCallbackDescriptor);
     } else {
       Reflect.deleteProperty(window as unknown as Record<string, unknown>, 'requestIdleCallback');
+    }
+    if (originalMatchMediaDescriptor) {
+      Object.defineProperty(window, 'matchMedia', originalMatchMediaDescriptor);
+    } else {
+      Reflect.deleteProperty(window as unknown as Record<string, unknown>, 'matchMedia');
     }
     vi.useRealTimers();
   });
@@ -354,19 +377,8 @@ describe('AppLifecycleOrchestratorService', () => {
     expect(mockSimpleSync.recoverAfterResume).toHaveBeenCalled();
   });
 
-  it('hidden 状态下 online 触发 deferred 后不应以 100ms 自旋重试', async () => {
+  it('hidden 状态下 online 不应抢跑 foreground 恢复', async () => {
     service.initialize();
-    mockSessionManager.validateOrRefreshOnResume.mockResolvedValueOnce({
-      ok: false,
-      refreshed: false,
-      deferred: true,
-      reason: 'client-unready',
-    });
-    mockSessionManager.validateOrRefreshOnResume.mockResolvedValueOnce({
-      ok: true,
-      refreshed: false,
-      deferred: false,
-    });
 
     setVisibilityState('hidden');
     document.dispatchEvent(new Event('visibilitychange'));
@@ -374,13 +386,13 @@ describe('AppLifecycleOrchestratorService', () => {
     await Promise.resolve();
 
     await vi.advanceTimersByTimeAsync(1000);
-    expect(mockSessionManager.validateOrRefreshOnResume).toHaveBeenCalledTimes(1);
+    expect(mockSessionManager.validateOrRefreshOnResume).not.toHaveBeenCalled();
 
     setVisibilityState('visible');
     document.dispatchEvent(new Event('visibilitychange'));
     await flushResumeWithoutDrainingLongTimers();
 
-    expect(mockSessionManager.validateOrRefreshOnResume).toHaveBeenCalledTimes(2);
+    expect(mockSessionManager.validateOrRefreshOnResume).toHaveBeenCalledTimes(1);
     expect(mockSimpleSync.recoverAfterResume).toHaveBeenCalled();
   });
 
@@ -452,6 +464,66 @@ describe('AppLifecycleOrchestratorService', () => {
 
     expect(mockFocusStartupProbe.recheckGate).toHaveBeenCalledTimes(1);
     expect(mockFocusStartupProbe.recheckGate).toHaveBeenCalledWith({
+      source: 'resume-local',
+      reloadLocal: true,
+    });
+  });
+
+  it('TWA 仅触发 window focus 兜底时也应在长后台后立即复核大门', async () => {
+    setStandaloneDisplayMode();
+    service.initialize();
+
+    window.dispatchEvent(new Event('blur'));
+    expect(mockSimpleSync.suspendRemoteTransport).toHaveBeenCalledTimes(1);
+
+    vi.setSystemTime(new Date(Date.now() + FOCUS_CONFIG.GATE.IDLE_RECHECK_THRESHOLD + 1));
+    window.dispatchEvent(new Event('focus'));
+
+    await flushResumeWithoutDrainingLongTimers();
+
+    expect(mockFocusStartupProbe.recheckGate).toHaveBeenNthCalledWith(1, {
+      source: 'resume-local',
+      reloadLocal: true,
+    });
+  });
+
+  it('TWA 长后台恢复前先收到 online 时不应吞掉 foreground 大门复核', async () => {
+    setStandaloneDisplayMode();
+    service.initialize();
+
+    window.dispatchEvent(new Event('blur'));
+    vi.setSystemTime(new Date(Date.now() + FOCUS_CONFIG.GATE.IDLE_RECHECK_THRESHOLD + 1));
+
+    window.dispatchEvent(new Event('online'));
+    await flushResumeWithoutDrainingLongTimers();
+
+    expect(mockSessionManager.validateOrRefreshOnResume).not.toHaveBeenCalled();
+    expect(mockFocusStartupProbe.recheckGate).not.toHaveBeenCalled();
+
+    window.dispatchEvent(new Event('focus'));
+    await flushResumeWithoutDrainingLongTimers();
+
+    expect(mockFocusStartupProbe.recheckGate).toHaveBeenNthCalledWith(1, {
+      source: 'resume-local',
+      reloadLocal: true,
+    });
+  });
+
+  it('TWA blur 后迟到的 hidden 事件不应覆盖长后台计时', async () => {
+    setStandaloneDisplayMode();
+    service.initialize();
+
+    window.dispatchEvent(new Event('blur'));
+    vi.setSystemTime(new Date(Date.now() + FOCUS_CONFIG.GATE.IDLE_RECHECK_THRESHOLD + 1));
+
+    setVisibilityState('hidden');
+    document.dispatchEvent(new Event('visibilitychange'));
+    setVisibilityState('visible');
+    document.dispatchEvent(new Event('visibilitychange'));
+
+    await flushResumeWithoutDrainingLongTimers();
+
+    expect(mockFocusStartupProbe.recheckGate).toHaveBeenNthCalledWith(1, {
       source: 'resume-local',
       reloadLocal: true,
     });

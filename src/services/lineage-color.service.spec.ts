@@ -117,6 +117,39 @@ describe('LineageColorService', () => {
       expect(result.linkDataArray[0].familyColor).toBe(rootColor);
     });
 
+    it('分配待分配块后，既有任务树颜色不应因根集合变化而重排', () => {
+      const assignedRoot = { ...makeTask('m-root'), stage: 1 };
+      const assignedChild = { ...makeTask('m-child', 'm-root'), stage: 2 };
+      const unassignedRoot = makeTask('a-pending');
+      const unassignedChild = makeTask('a-pending-child', 'a-pending');
+
+      const beforeTasks = [unassignedRoot, unassignedChild, assignedRoot, assignedChild];
+      const beforeNodes = beforeTasks.map(t => makeNode(t.id));
+      const beforeLinks = [makeLink('m-root', 'm-child')];
+      const before = service.preprocessDiagramData(beforeNodes, beforeLinks, beforeTasks);
+
+      const afterPendingRoot = { ...unassignedRoot, parentId: 'm-root', stage: 2 };
+      const afterPendingChild = { ...unassignedChild, stage: 3 };
+      const afterTasks = [assignedRoot, assignedChild, afterPendingRoot, afterPendingChild];
+      const afterNodes = afterTasks.map(t => makeNode(t.id));
+      const afterLinks = [
+        makeLink('m-root', 'm-child'),
+        makeLink('m-root', 'a-pending'),
+        makeLink('a-pending', 'a-pending-child'),
+      ];
+      const after = service.preprocessDiagramData(afterNodes, afterLinks, afterTasks);
+
+      const beforeColors = new Map(before.nodeDataArray.map(node => [node.key, node.familyColor]));
+      const afterColors = new Map(after.nodeDataArray.map(node => [node.key, node.familyColor]));
+      const beforeAssignedLinkColor = before.linkDataArray.find(link => link.from === 'm-root')!.familyColor;
+      const afterAssignedLinkColor = after.linkDataArray.find(link => link.to === 'm-child')!.familyColor;
+
+      expect(afterColors.get('m-root')).toBe(beforeColors.get('m-root'));
+      expect(afterColors.get('m-child')).toBe(beforeColors.get('m-child'));
+      expect(afterAssignedLinkColor).toBe(beforeAssignedLinkColor);
+      expect(afterColors.get('a-pending')).toBe(afterColors.get('m-root'));
+    });
+
     it('应能将 HEX 调色板颜色压暗用于细节提示', () => {
       expect(service.getDarkerFamilyColor('#e63946')).toBe('#bd2f39');
     });

@@ -70,6 +70,13 @@ describe('startup launch contract', () => {
     expect(manifest.id).toBe('/launch.html');
   });
 
+  it('manifest should navigate an existing standalone client on launcher open', () => {
+    const manifestPath = path.join(process.cwd(), 'public', 'manifest.webmanifest');
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+
+    expect(manifest.launch_handler).toEqual({ client_mode: 'navigate-existing' });
+  });
+
   it('manifest launch colors should match native TWA and web loader background', () => {
     const twaLaunchBackground = '#F9F8F6';
     const manifestPath = path.join(process.cwd(), 'public', 'manifest.webmanifest');

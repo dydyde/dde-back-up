@@ -14,7 +14,7 @@
   <script id="canonical-origin-gate">
     (function() {
       try {
-        var CANONICAL_ORIGIN = '';
+        var CANONICAL_ORIGIN = 'https://nanoflow.pages.dev';
         var ORIGIN_GATE_MODE = 'off';
         var EXPECTED_NGSW_HASH = '';
         var CLEANUP_PREFIX = 'nanoflow.originGate.cleanup';
@@ -221,8 +221,8 @@
   <!-- Supabase API 预连接（如果启用云同步） -->
   <!-- 【TTFB 优化】使用 crossorigin 因为 Supabase 需要携带认证头 -->
   <!-- 占位 host `your-project.supabase.co` 由 scripts/set-env.cjs 在构建时替换为真实 Supabase 项目 URL -->
-  <link rel="preconnect" href="https://your-project.supabase.co" crossorigin>
-  <link rel="dns-prefetch" href="https://your-project.supabase.co">
+  <link rel="preconnect" href="https://fkhihclpghmmtbbywvoj.supabase.co" crossorigin>
+  <link rel="dns-prefetch" href="https://fkhihclpghmmtbbywvoj.supabase.co">
   
   <!-- Sentry: 仅使用 dns-prefetch，因为首屏不会触发错误上报（P3 优化 2026-01-26）-->
   <link rel="dns-prefetch" href="https://o4508391513718784.ingest.us.sentry.io">
@@ -335,6 +335,113 @@
     #initial-loader.hidden {
       display: none;
     }
+    #initial-loader.has-snapshot {
+      display: block;
+      color: #1c1917;
+    }
+    [data-color-mode="dark"] #initial-loader.has-snapshot {
+      color: #f5f5f4;
+    }
+    #loader-spinner[hidden],
+    #snapshot-shell[hidden] {
+      display: none !important;
+    }
+    .loader-center {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+      min-height: 100dvh;
+    }
+    .snapshot-shell {
+      box-sizing: border-box;
+      min-height: 100dvh;
+      padding: max(18px, env(safe-area-inset-top)) 16px max(18px, env(safe-area-inset-bottom));
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+      background: var(--loader-bg);
+      overflow: hidden;
+    }
+    .snapshot-topbar {
+      min-height: 42px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .snapshot-brand {
+      font-size: 15px;
+      font-weight: 700;
+      letter-spacing: 0;
+    }
+    .snapshot-view-pill {
+      flex: 0 0 auto;
+      padding: 5px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      color: #4f46e5;
+      background: rgba(79, 70, 229, 0.12);
+    }
+    .snapshot-project {
+      min-width: 0;
+    }
+    .snapshot-title {
+      margin: 0 0 6px;
+      font-size: 24px;
+      line-height: 1.2;
+      font-weight: 800;
+      letter-spacing: 0;
+      overflow-wrap: anywhere;
+    }
+    .snapshot-meta {
+      font-size: 13px;
+      color: #78716c;
+    }
+    [data-color-mode="dark"] .snapshot-meta {
+      color: #a8a29e;
+    }
+    .snapshot-task-list {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      min-width: 0;
+    }
+    .snapshot-task {
+      display: grid;
+      grid-template-columns: 26px minmax(0, 1fr);
+      align-items: start;
+      gap: 10px;
+      min-height: 42px;
+      padding: 10px 0;
+      border-bottom: 1px solid rgba(120, 113, 108, 0.18);
+    }
+    .snapshot-task-index {
+      width: 26px;
+      height: 26px;
+      border-radius: 8px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 12px;
+      color: #57534e;
+      background: rgba(120, 113, 108, 0.12);
+    }
+    [data-color-mode="dark"] .snapshot-task-index {
+      color: #d6d3d1;
+      background: rgba(245, 245, 244, 0.12);
+    }
+    .snapshot-task-title {
+      min-width: 0;
+      font-size: 15px;
+      line-height: 1.45;
+      overflow-wrap: anywhere;
+    }
+    .snapshot-empty {
+      padding: 18px 0;
+      font-size: 14px;
+      color: #78716c;
+    }
   </style>
   <!-- LAUNCH_SHARED_STYLES_END -->
 
@@ -350,17 +457,181 @@
   <!-- 初始加载指示器 — 最小化 (2026-03-28 大改：移除启动壳) -->
   <!-- Angular 启动后由 AppComponent 立即隐藏 -->
   <div id="initial-loader">
-    <div style="display:flex;align-items:center;justify-content:center;height:100%;min-height:100dvh;">
+    <div id="loader-spinner" class="loader-center">
       <div style="text-align:center;">
         <div style="width:32px;height:32px;border:3px solid var(--loader-skeleton-base,#e7e5e4);border-top-color:#4f46e5;border-radius:50%;animation:loader-spin 0.8s linear infinite;margin:0 auto 12px;"></div>
         <div id="loader-status" style="font-size:13px;color:#78716c;"></div>
       </div>
     </div>
+    <div id="snapshot-shell" class="snapshot-shell" hidden aria-hidden="true"></div>
   </div>
   <style>@keyframes loader-spin { to { transform: rotate(360deg); } }</style>
 
-  <!-- 【2026-03-28 大改】启动快照渲染器已移除，启动壳彻底去除 -->
+  <!-- 静态启动快照：快照存在时先显示上次项目内容，Angular handoff 后移除 -->
   <!-- LAUNCH_SHARED_SNAPSHOT_RENDERER_START -->
+  <script>
+    (function() {
+      var storageKey = 'nanoflow.launch-snapshot.v2';
+
+      function escapeHtml(value) {
+        return String(value == null ? '' : value)
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&#39;');
+      }
+
+      function isProject(value) {
+        return value && typeof value.id === 'string' && typeof value.name === 'string';
+      }
+
+      function resolveSessionRecord(authData) {
+        if (!authData || typeof authData !== 'object') return null;
+        if (authData.currentSession && typeof authData.currentSession === 'object') {
+          return authData.currentSession;
+        }
+        if (authData.session && typeof authData.session === 'object') {
+          return authData.session;
+        }
+        return authData;
+      }
+
+      function resolveConfiguredAuthStorageKey() {
+        try {
+          var SUPABASE_URL = 'https://fkhihclpghmmtbbywvoj.supabase.co';
+          if (!SUPABASE_URL || SUPABASE_URL === 'https://your-project.supabase.co') return null;
+          var hostname = new URL(SUPABASE_URL).hostname;
+          if (!hostname || hostname.indexOf('.supabase.co') < 0) return null;
+          return 'sb-' + hostname.split('.')[0] + '-auth-token';
+        } catch (_e) {
+          return null;
+        }
+      }
+
+      function readConfiguredOwnerId() {
+        try {
+          var authStorageKey = resolveConfiguredAuthStorageKey();
+          if (!authStorageKey) return null;
+          var raw = localStorage.getItem(authStorageKey);
+          if (!raw) return null;
+          var record = resolveSessionRecord(JSON.parse(raw));
+          if (!record) return null;
+          var hasToken = (typeof record.refresh_token === 'string' && record.refresh_token)
+            || (typeof record.access_token === 'string' && record.access_token);
+          var user = record.user;
+          var userId = user && typeof user === 'object' ? user.id : null;
+          return hasToken && typeof userId === 'string' && userId ? userId : null;
+        } catch (_e) {
+          return null;
+        }
+      }
+
+      function isLocalModeEnabled() {
+        try { return localStorage.getItem('nanoflow.local-mode') === 'true'; }
+        catch (_e) { return false; }
+      }
+
+      function isTrustedSnapshotOwner(snapshot) {
+        var snapshotUserId = typeof snapshot.userId === 'string' && snapshot.userId
+          ? snapshot.userId
+          : null;
+        if (!snapshotUserId) return false;
+
+        var configuredOwnerId = readConfiguredOwnerId();
+
+        if (snapshotUserId === 'local-user') {
+          return isLocalModeEnabled() && !configuredOwnerId;
+        }
+
+        return configuredOwnerId === snapshotUserId;
+      }
+
+      function readSnapshot() {
+        try {
+          var raw = localStorage.getItem(storageKey);
+          if (!raw) return null;
+          var parsed = JSON.parse(raw);
+          if (!parsed || !Array.isArray(parsed.projects)) return null;
+          if (!isTrustedSnapshotOwner(parsed)) return null;
+          return parsed.projects.some(isProject) ? parsed : null;
+        } catch (_e) {
+          return null;
+        }
+      }
+
+      function chooseProject(snapshot) {
+        var projects = snapshot.projects.filter(isProject);
+        if (projects.length === 0) return null;
+
+        var currentProject = isProject(snapshot.currentProject) ? snapshot.currentProject : null;
+        if (currentProject) return currentProject;
+
+        var activeProjectId = typeof snapshot.activeProjectId === 'string' ? snapshot.activeProjectId : null;
+        if (activeProjectId) {
+          for (var index = 0; index < projects.length; index++) {
+            if (projects[index].id === activeProjectId) return projects[index];
+          }
+        }
+
+        return projects[0];
+      }
+
+      function renderTasks(project) {
+        var tasks = Array.isArray(project.recentTasks) ? project.recentTasks.slice(0, 4) : [];
+        if (tasks.length === 0) {
+          return '<div class="snapshot-empty">暂无待办</div>';
+        }
+
+        return tasks.map(function(task, index) {
+          var title = typeof task.title === 'string' && task.title.trim()
+            ? task.title
+            : '未命名任务';
+          var displayId = typeof task.displayId === 'string' && task.displayId.trim()
+            ? task.displayId
+            : String(index + 1);
+
+          return '<div class="snapshot-task">' +
+            '<span class="snapshot-task-index">' + escapeHtml(displayId) + '</span>' +
+            '<span class="snapshot-task-title">' + escapeHtml(title) + '</span>' +
+            '</div>';
+        }).join('');
+      }
+
+      var snapshot = readSnapshot();
+      var project = snapshot ? chooseProject(snapshot) : null;
+      var shell = document.getElementById('snapshot-shell');
+      var loader = document.getElementById('initial-loader');
+      var spinner = document.getElementById('loader-spinner');
+      if (!snapshot || !project || !shell || !loader) return;
+
+      window.__NANOFLOW_LAUNCH_SNAPSHOT__ = snapshot;
+      var openTaskCount = Number.isFinite(project.openTaskCount) ? Number(project.openTaskCount) : 0;
+      var taskCount = Number.isFinite(project.taskCount) ? Number(project.taskCount) : openTaskCount;
+      var viewLabel = snapshot.resolvedLaunchView === 'flow' ? 'Flow' : '文本';
+      shell.innerHTML = '<div class="snapshot-topbar">' +
+        '<div class="snapshot-brand">NanoFlow</div>' +
+        '<div class="snapshot-view-pill">' + escapeHtml(viewLabel) + '</div>' +
+        '</div>' +
+        '<div class="snapshot-project">' +
+        '<h1 class="snapshot-title">' + escapeHtml(project.name) + '</h1>' +
+        '<div class="snapshot-meta">' + escapeHtml(openTaskCount) + ' / ' + escapeHtml(taskCount) + '</div>' +
+        '</div>' +
+        '<div class="snapshot-task-list">' + renderTasks(project) + '</div>';
+      shell.hidden = false;
+      shell.setAttribute('aria-hidden', 'false');
+      loader.classList.add('has-snapshot');
+      if (spinner) spinner.hidden = true;
+
+      if (window.__NANOFLOW_PUSH_STARTUP_TRACE__) {
+        window.__NANOFLOW_PUSH_STARTUP_TRACE__('loader.snapshot_visible', {
+          projectId: project.id,
+          taskCount: taskCount,
+          openTaskCount: openTaskCount
+        });
+      }
+    })();
+  </script>
   <!-- LAUNCH_SHARED_SNAPSHOT_RENDERER_END -->
 
   <!-- ========== 从 <head> 移出的阻塞脚本（P0-3 性能优化 2026-03-25）========== -->
@@ -469,8 +740,8 @@
         return;
       }
 
-      var SUPABASE_URL = 'https://your-project.supabase.co';
-      var SUPABASE_ANON_KEY = 'YOUR_SUPABASE_ANON_KEY';
+      var SUPABASE_URL = 'https://fkhihclpghmmtbbywvoj.supabase.co';
+      var SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZraGloY2xwZ2htbXRiYnl3dm9qIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjgwNDIyMTgsImV4cCI6MjA4MzYxODIxOH0.4Z5eylbmBA-YFiDRvDtom4lTHavHP3JfVmrU0yH9oVo';
 
       // 【根因修复 2026-05-15】占位 host 与 supabase.co 预连接提示对齐，guard 改用占位 host 短路
       if (!SUPABASE_URL || SUPABASE_URL === 'https://your-project.supabase.co') return;
@@ -610,7 +881,7 @@
         var tokenExpiresAt = null;
         try {
           // 动态推导 auth storage key
-          var preloadSupabaseUrl = 'https://your-project.supabase.co';
+          var preloadSupabaseUrl = 'https://fkhihclpghmmtbbywvoj.supabase.co';
           if (preloadSupabaseUrl === 'https://your-project.supabase.co') return;
           var authKey = '';
           try {
@@ -637,8 +908,8 @@
           if (tokenExpiresAt <= Math.floor(Date.now() / 1000) + 300) return;
         } else { return; }
 
-        var supabaseUrl = 'https://your-project.supabase.co';
-        var supabaseAnonKey = 'YOUR_SUPABASE_ANON_KEY';
+        var supabaseUrl = 'https://fkhihclpghmmtbbywvoj.supabase.co';
+        var supabaseAnonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZraGloY2xwZ2htbXRiYnl3dm9qIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjgwNDIyMTgsImV4cCI6MjA4MzYxODIxOH0.4Z5eylbmBA-YFiDRvDtom4lTHavHP3JfVmrU0yH9oVo';
         if (supabaseUrl === 'https://your-project.supabase.co' || supabaseAnonKey === 'YOUR_SUPABASE_ANON_KEY') return;
         var headers = { 'apikey': supabaseAnonKey, 'Authorization': 'Bearer ' + authToken, 'Content-Type': 'application/json' };
         var baseUrl = supabaseUrl + '/rest/v1';
