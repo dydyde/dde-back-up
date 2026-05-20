@@ -14,7 +14,7 @@
   <script id="canonical-origin-gate">
     (function() {
       try {
-        var CANONICAL_ORIGIN = 'https://nanoflow.pages.dev';
+        var CANONICAL_ORIGIN = '';
         var ORIGIN_GATE_MODE = 'off';
         var EXPECTED_NGSW_HASH = '';
         var CLEANUP_PREFIX = 'nanoflow.originGate.cleanup';
@@ -221,8 +221,8 @@
   <!-- Supabase API 预连接（如果启用云同步） -->
   <!-- 【TTFB 优化】使用 crossorigin 因为 Supabase 需要携带认证头 -->
   <!-- 占位 host `your-project.supabase.co` 由 scripts/set-env.cjs 在构建时替换为真实 Supabase 项目 URL -->
-  <link rel="preconnect" href="https://fkhihclpghmmtbbywvoj.supabase.co" crossorigin>
-  <link rel="dns-prefetch" href="https://fkhihclpghmmtbbywvoj.supabase.co">
+  <link rel="preconnect" href="https://your-project.supabase.co" crossorigin>
+  <link rel="dns-prefetch" href="https://your-project.supabase.co">
   
   <!-- Sentry: 仅使用 dns-prefetch，因为首屏不会触发错误上报（P3 优化 2026-01-26）-->
   <link rel="dns-prefetch" href="https://o4508391513718784.ingest.us.sentry.io">
@@ -499,7 +499,7 @@
 
       function resolveConfiguredAuthStorageKey() {
         try {
-          var SUPABASE_URL = 'https://fkhihclpghmmtbbywvoj.supabase.co';
+          var SUPABASE_URL = 'https://your-project.supabase.co';
           if (!SUPABASE_URL || SUPABASE_URL === 'https://your-project.supabase.co') return null;
           var hostname = new URL(SUPABASE_URL).hostname;
           if (!hostname || hostname.indexOf('.supabase.co') < 0) return null;
@@ -740,8 +740,8 @@
         return;
       }
 
-      var SUPABASE_URL = 'https://fkhihclpghmmtbbywvoj.supabase.co';
-      var SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZraGloY2xwZ2htbXRiYnl3dm9qIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjgwNDIyMTgsImV4cCI6MjA4MzYxODIxOH0.4Z5eylbmBA-YFiDRvDtom4lTHavHP3JfVmrU0yH9oVo';
+      var SUPABASE_URL = 'https://your-project.supabase.co';
+      var SUPABASE_ANON_KEY = 'YOUR_SUPABASE_ANON_KEY';
 
       // 【根因修复 2026-05-15】占位 host 与 supabase.co 预连接提示对齐，guard 改用占位 host 短路
       if (!SUPABASE_URL || SUPABASE_URL === 'https://your-project.supabase.co') return;
@@ -881,7 +881,7 @@
         var tokenExpiresAt = null;
         try {
           // 动态推导 auth storage key
-          var preloadSupabaseUrl = 'https://fkhihclpghmmtbbywvoj.supabase.co';
+          var preloadSupabaseUrl = 'https://your-project.supabase.co';
           if (preloadSupabaseUrl === 'https://your-project.supabase.co') return;
           var authKey = '';
           try {
@@ -908,8 +908,8 @@
           if (tokenExpiresAt <= Math.floor(Date.now() / 1000) + 300) return;
         } else { return; }
 
-        var supabaseUrl = 'https://fkhihclpghmmtbbywvoj.supabase.co';
-        var supabaseAnonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZraGloY2xwZ2htbXRiYnl3dm9qIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjgwNDIyMTgsImV4cCI6MjA4MzYxODIxOH0.4Z5eylbmBA-YFiDRvDtom4lTHavHP3JfVmrU0yH9oVo';
+        var supabaseUrl = 'https://your-project.supabase.co';
+        var supabaseAnonKey = 'YOUR_SUPABASE_ANON_KEY';
         if (supabaseUrl === 'https://your-project.supabase.co' || supabaseAnonKey === 'YOUR_SUPABASE_ANON_KEY') return;
         var headers = { 'apikey': supabaseAnonKey, 'Authorization': 'Bearer ' + authToken, 'Content-Type': 'application/json' };
         var baseUrl = supabaseUrl + '/rest/v1';
