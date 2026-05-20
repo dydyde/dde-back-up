@@ -2315,8 +2315,12 @@ describe('WorkspaceShellComponent 输入事件处理', () => {
 
   it('syncStateFromRoute 应在 /projects 根路由回填启动项目，避免主内容空壳', () => {
     const setActiveProjectId = vi.fn();
+    const navigate = vi.fn();
     const context = {
       getCurrentStartupEntryIntent: () => null,
+      routeUrl: () => '/projects',
+      uiState: { isMobile: () => true },
+      rootStartupTextNavigationApplied: false,
       route: {
         snapshot: { params: {} },
         firstChild: null,
@@ -2336,8 +2340,16 @@ describe('WorkspaceShellComponent 输入事件处理', () => {
         currentProject: { id: 'project-2' },
       },
       router: {
-        navigate: vi.fn(),
+        navigate,
       },
+      navigateRootStartupToTextProject: (projectId: string) =>
+        (WorkspaceShellComponent.prototype as unknown as {
+          navigateRootStartupToTextProject: (this: WorkspaceShellComponent, projectId: string) => void;
+        }).navigateRootStartupToTextProject.call(context as unknown as WorkspaceShellComponent, projectId),
+      shouldNavigateRootStartupToTextProject: () =>
+        (WorkspaceShellComponent.prototype as unknown as {
+          shouldNavigateRootStartupToTextProject: (this: WorkspaceShellComponent) => boolean;
+        }).shouldNavigateRootStartupToTextProject.call(context as unknown as WorkspaceShellComponent),
       resolveStartupProjectFallbackId: (projects: Array<{ id: string }>) =>
         (WorkspaceShellComponent.prototype as unknown as {
           resolveStartupProjectFallbackId: (
@@ -2352,6 +2364,150 @@ describe('WorkspaceShellComponent 输入事件处理', () => {
     }).syncStateFromRoute.call(context);
 
     expect(setActiveProjectId).toHaveBeenCalledWith('project-2');
+    expect(navigate).toHaveBeenCalledWith(['/projects', 'project-2', 'text'], {
+      replaceUrl: true,
+      queryParamsHandling: 'preserve',
+    });
+  });
+
+  it('syncStateFromRoute 应在快照已选中项目时仍把移动端根启动推到文本栏', () => {
+    const navigate = vi.fn();
+    const context = {
+      getCurrentStartupEntryIntent: () => null,
+      routeUrl: () => '/projects',
+      uiState: { isMobile: () => true },
+      rootStartupTextNavigationApplied: false,
+      route: {
+        snapshot: { params: {} },
+        firstChild: null,
+      },
+      projectState: {
+        activeProjectId: () => 'project-2',
+        projects: () => [{ id: 'project-1' }, { id: 'project-2' }],
+        setActiveProjectId: vi.fn(),
+      },
+      userSession: {
+        canAuthoritativelyRejectProjectRoute: () => true,
+        isProjectAuthoritativelyAccessible: () => true,
+      },
+      startupLaunchSnapshot: null,
+      router: { navigate },
+      navigateRootStartupToTextProject: (projectId: string) =>
+        (WorkspaceShellComponent.prototype as unknown as {
+          navigateRootStartupToTextProject: (this: WorkspaceShellComponent, projectId: string) => void;
+        }).navigateRootStartupToTextProject.call(context as unknown as WorkspaceShellComponent, projectId),
+      shouldNavigateRootStartupToTextProject: () =>
+        (WorkspaceShellComponent.prototype as unknown as {
+          shouldNavigateRootStartupToTextProject: (this: WorkspaceShellComponent) => boolean;
+        }).shouldNavigateRootStartupToTextProject.call(context as unknown as WorkspaceShellComponent),
+      resolveStartupProjectFallbackId: vi.fn(),
+    } as unknown as WorkspaceShellComponent;
+
+    (WorkspaceShellComponent.prototype as unknown as {
+      syncStateFromRoute: (this: WorkspaceShellComponent) => void;
+    }).syncStateFromRoute.call(context);
+
+    expect(navigate).toHaveBeenCalledWith(['/projects', 'project-2', 'text'], {
+      replaceUrl: true,
+      queryParamsHandling: 'preserve',
+    });
+  });
+
+  it('syncStateFromRoute 不应把桌面端 /projects 根路由强制改成 text 深链', () => {
+    const setActiveProjectId = vi.fn();
+    const navigate = vi.fn();
+    const context = {
+      getCurrentStartupEntryIntent: () => null,
+      routeUrl: () => '/projects',
+      uiState: { isMobile: () => false },
+      rootStartupTextNavigationApplied: false,
+      route: {
+        snapshot: { params: {} },
+        firstChild: null,
+      },
+      projectState: {
+        activeProjectId: () => null,
+        projects: () => [{ id: 'project-1' }],
+        setActiveProjectId,
+      },
+      userSession: {
+        canAuthoritativelyRejectProjectRoute: () => true,
+        isProjectAuthoritativelyAccessible: () => true,
+      },
+      startupLaunchSnapshot: null,
+      router: { navigate },
+      navigateRootStartupToTextProject: (projectId: string) =>
+        (WorkspaceShellComponent.prototype as unknown as {
+          navigateRootStartupToTextProject: (this: WorkspaceShellComponent, projectId: string) => void;
+        }).navigateRootStartupToTextProject.call(context as unknown as WorkspaceShellComponent, projectId),
+      shouldNavigateRootStartupToTextProject: () =>
+        (WorkspaceShellComponent.prototype as unknown as {
+          shouldNavigateRootStartupToTextProject: (this: WorkspaceShellComponent) => boolean;
+        }).shouldNavigateRootStartupToTextProject.call(context as unknown as WorkspaceShellComponent),
+      resolveStartupProjectFallbackId: () => 'project-1',
+    } as unknown as WorkspaceShellComponent;
+
+    (WorkspaceShellComponent.prototype as unknown as {
+      syncStateFromRoute: (this: WorkspaceShellComponent) => void;
+    }).syncStateFromRoute.call(context);
+
+    expect(setActiveProjectId).toHaveBeenCalledWith('project-1');
+    expect(navigate).not.toHaveBeenCalled();
+  });
+
+  it('syncStateFromRoute 在静态启动层已改写路由时不应重复导航', () => {
+    const previousFlag = (window as Window & { __NANOFLOW_LAUNCH_ROUTE_APPLIED__?: boolean })
+      .__NANOFLOW_LAUNCH_ROUTE_APPLIED__;
+    (window as Window & { __NANOFLOW_LAUNCH_ROUTE_APPLIED__?: boolean })
+      .__NANOFLOW_LAUNCH_ROUTE_APPLIED__ = true;
+
+    const navigate = vi.fn();
+    const context = {
+      getCurrentStartupEntryIntent: () => null,
+      routeUrl: () => '/projects',
+      uiState: { isMobile: () => true },
+      rootStartupTextNavigationApplied: false,
+      route: {
+        snapshot: { params: {} },
+        firstChild: null,
+      },
+      projectState: {
+        activeProjectId: () => 'project-2',
+        projects: () => [{ id: 'project-2' }],
+        setActiveProjectId: vi.fn(),
+      },
+      userSession: {
+        canAuthoritativelyRejectProjectRoute: () => true,
+        isProjectAuthoritativelyAccessible: () => true,
+      },
+      startupLaunchSnapshot: null,
+      router: { navigate },
+      navigateRootStartupToTextProject: (projectId: string) =>
+        (WorkspaceShellComponent.prototype as unknown as {
+          navigateRootStartupToTextProject: (this: WorkspaceShellComponent, projectId: string) => void;
+        }).navigateRootStartupToTextProject.call(context as unknown as WorkspaceShellComponent, projectId),
+      shouldNavigateRootStartupToTextProject: () =>
+        (WorkspaceShellComponent.prototype as unknown as {
+          shouldNavigateRootStartupToTextProject: (this: WorkspaceShellComponent) => boolean;
+        }).shouldNavigateRootStartupToTextProject.call(context as unknown as WorkspaceShellComponent),
+      resolveStartupProjectFallbackId: vi.fn(),
+    } as unknown as WorkspaceShellComponent;
+
+    try {
+      (WorkspaceShellComponent.prototype as unknown as {
+        syncStateFromRoute: (this: WorkspaceShellComponent) => void;
+      }).syncStateFromRoute.call(context);
+    } finally {
+      if (previousFlag === undefined) {
+        delete (window as Window & { __NANOFLOW_LAUNCH_ROUTE_APPLIED__?: boolean })
+          .__NANOFLOW_LAUNCH_ROUTE_APPLIED__;
+      } else {
+        (window as Window & { __NANOFLOW_LAUNCH_ROUTE_APPLIED__?: boolean })
+          .__NANOFLOW_LAUNCH_ROUTE_APPLIED__ = previousFlag;
+      }
+    }
+
+    expect(navigate).not.toHaveBeenCalled();
   });
 
   it('applyStartupEntryIntent 应在 focus/blackbox shortcut 下打开侧边栏并预加载工具', () => {

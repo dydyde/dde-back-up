@@ -35,10 +35,10 @@ function createFixture(): { root: string; distDir: string } {
 </head>
 <body>
   <!-- LAUNCH_SHARED_SHELL_START -->
-  <div id="snapshot-shell"></div>
+  <div id="loader-spinner"></div>
   <!-- LAUNCH_SHARED_SHELL_END -->
   <!-- LAUNCH_SHARED_SNAPSHOT_RENDERER_START -->
-  <script>window.__SNAPSHOT_RENDERER__ = true;</script>
+  <script>window.__LAUNCH_ROUTE_RESOLVER__ = true;</script>
   <!-- LAUNCH_SHARED_SNAPSHOT_RENDERER_END -->
   <!-- LAUNCH_SHARED_PREWARM_START -->
   <script>window.__NANOFLOW_SESSION_PREWARM__ = { status: 'idle' };</script>
@@ -84,10 +84,10 @@ describe('generate-launch-html', () => {
     expect(launchHtml).toContain('history.replaceState');
     expect(launchHtml).toContain("pathname.endsWith('/launch.html')");
     expect(launchHtml).toContain('__NANOFLOW_BOOT_FLAGS__');
-    expect(launchHtml).toContain('__SNAPSHOT_RENDERER__');
+    expect(launchHtml).toContain('__LAUNCH_ROUTE_RESOLVER__');
     expect(launchHtml).toContain('nanoflow:boot-stage');
     expect(launchHtml).toContain('<app-root></app-root>');
-    expect(launchHtml).toContain('snapshot-shell');
+    expect(launchHtml).not.toContain('snapshot-shell');
     expect(launchHtml).toContain('polyfills-XYZ999.js');
     expect(launchHtml).toContain('main-ABC123.js');
     expect(launchHtml).not.toContain('location.replace');
@@ -128,7 +128,7 @@ describe('generate-launch-html', () => {
     expect(launchHtml).toContain('bg-slate-50');
     expect(launchHtml).toContain('overflow-hidden');
     expect(launchHtml).toContain('<body class="bg-slate-50 text-slate-900 dark:bg-slate-900 h-screen w-screen overflow-hidden">');
-    expect(launchHtml).toContain('id="snapshot-shell"');
+    expect(launchHtml).not.toContain('id="snapshot-shell"');
   });
 
   it('throws when entry scripts are missing because launch alias must bootstrap the app directly', () => {

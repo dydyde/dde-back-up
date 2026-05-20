@@ -944,6 +944,7 @@ export class WorkspaceShellComponent implements OnInit, OnDestroy, AfterViewInit
   private startupDiagnosticsPromise: Promise<StartupDiagnosticsLike[] | null> | null = null;
   private workspaceHandoffSignaled = false;
   private workspaceReadyCommitted = false;
+  private rootStartupTextNavigationApplied = false;
   private handledStartupEntryIntentKey: string | null = null;
   private primedWidgetWorkspaceGateSyncKey: string | null = null;
   private readonly pendingAndroidWidgetBootstrap = signal<AndroidWidgetBootstrapRequest | null>(null);
@@ -1827,6 +1828,38 @@ export class WorkspaceShellComponent implements OnInit, OnDestroy, AfterViewInit
     return projects[0]?.id ?? null;
   }
 
+  private shouldNavigateRootStartupToTextProject(): boolean {
+    if (this.rootStartupTextNavigationApplied || !this.uiState.isMobile()) {
+      return false;
+    }
+
+    if (typeof window !== 'undefined'
+      && (window as Window & { __NANOFLOW_LAUNCH_ROUTE_APPLIED__?: boolean }).__NANOFLOW_LAUNCH_ROUTE_APPLIED__) {
+      return false;
+    }
+
+    const routeUrl = this.routeUrl();
+    const routePath = routeUrl.split('?')[0] ?? routeUrl;
+    if (routePath !== '/projects') {
+      return false;
+    }
+
+    const startupEntryIntent = this.getCurrentStartupEntryIntent();
+    return !startupEntryIntent || startupEntryIntent.intent === 'open-workspace';
+  }
+
+  private navigateRootStartupToTextProject(projectId: string): void {
+    if (!this.shouldNavigateRootStartupToTextProject()) {
+      return;
+    }
+
+    this.rootStartupTextNavigationApplied = true;
+    void this.router.navigate(['/projects', projectId, 'text'], {
+      replaceUrl: true,
+      queryParamsHandling: 'preserve',
+    });
+  }
+
   private setupHandoffEffect(): void {
     // HandoffCoordinator.resolve() 驱动移动端路由降级和登录检测。
     // 启动壳已移除，但 resolve 结果仍影响：
@@ -2575,13 +2608,20 @@ export class WorkspaceShellComponent implements OnInit, OnDestroy, AfterViewInit
     const canAuthoritativelyRejectProjectRoute = this.userSession.canAuthoritativelyRejectProjectRoute();
 
     if (!projectId) {
-      if (this.projectState.activeProjectId() || projects.length === 0) {
+      const activeProjectId = this.projectState.activeProjectId();
+      if (activeProjectId) {
+        this.navigateRootStartupToTextProject(activeProjectId);
+        return;
+      }
+
+      if (projects.length === 0) {
         return;
       }
 
       const fallbackProjectId = this.resolveStartupProjectFallbackId(projects);
       if (fallbackProjectId) {
         this.projectState.setActiveProjectId(fallbackProjectId);
+        this.navigateRootStartupToTextProject(fallbackProjectId);
       }
       return;
     }

@@ -33,6 +33,8 @@ async function ensureDataAvailable(
   const startTime = Date.now();
   const checkInterval = 50; // 快速检查间隔
   const maxQuickWait = 200; // 最多等待 200ms 让本地数据加载完成
+
+  userSession.prehydrateFromSnapshot();
   
   // 1. 快速检查：Store 中是否已有数据
   if (projectState.projects().length > 0) {

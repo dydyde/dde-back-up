@@ -13,7 +13,6 @@ const DEFAULT_LAUNCH_LOADER_MARKUP = `
     <div id="loader-status" style="font-size:13px;color:#78716c;">正在打开 NanoFlow...</div>
   </div>
 </div>
-<div id="snapshot-shell" class="snapshot-shell" hidden aria-hidden="true"></div>
 <style>@keyframes loader-spin { to { transform: rotate(360deg); } }</style>
 `.trim();
 

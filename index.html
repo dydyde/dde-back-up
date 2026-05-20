@@ -14,7 +14,7 @@
   <script id="canonical-origin-gate">
     (function() {
       try {
-        var CANONICAL_ORIGIN = '';
+        var CANONICAL_ORIGIN = 'https://nanoflow.pages.dev';
         var ORIGIN_GATE_MODE = 'off';
         var EXPECTED_NGSW_HASH = '';
         var CLEANUP_PREFIX = 'nanoflow.originGate.cleanup';
@@ -221,8 +221,8 @@
   <!-- Supabase API 预连接（如果启用云同步） -->
   <!-- 【TTFB 优化】使用 crossorigin 因为 Supabase 需要携带认证头 -->
   <!-- 占位 host `your-project.supabase.co` 由 scripts/set-env.cjs 在构建时替换为真实 Supabase 项目 URL -->
-  <link rel="preconnect" href="https://your-project.supabase.co" crossorigin>
-  <link rel="dns-prefetch" href="https://your-project.supabase.co">
+  <link rel="preconnect" href="https://fkhihclpghmmtbbywvoj.supabase.co" crossorigin>
+  <link rel="dns-prefetch" href="https://fkhihclpghmmtbbywvoj.supabase.co">
   
   <!-- Sentry: 仅使用 dns-prefetch，因为首屏不会触发错误上报（P3 优化 2026-01-26）-->
   <link rel="dns-prefetch" href="https://o4508391513718784.ingest.us.sentry.io">
@@ -314,7 +314,7 @@
 
   <!-- LAUNCH_SHARED_STYLES_START -->
   <style>
-    /* 【2026-03-28 大改】启动壳已移除，仅保留 #initial-loader 最小样式 */
+    /* 【2026-05-20】启动阶段只保留最小加载指示，真实文本栏由 Angular 接管。 */
     :root {
       --loader-bg: #F9F8F6;
       --loader-skeleton-base: #e7e5e4;
@@ -335,15 +335,7 @@
     #initial-loader.hidden {
       display: none;
     }
-    #initial-loader.has-snapshot {
-      display: block;
-      color: #1c1917;
-    }
-    [data-color-mode="dark"] #initial-loader.has-snapshot {
-      color: #f5f5f4;
-    }
-    #loader-spinner[hidden],
-    #snapshot-shell[hidden] {
+    #loader-spinner[hidden] {
       display: none !important;
     }
     .loader-center {
@@ -352,95 +344,6 @@
       justify-content: center;
       height: 100%;
       min-height: 100dvh;
-    }
-    .snapshot-shell {
-      box-sizing: border-box;
-      min-height: 100dvh;
-      padding: max(18px, env(safe-area-inset-top)) 16px max(18px, env(safe-area-inset-bottom));
-      display: flex;
-      flex-direction: column;
-      gap: 18px;
-      background: var(--loader-bg);
-      overflow: hidden;
-    }
-    .snapshot-topbar {
-      min-height: 42px;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 12px;
-    }
-    .snapshot-brand {
-      font-size: 15px;
-      font-weight: 700;
-      letter-spacing: 0;
-    }
-    .snapshot-view-pill {
-      flex: 0 0 auto;
-      padding: 5px 10px;
-      border-radius: 999px;
-      font-size: 12px;
-      color: #4f46e5;
-      background: rgba(79, 70, 229, 0.12);
-    }
-    .snapshot-project {
-      min-width: 0;
-    }
-    .snapshot-title {
-      margin: 0 0 6px;
-      font-size: 24px;
-      line-height: 1.2;
-      font-weight: 800;
-      letter-spacing: 0;
-      overflow-wrap: anywhere;
-    }
-    .snapshot-meta {
-      font-size: 13px;
-      color: #78716c;
-    }
-    [data-color-mode="dark"] .snapshot-meta {
-      color: #a8a29e;
-    }
-    .snapshot-task-list {
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
-      min-width: 0;
-    }
-    .snapshot-task {
-      display: grid;
-      grid-template-columns: 26px minmax(0, 1fr);
-      align-items: start;
-      gap: 10px;
-      min-height: 42px;
-      padding: 10px 0;
-      border-bottom: 1px solid rgba(120, 113, 108, 0.18);
-    }
-    .snapshot-task-index {
-      width: 26px;
-      height: 26px;
-      border-radius: 8px;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 12px;
-      color: #57534e;
-      background: rgba(120, 113, 108, 0.12);
-    }
-    [data-color-mode="dark"] .snapshot-task-index {
-      color: #d6d3d1;
-      background: rgba(245, 245, 244, 0.12);
-    }
-    .snapshot-task-title {
-      min-width: 0;
-      font-size: 15px;
-      line-height: 1.45;
-      overflow-wrap: anywhere;
-    }
-    .snapshot-empty {
-      padding: 18px 0;
-      font-size: 14px;
-      color: #78716c;
     }
   </style>
   <!-- LAUNCH_SHARED_STYLES_END -->
@@ -463,24 +366,14 @@
         <div id="loader-status" style="font-size:13px;color:#78716c;"></div>
       </div>
     </div>
-    <div id="snapshot-shell" class="snapshot-shell" hidden aria-hidden="true"></div>
   </div>
   <style>@keyframes loader-spin { to { transform: rotate(360deg); } }</style>
 
-  <!-- 静态启动快照：快照存在时先显示上次项目内容，Angular handoff 后移除 -->
+  <!-- 启动快照只用于路由/预水合：不渲染静态预览，避免挡住真实文本栏。 -->
   <!-- LAUNCH_SHARED_SNAPSHOT_RENDERER_START -->
   <script>
     (function() {
       var storageKey = 'nanoflow.launch-snapshot.v2';
-
-      function escapeHtml(value) {
-        return String(value == null ? '' : value)
-          .replace(/&/g, '&amp;')
-          .replace(/</g, '&lt;')
-          .replace(/>/g, '&gt;')
-          .replace(/"/g, '&quot;')
-          .replace(/'/g, '&#39;');
-      }
 
       function isProject(value) {
         return value && typeof value.id === 'string' && typeof value.name === 'string';
@@ -499,7 +392,7 @@
 
       function resolveConfiguredAuthStorageKey() {
         try {
-          var SUPABASE_URL = 'https://your-project.supabase.co';
+          var SUPABASE_URL = 'https://fkhihclpghmmtbbywvoj.supabase.co';
           if (!SUPABASE_URL || SUPABASE_URL === 'https://your-project.supabase.co') return null;
           var hostname = new URL(SUPABASE_URL).hostname;
           if (!hostname || hostname.indexOf('.supabase.co') < 0) return null;
@@ -577,59 +470,56 @@
         return projects[0];
       }
 
-      function renderTasks(project) {
-        var tasks = Array.isArray(project.recentTasks) ? project.recentTasks.slice(0, 4) : [];
-        if (tasks.length === 0) {
-          return '<div class="snapshot-empty">暂无待办</div>';
+      function splitHashRoute() {
+        var route = window.location.hash || '';
+        if (route.charAt(0) === '#') route = route.slice(1);
+        var queryIndex = route.indexOf('?');
+        return {
+          path: queryIndex >= 0 ? route.slice(0, queryIndex) : route,
+          query: queryIndex >= 0 ? route.slice(queryIndex + 1) : ''
+        };
+      }
+
+      function shouldOpenSnapshotTextRoute() {
+        var route = splitHashRoute();
+        var path = route.path || '/';
+        if (path !== '/' && path !== '/projects' && path !== 'projects') return false;
+
+        // 非 hash query 可能承载 TWA/widget callback 参数，不在静态层改写。
+        if (!route.query && window.location.search) return false;
+
+        var query = route.query;
+        if (!query) return true;
+
+        try {
+          var params = new URLSearchParams(query);
+          var intent = params.get('intent');
+          return !intent || intent === 'open-workspace';
+        } catch (_e) {
+          return false;
         }
+      }
 
-        return tasks.map(function(task, index) {
-          var title = typeof task.title === 'string' && task.title.trim()
-            ? task.title
-            : '未命名任务';
-          var displayId = typeof task.displayId === 'string' && task.displayId.trim()
-            ? task.displayId
-            : String(index + 1);
+      function openProjectTextRoute(project) {
+        if (!project || !shouldOpenSnapshotTextRoute()) return;
+        if (!window.history || typeof window.history.replaceState !== 'function') return;
 
-          return '<div class="snapshot-task">' +
-            '<span class="snapshot-task-index">' + escapeHtml(displayId) + '</span>' +
-            '<span class="snapshot-task-title">' + escapeHtml(title) + '</span>' +
-            '</div>';
-        }).join('');
+        var route = splitHashRoute();
+        var query = route.query || '';
+        var nextHash = '#/projects/' + encodeURIComponent(project.id) + '/text' + (query ? '?' + query : '');
+        var nextUrl = (window.location.pathname || '/') + nextHash;
+        if (window.location.hash === nextHash) return;
+
+        window.history.replaceState(null, '', nextUrl);
+        window.__NANOFLOW_LAUNCH_ROUTE_APPLIED__ = true;
       }
 
       var snapshot = readSnapshot();
       var project = snapshot ? chooseProject(snapshot) : null;
-      var shell = document.getElementById('snapshot-shell');
-      var loader = document.getElementById('initial-loader');
-      var spinner = document.getElementById('loader-spinner');
-      if (!snapshot || !project || !shell || !loader) return;
+      if (!snapshot || !project) return;
 
       window.__NANOFLOW_LAUNCH_SNAPSHOT__ = snapshot;
-      var openTaskCount = Number.isFinite(project.openTaskCount) ? Number(project.openTaskCount) : 0;
-      var taskCount = Number.isFinite(project.taskCount) ? Number(project.taskCount) : openTaskCount;
-      var viewLabel = snapshot.resolvedLaunchView === 'flow' ? 'Flow' : '文本';
-      shell.innerHTML = '<div class="snapshot-topbar">' +
-        '<div class="snapshot-brand">NanoFlow</div>' +
-        '<div class="snapshot-view-pill">' + escapeHtml(viewLabel) + '</div>' +
-        '</div>' +
-        '<div class="snapshot-project">' +
-        '<h1 class="snapshot-title">' + escapeHtml(project.name) + '</h1>' +
-        '<div class="snapshot-meta">' + escapeHtml(openTaskCount) + ' / ' + escapeHtml(taskCount) + '</div>' +
-        '</div>' +
-        '<div class="snapshot-task-list">' + renderTasks(project) + '</div>';
-      shell.hidden = false;
-      shell.setAttribute('aria-hidden', 'false');
-      loader.classList.add('has-snapshot');
-      if (spinner) spinner.hidden = true;
-
-      if (window.__NANOFLOW_PUSH_STARTUP_TRACE__) {
-        window.__NANOFLOW_PUSH_STARTUP_TRACE__('loader.snapshot_visible', {
-          projectId: project.id,
-          taskCount: taskCount,
-          openTaskCount: openTaskCount
-        });
-      }
+      openProjectTextRoute(project);
     })();
   </script>
   <!-- LAUNCH_SHARED_SNAPSHOT_RENDERER_END -->
@@ -740,8 +630,8 @@
         return;
       }
 
-      var SUPABASE_URL = 'https://your-project.supabase.co';
-      var SUPABASE_ANON_KEY = 'YOUR_SUPABASE_ANON_KEY';
+      var SUPABASE_URL = 'https://fkhihclpghmmtbbywvoj.supabase.co';
+      var SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZraGloY2xwZ2htbXRiYnl3dm9qIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjgwNDIyMTgsImV4cCI6MjA4MzYxODIxOH0.4Z5eylbmBA-YFiDRvDtom4lTHavHP3JfVmrU0yH9oVo';
 
       // 【根因修复 2026-05-15】占位 host 与 supabase.co 预连接提示对齐，guard 改用占位 host 短路
       if (!SUPABASE_URL || SUPABASE_URL === 'https://your-project.supabase.co') return;
@@ -881,7 +771,7 @@
         var tokenExpiresAt = null;
         try {
           // 动态推导 auth storage key
-          var preloadSupabaseUrl = 'https://your-project.supabase.co';
+          var preloadSupabaseUrl = 'https://fkhihclpghmmtbbywvoj.supabase.co';
           if (preloadSupabaseUrl === 'https://your-project.supabase.co') return;
           var authKey = '';
           try {
@@ -908,8 +798,8 @@
           if (tokenExpiresAt <= Math.floor(Date.now() / 1000) + 300) return;
         } else { return; }
 
-        var supabaseUrl = 'https://your-project.supabase.co';
-        var supabaseAnonKey = 'YOUR_SUPABASE_ANON_KEY';
+        var supabaseUrl = 'https://fkhihclpghmmtbbywvoj.supabase.co';
+        var supabaseAnonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZraGloY2xwZ2htbXRiYnl3dm9qIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjgwNDIyMTgsImV4cCI6MjA4MzYxODIxOH0.4Z5eylbmBA-YFiDRvDtom4lTHavHP3JfVmrU0yH9oVo';
         if (supabaseUrl === 'https://your-project.supabase.co' || supabaseAnonKey === 'YOUR_SUPABASE_ANON_KEY') return;
         var headers = { 'apikey': supabaseAnonKey, 'Authorization': 'Bearer ' + authToken, 'Content-Type': 'application/json' };
         var baseUrl = supabaseUrl + '/rest/v1';

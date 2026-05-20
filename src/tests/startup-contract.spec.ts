@@ -107,6 +107,15 @@ describe('startup launch contract', () => {
     expect(indexHtml).toContain(`--loader-bg: ${twaLaunchBackground};`);
   });
 
+  it('index startup should not render launch snapshot as a blocking preview shell', () => {
+    const indexHtml = fs.readFileSync(path.join(process.cwd(), 'index.html'), 'utf8');
+
+    expect(indexHtml).not.toContain('loader.snapshot_visible');
+    expect(indexHtml).not.toContain('snapshot-task-list');
+    expect(indexHtml).not.toContain('id="snapshot-shell"');
+    expect(indexHtml).toContain('不渲染静态预览');
+  });
+
   it('manifest should expose the approved static shortcut intents', () => {
     const manifestPath = path.join(process.cwd(), 'public', 'manifest.webmanifest');
     const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));

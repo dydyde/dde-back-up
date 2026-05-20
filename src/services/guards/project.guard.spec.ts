@@ -17,6 +17,7 @@ describe('projectExistsGuard', () => {
     isLoadingRemote: ReturnType<typeof vi.fn>;
   };
   let userSessionMock: {
+    prehydrateFromSnapshot: ReturnType<typeof vi.fn>;
     loadProjects: ReturnType<typeof vi.fn>;
     canAuthoritativelyRejectProjectRoute: ReturnType<typeof vi.fn>;
     isProjectAuthoritativelyAccessible: ReturnType<typeof vi.fn>;
@@ -41,6 +42,7 @@ describe('projectExistsGuard', () => {
     };
 
     userSessionMock = {
+      prehydrateFromSnapshot: vi.fn().mockReturnValue(false),
       loadProjects: vi.fn().mockResolvedValue(undefined),
       canAuthoritativelyRejectProjectRoute: vi.fn().mockReturnValue(true),
       isProjectAuthoritativelyAccessible: vi.fn().mockReturnValue(true),
@@ -65,6 +67,30 @@ describe('projectExistsGuard', () => {
         { provide: ToastService, useValue: toastMock },
       ],
     });
+  });
+
+  it('应先用启动快照预填充项目，避免文本深链被远端加载阻塞', async () => {
+    let projects: Array<{ id: string }> = [];
+    projectStateMock.projects.mockImplementation(() => projects);
+    projectStateMock.getProject.mockImplementation((projectId: string) =>
+      projects.find((project) => project.id === projectId) ?? null,
+    );
+    userSessionMock.prehydrateFromSnapshot.mockImplementation(() => {
+      projects = [{ id: 'project-9' }];
+      return true;
+    });
+
+    const route = {
+      params: { projectId: 'project-9' },
+    } as unknown as ActivatedRouteSnapshot;
+    const state = { url: '/projects/project-9/text' } as RouterStateSnapshot;
+
+    const result = await TestBed.runInInjectionContext(() => projectExistsGuard(route, state));
+
+    expect(result).toBe(true);
+    expect(userSessionMock.prehydrateFromSnapshot).toHaveBeenCalledTimes(1);
+    expect(userSessionMock.loadProjects).not.toHaveBeenCalled();
+    expect(routerMock.navigate).not.toHaveBeenCalled();
   });
 
   it('partial 启动目录下不应提前把合法 deep-link 重定向到 /projects', async () => {
