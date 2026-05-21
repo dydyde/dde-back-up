@@ -5,6 +5,8 @@ import { GOJS_CONFIG, SUPERSCRIPT_DIGITS } from '../../../../config';
 import { LAYOUT_CONFIG } from '../../../../config/layout.config';
 import { Task, Project } from '../../../../models';
 import { LineageColorService } from '../../../../services/lineage-color.service';
+import { ExternalSourceLinkService } from '../../../core/external-sources/external-source-link.service';
+import type { ExternalSourceLink } from '../../../core/external-sources/external-source.model';
 import * as go from 'gojs';
 
 /**
@@ -36,6 +38,10 @@ export interface GoJSNodeData {
   isDocked?: boolean;
   /** 是否为当前专注中的入坞任务 */
   isDockFocused?: boolean;
+  /** 当前任务是否已关联思源锚点 */
+  hasSiyuanLink?: boolean;
+  /** 用于流程图节点徽标 hover/click 预览的首个思源锚点 */
+  siyuanLink?: ExternalSourceLink;
 }
 
 /**
@@ -100,6 +106,7 @@ export interface GoJSDiagramData {
 export class FlowDiagramConfigService {
   private readonly themeService = inject(ThemeService);
   private readonly lineageColorService = inject(LineageColorService);
+  private readonly externalSourceLinks = inject(ExternalSourceLinkService, { optional: true });
 
   /** 当前主题样式配置（响应式） */
   readonly currentStyles = computed(() => {
@@ -187,6 +194,7 @@ export class FlowDiagramConfigService {
       const isParked = task.parkingMeta?.state === 'parked';
       const isDocked = dockState.dockedTaskIds.has(task.id);
       const isDockFocused = dockState.focusedTaskId === task.id;
+      const siyuanLink = this.externalSourceLinks?.firstActiveLinkForTask(task.id) ?? undefined;
 
       nodeDataArray.push({
         key: task.id,
@@ -211,6 +219,8 @@ export class FlowDiagramConfigService {
         isParked: isParked,
         isDocked,
         isDockFocused,
+        hasSiyuanLink: Boolean(siyuanLink),
+        siyuanLink,
       });
 
       // 添加父子连接

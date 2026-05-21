@@ -112,20 +112,57 @@ export class DockDragDropService implements OnDestroy {
 
   onTouchStart(event: TouchEvent, taskId: string): void {
     if (!this.canReorderDockCards()) return;
-    this.touchStartY = event.touches?.[0]?.clientY ?? 0;
+    this.startTouchLikeGesture(event.touches?.[0]?.clientY ?? 0, taskId);
+  }
+
+  onTouchMove(event: TouchEvent, _taskId?: string): void {
+    if (!this.canReorderDockCards()) return;
+    this.moveTouchLikeGesture(event.touches?.[0]?.clientY ?? 0);
+  }
+
+  onPointerStart(event: PointerEvent, taskId: string): void {
+    if (event.pointerType !== 'touch') return;
+    if (!this.canReorderDockCards()) return;
+    const sourceElement = event.currentTarget instanceof HTMLElement ? event.currentTarget : null;
+    try {
+      sourceElement?.setPointerCapture(event.pointerId);
+    } catch {
+      // Pointer capture 是增强项；失败时保留原手势路径。
+    }
+    this.startTouchLikeGesture(event.clientY, taskId);
+  }
+
+  onPointerMove(event: PointerEvent): void {
+    if (event.pointerType !== 'touch') return;
+    if (!this.canReorderDockCards()) return;
+    this.moveTouchLikeGesture(event.clientY);
+  }
+
+  onPointerEnd(event: PointerEvent): void {
+    if (event.pointerType !== 'touch') return;
+    const sourceElement = event.currentTarget instanceof HTMLElement ? event.currentTarget : null;
+    try {
+      sourceElement?.releasePointerCapture(event.pointerId);
+    } catch {
+      // 未捕获或已释放时无需处理。
+    }
+    this.onTouchEnd();
+  }
+
+  private startTouchLikeGesture(clientY: number, taskId: string): void {
+    this.touchStartY = clientY;
     this.touchTaskId = null;
     this.longPress.schedule(() => {
       this.touchTaskId = taskId;
     }, PARKING_CONFIG.DOCK_LONG_PRESS_DELAY_MS);
   }
 
-  onTouchMove(event: TouchEvent, _taskId?: string): void {
-    if (!this.canReorderDockCards()) return;
+  private moveTouchLikeGesture(clientY: number): void {
     if (!this.touchTaskId) return;
-    const deltaY = (event.touches?.[0]?.clientY ?? 0) - this.touchStartY;
+    const deltaY = clientY - this.touchStartY;
     if (Math.abs(deltaY) > 30) {
       this.engine.toggleLoad(this.touchTaskId, deltaY > 0 ? 'down' : 'up');
-      this.touchStartY = event.touches?.[0]?.clientY ?? 0;
+      this.touchStartY = clientY;
     }
   }
 

@@ -193,6 +193,7 @@
       cursor: pointer;
       position: relative;
       overflow: hidden;
+      touch-action: pan-x;
     }
     .dock-card.planner-open {
       overflow: visible;

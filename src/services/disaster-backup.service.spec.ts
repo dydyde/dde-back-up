@@ -1,7 +1,7 @@
 import 'fake-indexeddb/auto';
 
 import { Injector, signal } from '@angular/core';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { LoggerService } from './logger.service';
 import { DisasterBackupService } from './disaster-backup.service';
 import { AuthService } from './auth.service';
@@ -14,6 +14,7 @@ import { SupabaseClientService } from './supabase-client.service';
 import type { Project } from '../models';
 import { ExternalSourceLinkService } from '../app/core/external-sources/external-source-link.service';
 import { ExternalSourceCacheService } from '../app/core/external-sources/external-source-cache.service';
+import { resetBrowserNetworkSuspensionTrackingForTests } from '../utils/browser-network-suspension';
 
 function createProject(): Project {
   return {
@@ -86,6 +87,7 @@ async function seedStore(
 describe('DisasterBackupService', () => {
   beforeEach(async () => {
     localStorage.clear();
+    resetBrowserNetworkSuspensionTrackingForTests();
 
     for (const name of [
       'nanoflow-offline-snapshots',
@@ -100,6 +102,10 @@ describe('DisasterBackupService', () => {
         request.onblocked = () => resolve();
       });
     }
+  });
+
+  afterEach(() => {
+    resetBrowserNetworkSuspensionTrackingForTests();
   });
 
   it('buildLocalPayload should include full v2 business data and localState coverage', async () => {
@@ -433,6 +439,102 @@ describe('DisasterBackupService', () => {
       includesLocalState: true,
       includesCloudUserState: true,
     }));
+  });
+
+  it('buildLocalPayload should continue with local data when remote user state is deferred by browser suspension', async () => {
+    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
+    const queryError = { message: 'BrowserNetworkSuspendedError: Browser network IO suspended' };
+    const client = {
+      from: vi.fn(() => ({
+        select: vi.fn(() => ({
+          eq: vi.fn(async () => ({ data: null, error: queryError })),
+        })),
+      })),
+    };
+
+    const injector = Injector.create({
+      providers: [
+        { provide: DisasterBackupService, useClass: DisasterBackupService },
+        { provide: LoggerService, useValue: { category: () => logger } },
+        { provide: AuthService, useValue: { currentUserId: vi.fn(() => 'user-1') } },
+        { provide: ThemeService, useValue: { theme: signal('forest'), colorMode: signal('dark') } },
+        { provide: UiStateService, useValue: { layoutDirection: signal('rtl'), floatingWindowPref: signal('fixed') } },
+        { provide: PreferenceService, useValue: { autoResolveConflicts: signal(false) } },
+        { provide: FocusPreferenceService, useValue: { preferences: signal({}), getPreferences: vi.fn(() => ({})) } },
+        { provide: BlackBoxService, useValue: { entriesMap: signal(new Map()) } },
+        { provide: SupabaseClientService, useValue: { isConfigured: true, client: vi.fn(() => client) } },
+        { provide: ExternalSourceLinkService, useValue: { ensureLoaded: vi.fn().mockResolvedValue(undefined), activeLinksForTask: vi.fn(() => []) } },
+        { provide: ExternalSourceCacheService, useValue: { loadPendingLinks: vi.fn().mockResolvedValue([]) } },
+      ],
+    });
+
+    const service = injector.get(DisasterBackupService);
+    const payload = await service.buildLocalPayload([createProject()], {
+      autoBackupEnabled: true,
+      autoBackupIntervalMs: 900000,
+    });
+
+    expect(payload.projects).toHaveLength(1);
+    expect(payload.userPreferences).toEqual([
+      expect.objectContaining({
+        id: 'local-pref-user-1',
+        userId: 'user-1',
+        theme: 'forest',
+      }),
+    ]);
+    expect(payload.focusSessions).toEqual([]);
+    expect(payload.transcriptionUsage).toEqual([]);
+    expect(payload.routineTasks).toEqual([]);
+    expect(payload.routineCompletions).toEqual([]);
+    expect(payload.coverage).toEqual(expect.objectContaining({
+      includesProjectData: true,
+      includesLocalState: true,
+      includesCloudUserState: false,
+    }));
+    expect(logger.error).not.toHaveBeenCalled();
+    expect(logger.debug).toHaveBeenCalledWith(
+      '备份远端用户状态读取已延后，继续生成本地备份',
+      expect.objectContaining({ table: 'user_preferences' }),
+    );
+  });
+
+  it('buildLocalPayload should fail on retryable remote errors that are not browser suspension', async () => {
+    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
+    const queryError = { code: 503, message: 'service unavailable' };
+    const client = {
+      from: vi.fn(() => ({
+        select: vi.fn(() => ({
+          eq: vi.fn(async () => ({ data: null, error: queryError })),
+        })),
+      })),
+    };
+
+    const injector = Injector.create({
+      providers: [
+        { provide: DisasterBackupService, useClass: DisasterBackupService },
+        { provide: LoggerService, useValue: { category: () => logger } },
+        { provide: AuthService, useValue: { currentUserId: vi.fn(() => 'user-1') } },
+        { provide: ThemeService, useValue: { theme: signal('forest'), colorMode: signal('dark') } },
+        { provide: UiStateService, useValue: { layoutDirection: signal('rtl'), floatingWindowPref: signal('fixed') } },
+        { provide: PreferenceService, useValue: { autoResolveConflicts: signal(false) } },
+        { provide: FocusPreferenceService, useValue: { preferences: signal({}), getPreferences: vi.fn(() => ({})) } },
+        { provide: BlackBoxService, useValue: { entriesMap: signal(new Map()) } },
+        { provide: SupabaseClientService, useValue: { isConfigured: true, client: vi.fn(() => client) } },
+        { provide: ExternalSourceLinkService, useValue: { ensureLoaded: vi.fn().mockResolvedValue(undefined), activeLinksForTask: vi.fn(() => []) } },
+        { provide: ExternalSourceCacheService, useValue: { loadPendingLinks: vi.fn().mockResolvedValue([]) } },
+      ],
+    });
+
+    const service = injector.get(DisasterBackupService);
+
+    await expect(service.buildLocalPayload([createProject()], {
+      autoBackupEnabled: true,
+      autoBackupIntervalMs: 900000,
+    })).rejects.toThrow(/Backup table user_preferences query failed/i);
+    expect(logger.error).toHaveBeenCalledWith(
+      'Failed to fetch backup table',
+      expect.objectContaining({ table: 'user_preferences', error: queryError }),
+    );
   });
 
   it('buildLocalPayload should fallback to owner-scoped action queue IndexedDB backup', async () => {

@@ -52,6 +52,10 @@ interface ParkedTaskDeltaRow extends Partial<TaskRow> {
   project_id?: string;
 }
 
+interface ProjectIdRow {
+  id?: string | null;
+}
+
 export interface ParkedTaskEntry {
   task: Task;
   projectId: string;
@@ -1824,7 +1828,8 @@ export class ProjectDataService {
    */
   async pullParkedTasksDelta(
     since: string | null,
-    knownParkedTaskIds: string[]
+    knownParkedTaskIds: string[],
+    projectIds: readonly string[] = [],
   ): Promise<ParkedTaskDeltaResult> {
     if (isBrowserNetworkSuspendedWindow()) {
       this.logger.debug('浏览器网络挂起窗口内跳过停泊任务增量拉取', { since });
@@ -1839,21 +1844,46 @@ export class ProjectDataService {
     const updatedRows: ParkedTaskDeltaRow[] = [];
     const entryMap = new Map<string, ParkedTaskEntry>();
     const removedTaskIds = new Set<string>();
+    const localProjectIdHints = this.normalizeIds(projectIds);
 
     try {
       return await this.withAuthRetry('pullParkedTasksDelta', async () => {
-        const selectFields = getCompatibleTaskSelectFields(`project_id,${FIELD_SELECT_CONFIG.TASK_LIST_FIELDS}`);
-        const loadParkedRows = async () => {
-          let parkedQuery = client
-            .from('tasks')
-            .select(selectFields)
-            .not('parking_meta', 'is', null);
+        const scopedProjectIds = await this.loadParkedSyncProjectIds(client);
+        if (scopedProjectIds.length === 0) {
+          this.logger.debug('停泊任务增量拉取缺少远端项目范围，跳过任务查询', {
+            since,
+            localProjectCount: localProjectIdHints.length,
+          });
+          return { entries: [], removedTaskIds: [], nextCursor: since };
+        }
 
-          if (since) {
-            parkedQuery = parkedQuery.gt('updated_at', since);
+        const getSelectFields = () => getCompatibleTaskSelectFields(`project_id,${FIELD_SELECT_CONFIG.TASK_LIST_FIELDS}`);
+        const projectChunks = this.chunkIds(scopedProjectIds, 50);
+        const loadParkedRows = async () => {
+          const rows: ParkedTaskDeltaRow[] = [];
+
+          for (const projectChunk of projectChunks) {
+            let parkedQuery = client
+              .from('tasks')
+              .select(getSelectFields())
+              .not('parking_meta', 'is', null)
+              .is('deleted_at', null);
+
+            parkedQuery = parkedQuery.in('project_id', projectChunk);
+
+            if (since) {
+              parkedQuery = parkedQuery.gt('updated_at', since);
+            }
+
+            const result = await parkedQuery;
+            if (result.error) {
+              return { data: null, error: result.error };
+            }
+
+            rows.push(...((result.data ?? []) as ParkedTaskDeltaRow[]));
           }
 
-          return await parkedQuery;
+          return { data: rows, error: null };
         };
 
         let parkedResult = await loadParkedRows();
@@ -1882,7 +1912,7 @@ export class ProjectDataService {
           for (const chunk of this.chunkTaskIds(knownParkedTaskIds, 100)) {
             const { data: changedRows, error: changedError } = await client
               .from('tasks')
-              .select(selectFields)
+              .select(getSelectFields())
               .in('id', chunk)
               .gt('updated_at', since);
 
@@ -1895,7 +1925,8 @@ export class ProjectDataService {
               if (!rawRow.id) continue;
 
               const isParked = (rawRow as { parking_meta?: unknown }).parking_meta !== null
-                && (rawRow as { parking_meta?: unknown }).parking_meta !== undefined;
+                && (rawRow as { parking_meta?: unknown }).parking_meta !== undefined
+                && rawRow.deleted_at === null;
               if (!isParked) {
                 removedTaskIds.add(String(rawRow.id));
                 entryMap.delete(String(rawRow.id));
@@ -1941,13 +1972,44 @@ export class ProjectDataService {
     return new Date(maxTs).toISOString();
   }
 
+  private async loadParkedSyncProjectIds(client: SupabaseClient): Promise<string[]> {
+    const { data, error } = await client
+      .from('projects')
+      .select('id')
+      .is('deleted_at', null);
+
+    if (error) {
+      throw supabaseErrorToError(error);
+    }
+
+    return this.normalizeIds(
+      ((data ?? []) as ProjectIdRow[])
+        .map((row) => row.id ? String(row.id) : '')
+    );
+  }
+
   private chunkTaskIds(taskIds: string[], size: number): string[][] {
-    if (taskIds.length <= size) return [taskIds];
+    return this.chunkIds(taskIds, size);
+  }
+
+  private chunkIds(ids: readonly string[], size: number): string[][] {
+    if (ids.length <= size) return [Array.from(ids)];
     const chunks: string[][] = [];
-    for (let i = 0; i < taskIds.length; i += size) {
-      chunks.push(taskIds.slice(i, i + size));
+    for (let index = 0; index < ids.length; index += size) {
+      chunks.push(ids.slice(index, index + size));
     }
     return chunks;
+  }
+
+  private normalizeIds(ids: readonly string[]): string[] {
+    const normalized = new Set<string>();
+    for (const id of ids) {
+      const value = id.trim();
+      if (value.length > 0) {
+        normalized.add(value);
+      }
+    }
+    return Array.from(normalized);
   }
 
   private async openFocusModeDB(): Promise<IDBDatabase> {

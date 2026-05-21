@@ -1,10 +1,12 @@
 import { DestroyRef, Injectable, inject } from '@angular/core';
-import { Overlay, OverlayRef, type ConnectedPosition } from '@angular/cdk/overlay';
+import { Overlay, OverlayRef, type ConnectedPosition, type FlexibleConnectedPositionStrategyOrigin } from '@angular/cdk/overlay';
 import { ComponentPortal } from '@angular/cdk/portal';
 import { SIYUAN_CONFIG } from '../../../../config/siyuan.config';
 import type { ExternalSourceLink } from '../../../core/external-sources/external-source.model';
 import { SiyuanPreviewService } from '../../../core/external-sources/siyuan/siyuan-preview.service';
 import { KnowledgeAnchorPopoverComponent } from './knowledge-anchor-popover.component';
+
+type PopoverOrigin = FlexibleConnectedPositionStrategyOrigin;
 
 @Injectable({ providedIn: 'root' })
 export class KnowledgeAnchorPopoverService {
@@ -27,10 +29,16 @@ export class KnowledgeAnchorPopoverService {
     { originX: 'start', originY: 'center', overlayX: 'end', overlayY: 'center', offsetX: -8 },
   ];
 
-  scheduleOpen(link: ExternalSourceLink, origin: HTMLElement): void {
+  scheduleOpen(link: ExternalSourceLink, origin: PopoverOrigin): void {
     this.cancelClose();
     this.cancelOpen();
     this.openTimer = setTimeout(() => this.open(link, origin), SIYUAN_CONFIG.HOVER_OPEN_DELAY_MS);
+  }
+
+  openNow(link: ExternalSourceLink, origin: PopoverOrigin): void {
+    this.cancelClose();
+    this.cancelOpen();
+    this.open(link, origin);
   }
 
   scheduleClose(): void {
@@ -65,8 +73,8 @@ export class KnowledgeAnchorPopoverService {
     this.overlayRef = undefined;
   }
 
-  private open(link: ExternalSourceLink, origin: HTMLElement): void {
-    this.originRef = origin;
+  private open(link: ExternalSourceLink, origin: PopoverOrigin): void {
+    this.originRef = origin instanceof HTMLElement ? origin : undefined;
     const positionStrategy = this.overlay.position()
       .flexibleConnectedTo(origin)
       .withPositions(this.positions)

@@ -25,6 +25,8 @@ import { FlowDiagramConfigService } from './flow-diagram-config.service';
 import { UiStateService } from '../../../../services/ui-state.service';
 import { LoggerService } from '../../../../services/logger.service';
 import { ThemeService } from '../../../../services/theme.service';
+import type { ExternalSourceLink } from '../../../core/external-sources/external-source.model';
+import { KnowledgeAnchorPopoverService } from '../../../shared/components/knowledge-anchor/knowledge-anchor-popover.service';
 import * as go from 'gojs';
 import {
   GojsClickHandler,
@@ -46,6 +48,7 @@ export class FlowTemplateService {
   private readonly loggerService = inject(LoggerService);
   private readonly logger = this.loggerService.category('FlowTemplate');
   private readonly themeService = inject(ThemeService);
+  private readonly siyuanPopover = inject(KnowledgeAnchorPopoverService);
   
   // ========== 主题感知的样式获取 ==========
   
@@ -80,6 +83,49 @@ export class FlowTemplateService {
       { name: 'L', spot: go.Spot.Left, size: 10 },
       { name: 'R', spot: go.Spot.Right, size: 10 }
     ];
+  }
+
+  private getSiyuanLink(obj: go.GraphObject): ExternalSourceLink | null {
+    const data = obj.part?.data as { siyuanLink?: ExternalSourceLink } | undefined;
+    return data?.siyuanLink ?? null;
+  }
+
+  private getGraphObjectViewportOrigin(
+    event: go.InputEvent,
+    obj: go.GraphObject,
+  ): { x: number; y: number; width: number; height: number } | null {
+    const diagram = event.diagram;
+    const diagramDiv = diagram?.div;
+    if (!diagram || !diagramDiv) {
+      const pointerEvent = event.event as MouseEvent | PointerEvent | undefined;
+      return pointerEvent ? { x: pointerEvent.clientX, y: pointerEvent.clientY, width: 1, height: 1 } : null;
+    }
+
+    const bounds = obj.getDocumentBounds();
+    if (!bounds.isReal() || bounds.width <= 0 || bounds.height <= 0) {
+      const pointerEvent = event.event as MouseEvent | PointerEvent | undefined;
+      return pointerEvent ? { x: pointerEvent.clientX, y: pointerEvent.clientY, width: 1, height: 1 } : null;
+    }
+
+    const rect = diagramDiv.getBoundingClientRect();
+    const topLeft = diagram.transformDocToView(new go.Point(bounds.x, bounds.y));
+    return {
+      x: rect.left + topLeft.x,
+      y: rect.top + topLeft.y,
+      width: Math.max(bounds.width * diagram.scale, 1),
+      height: Math.max(bounds.height * diagram.scale, 1),
+    };
+  }
+
+  private setSiyuanBadgeHover(obj: go.GraphObject, active: boolean): void {
+    const shape = (obj as go.Panel).findObject('SIYUAN_BADGE_SHAPE') as go.Shape | null;
+    if (!shape) return;
+    shape.fill = active ? '#e0e7ff' : '#eef2ff';
+    shape.stroke = active ? '#4f46e5' : '#818cf8';
+  }
+
+  closeSiyuanPopover(): void {
+    this.siyuanPopover.close();
   }
   
   // ========== 图层配置 ==========
@@ -307,7 +353,54 @@ export class FlowTemplateService {
         )
       ),
       
-      // 边缘连接手柄
+      // 思源锚点徽标
+      $(go.Panel, "Auto",
+        {
+          alignment: new go.Spot(1, 1, -6, -6),
+          cursor: "help",
+          isActionable: true,
+          pickable: true,
+          visible: false,
+          mouseEnter: (event: go.InputEvent, obj: go.GraphObject) => {
+            if (this.uiState.isMobile()) return;
+            const link = this.getSiyuanLink(obj);
+            const origin = this.getGraphObjectViewportOrigin(event, obj);
+            if (!link || !origin) return;
+            this.setSiyuanBadgeHover(obj, true);
+            this.siyuanPopover.scheduleOpen(link, origin);
+          },
+          mouseLeave: (_event: go.InputEvent, obj: go.GraphObject) => {
+            this.setSiyuanBadgeHover(obj, false);
+            if (this.uiState.isMobile()) return;
+            this.siyuanPopover.scheduleClose();
+          },
+          click: (event: go.InputEvent, obj: go.GraphObject) => {
+            if (this.uiState.isMobile()) return;
+            event.handled = true;
+            const link = this.getSiyuanLink(obj);
+            const origin = this.getGraphObjectViewportOrigin(event, obj);
+            if (!link || !origin) return;
+            this.siyuanPopover.openNow(link, origin);
+          },
+        },
+        new go.Binding("visible", "hasSiyuanLink", (hasSiyuanLink: boolean) => Boolean(hasSiyuanLink) && !isMobile),
+        $(go.Shape, "RoundedRectangle", {
+          name: "SIYUAN_BADGE_SHAPE",
+          fill: "#eef2ff",
+          stroke: "#818cf8",
+          strokeWidth: 1,
+          parameter1: 5,
+        }),
+        $(go.Panel, "Horizontal",
+          { margin: new go.Margin(2, 5, 2, 5), defaultAlignment: go.Spot.Center },
+          $(go.TextBlock, "思源", {
+            font: "700 8px \"LXGW WenKai Screen\", sans-serif",
+            stroke: "#4f46e5",
+          }),
+        ),
+      ),
+
+      // 入坞徽标
       $(go.Panel, "Auto",
         {
           alignment: new go.Spot(1, 0, -6, 6),

@@ -32,6 +32,11 @@ import {
 import { ExternalSourceLinkService } from '../app/core/external-sources/external-source-link.service';
 import { ExternalSourceCacheService } from '../app/core/external-sources/external-source-cache.service';
 import type { ExternalSourceLink } from '../app/core/external-sources/external-source.model';
+import { supabaseErrorToError } from '../utils/supabase-error';
+import {
+  isBrowserNetworkSuspendedError,
+  isBrowserNetworkSuspendedWindow,
+} from '../utils/browser-network-suspension';
 
 const ACTION_QUEUE_BACKUP_DB_NAME = 'nanoflow-queue-backup';
 const ACTION_QUEUE_BACKUP_STORE_NAME = 'queue-backup';
@@ -100,6 +105,10 @@ interface SupabaseRoutineCompletionRow {
   updated_at?: string;
 }
 
+interface RemoteBackupReadState {
+  deferred: boolean;
+}
+
 @Injectable({
   providedIn: 'root',
 })
@@ -121,17 +130,18 @@ export class DisasterBackupService {
   ): Promise<BackupData> {
     const userId = this.resolveEffectiveUserId();
     const visibleProjectIds = new Set(projects.map((project) => project.id));
+    const remoteReadState: RemoteBackupReadState = { deferred: false };
 
     await this.externalSourceLinks.ensureLoaded();
     const payloadBase = this.buildProjectPayload(projects, userId);
-    const userPreferences = await this.collectUserPreferences(userId, options);
+    const userPreferences = await this.collectUserPreferences(userId, options, remoteReadState);
     const blackBoxEntries = this.collectBlackBoxEntries(userId);
-    const remoteState = await this.collectRemoteUserState(userId);
+    const remoteState = await this.collectRemoteUserState(userId, remoteReadState);
     const localState = await this.collectLocalState(visibleProjectIds);
 
     const coverage: BackupCoverage = {
       includesProjectData: true,
-      includesCloudUserState: !!userId && this.supabase.isConfigured,
+      includesCloudUserState: !!userId && this.supabase.isConfigured && !remoteReadState.deferred,
       includesLocalState: true,
     };
 
@@ -179,13 +189,20 @@ export class DisasterBackupService {
   async buildLocalBlob(
     projects: Project[],
     options: LocalDisasterBackupOptions,
-  ): Promise<{ payload: BackupData; blob: Blob }> {
+  ): Promise<{ payload: BackupData; blob: Blob; deferredCloudUserState: boolean }> {
     const payload = await this.buildLocalPayload(projects, options);
     const content = JSON.stringify(payload, null, 2);
     return {
       payload,
       blob: new Blob([content], { type: 'application/json' }),
+      deferredCloudUserState: this.shouldDeferLocalBackupWrite(payload),
     };
+  }
+
+  private shouldDeferLocalBackupWrite(payload: BackupData): boolean {
+    return !!this.resolveEffectiveUserId()
+      && this.supabase.isConfigured
+      && !payload.coverage.includesCloudUserState;
   }
 
   private buildProjectPayload(
@@ -288,6 +305,7 @@ export class DisasterBackupService {
   private async collectUserPreferences(
     userId: string | null,
     options: LocalDisasterBackupOptions,
+    remoteReadState: RemoteBackupReadState,
   ): Promise<BackupUserPreferences[]> {
     const focusPreferences = this.readValue<unknown>(this.focusPreferenceService.getPreferences?.bind(this.focusPreferenceService))
       ?? this.readValue<unknown>(this.focusPreferenceService.preferences);
@@ -305,7 +323,7 @@ export class DisasterBackupService {
       focusPreferences,
     };
 
-    const rows = await this.fetchUserScopedRows<SupabaseUserPreferenceRow>('user_preferences', userId);
+    const rows = await this.fetchUserScopedRows<SupabaseUserPreferenceRow>('user_preferences', userId, remoteReadState);
     if (rows.length === 0) {
       return [base];
     }
@@ -346,17 +364,20 @@ export class DisasterBackupService {
     }));
   }
 
-  private async collectRemoteUserState(userId: string | null): Promise<{
+  private async collectRemoteUserState(
+    userId: string | null,
+    remoteReadState: RemoteBackupReadState,
+  ): Promise<{
     focusSessions: BackupFocusSession[];
     transcriptionUsage: BackupTranscriptionUsage[];
     routineTasks: BackupRoutineTask[];
     routineCompletions: BackupRoutineCompletion[];
   }> {
     const [focusSessions, transcriptionUsage, routineTasks, routineCompletions] = await Promise.all([
-      this.fetchUserScopedRows<SupabaseFocusSessionRow>('focus_sessions', userId),
-      this.fetchUserScopedRows<SupabaseTranscriptionUsageRow>('transcription_usage', userId),
-      this.fetchUserScopedRows<SupabaseRoutineTaskRow>('routine_tasks', userId),
-      this.fetchUserScopedRows<SupabaseRoutineCompletionRow>('routine_completions', userId),
+      this.fetchUserScopedRows<SupabaseFocusSessionRow>('focus_sessions', userId, remoteReadState),
+      this.fetchUserScopedRows<SupabaseTranscriptionUsageRow>('transcription_usage', userId, remoteReadState),
+      this.fetchUserScopedRows<SupabaseRoutineTaskRow>('routine_tasks', userId, remoteReadState),
+      this.fetchUserScopedRows<SupabaseRoutineCompletionRow>('routine_completions', userId, remoteReadState),
     ]);
 
     return {
@@ -395,7 +416,11 @@ export class DisasterBackupService {
     };
   }
 
-  private async fetchUserScopedRows<T>(table: BackupTable, userId: string | null): Promise<T[]> {
+  private async fetchUserScopedRows<T>(
+    table: BackupTable,
+    userId: string | null,
+    remoteReadState: RemoteBackupReadState,
+  ): Promise<T[]> {
     // 白名单断言（防御性），阻止未来误传非白名单字符串
     if (!BACKUP_TABLES.includes(table)) {
       throw new Error(`[disaster-backup] Unsupported backup table: ${String(table)}`);
@@ -405,20 +430,50 @@ export class DisasterBackupService {
       return [];
     }
 
-    const client = this.supabase.client();
-    // Supabase 客户端类型对动态表名 union 推导较慢，使用 unknown 收敛于入口
-    // 实际类型由白名单 + `T` 参数保证
-    const query = (client.from as unknown as (t: BackupTable) => {
-      select(cols: string): { eq(col: string, val: string): Promise<{ data: unknown; error: { message: string } | null }> };
-    })(table).select('*');
-    const result = await query.eq('user_id', userId);
-
-    if (result.error) {
-      this.logger.error('Failed to fetch backup table', { table, error: result.error });
-      throw new Error(`Failed to fetch ${table}: ${result.error.message}`);
+    if (isBrowserNetworkSuspendedWindow()) {
+      this.markRemoteBackupReadDeferred(remoteReadState, table, 'browser-window');
+      return [];
     }
 
-    return Array.isArray(result.data) ? (result.data as T[]) : [];
+    try {
+      const client = this.supabase.client();
+      // Supabase 客户端类型对动态表名 union 推导较慢，使用 unknown 收敛于入口
+      // 实际类型由白名单 + `T` 参数保证
+      const query = (client.from as unknown as (t: BackupTable) => {
+        select(cols: string): { eq(col: string, val: string): Promise<{ data: unknown; error: unknown }> };
+      })(table).select('*');
+      const result = await query.eq('user_id', userId);
+
+      if (result.error) {
+        const enhanced = supabaseErrorToError(result.error);
+        if (isBrowserNetworkSuspendedError(enhanced)) {
+          this.markRemoteBackupReadDeferred(remoteReadState, table, enhanced.errorType);
+          return [];
+        }
+
+        this.logger.error('Failed to fetch backup table', { table, error: result.error });
+        throw new Error(`Backup table ${table} query failed: ${enhanced.message}`);
+      }
+
+      return Array.isArray(result.data) ? (result.data as T[]) : [];
+    } catch (error) {
+      const enhanced = supabaseErrorToError(error);
+      if (isBrowserNetworkSuspendedError(enhanced)) {
+        this.markRemoteBackupReadDeferred(remoteReadState, table, enhanced.errorType);
+        return [];
+      }
+
+      throw error;
+    }
+  }
+
+  private markRemoteBackupReadDeferred(
+    remoteReadState: RemoteBackupReadState,
+    table: BackupTable,
+    reason: string,
+  ): void {
+    remoteReadState.deferred = true;
+    this.logger.debug('备份远端用户状态读取已延后，继续生成本地备份', { table, reason });
   }
 
   private async collectLocalState(visibleProjectIds: Set<string>): Promise<BackupLocalState> {

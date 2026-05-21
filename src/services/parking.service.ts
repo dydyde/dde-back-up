@@ -441,7 +441,18 @@ export class ParkingService implements OnDestroy {
     }
 
     const knownParkedTaskIds = Array.from(this.taskStore.parkedTaskIds());
-    const delta = await this.projectDataService.pullParkedTasksDelta(this.parkedCursor, knownParkedTaskIds);
+    const knownProjectIds = this.getProjectIdsForParkedSync();
+    if (knownProjectIds.length === 0) {
+      this.logger.debug('ParkingService', '项目列表未就绪，跳过停泊任务增量同步');
+      this.scheduleParkedDeltaProjectRetry();
+      return;
+    }
+
+    const delta = await this.projectDataService.pullParkedTasksDelta(
+      this.parkedCursor,
+      knownParkedTaskIds,
+      knownProjectIds,
+    );
 
     if (delta.entries.length === 0 && delta.removedTaskIds.length === 0) {
       this.parkedCursor = delta.nextCursor ?? this.parkedCursor;
@@ -472,6 +483,22 @@ export class ParkingService implements OnDestroy {
     });
   }
 
+  private getProjectIdsForParkedSync(): string[] {
+    const projectIds = new Set<string>();
+    const projects = this.projectStore.projects();
+    if (projects.length === 0) {
+      return [];
+    }
+
+    for (const project of projects) {
+      if (!project.deletedAt) {
+        projectIds.add(project.id);
+      }
+    }
+
+    return Array.from(projectIds);
+  }
+
   private scheduleParkedDeltaRefresh(reason: 'visible' | 'online' | 'network-suspended'): void {
     if (this.parkedDeltaRecoveryTimer) return;
     if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
@@ -487,6 +514,22 @@ export class ParkingService implements OnDestroy {
     this.logger.debug('ParkingService', '延后停泊任务增量同步以避开浏览器网络挂起窗口', {
       reason,
       delayMs,
+    });
+  }
+
+  private scheduleParkedDeltaProjectRetry(): void {
+    if (this.parkedDeltaRecoveryTimer) return;
+    if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
+    if (typeof navigator !== 'undefined' && !navigator.onLine) return;
+    if (!this.authService.currentUserId() || isLocalModeEnabled()) return;
+
+    this.parkedDeltaRecoveryTimer = setTimeout(() => {
+      this.parkedDeltaRecoveryTimer = null;
+      void this.syncParkedDelta();
+    }, POLLING_CHECK_DELAY.CONDITION_READY);
+
+    this.logger.debug('ParkingService', '项目列表未就绪，延后重试停泊任务增量同步', {
+      delayMs: POLLING_CHECK_DELAY.CONDITION_READY,
     });
   }
 

@@ -78,6 +78,8 @@ export class LocalBackupUIService {
 
     if (result.success) {
       alert(`备份成功！\n文件：${result.filename}\n位置：${result.pathHint}`);
+    } else if (result.deferred) {
+      alert(`备份暂未完成：${result.error ?? '浏览器恢复连接中，请稍后重试'}`);
     } else {
       alert(`备份失败：${result.error}`);
     }

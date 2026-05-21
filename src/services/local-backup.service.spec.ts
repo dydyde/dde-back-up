@@ -8,6 +8,7 @@ import { UiStateService } from './ui-state.service';
 import { PreferenceService } from './preference.service';
 import { SentryLazyLoaderService } from './sentry-lazy-loader.service';
 import { DisasterBackupService } from './disaster-backup.service';
+import { resetBrowserNetworkSuspensionTrackingForTests } from '../utils/browser-network-suspension';
 
 const mockLoggerCategory = {
   info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(),
@@ -26,6 +27,10 @@ describe('LocalBackupService', () => {
 
   beforeEach(() => {
     localStorage.clear();
+    mockLoggerCategory.info.mockReset();
+    mockLoggerCategory.warn.mockReset();
+    mockLoggerCategory.error.mockReset();
+    mockLoggerCategory.debug.mockReset();
     exportServiceMock.recordLocalBackupSuccess.mockReset();
     service = createService();
     disasterBackupServiceMock.buildLocalBlob.mockReset();
@@ -33,6 +38,8 @@ describe('LocalBackupService', () => {
 
   afterEach(() => {
     vi.useRealTimers();
+    resetBrowserNetworkSuspensionTrackingForTests();
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
     Reflect.deleteProperty(window as unknown as Record<string, unknown>, 'showDirectoryPicker');
   });
 
@@ -152,6 +159,81 @@ describe('LocalBackupService', () => {
       expect(disasterBackupServiceMock.buildLocalBlob).not.toHaveBeenCalled();
       service.stopAutoBackup();
     });
+
+    it('目录句柄状态失效时应暂停自动备份并清理授权状态', async () => {
+      vi.useFakeTimers();
+      const handle = createDirectoryHandleMock('backups', 'granted');
+      handle.getFileHandle = vi.fn(async () => {
+        throw createStaleDirectoryHandleError();
+      }) as FileSystemDirectoryHandle['getFileHandle'];
+
+      (service as unknown as { directoryHandle: FileSystemDirectoryHandle }).directoryHandle = handle;
+      setPrivateSignal(service, '_isAuthorized', true);
+      setPrivateSignal(service, '_hasSavedHandle', true);
+      setPrivateSignal(service, '_directoryName', 'backups');
+      disasterBackupServiceMock.buildLocalBlob.mockResolvedValue({
+        payload: { payloadVersion: '2.0.0' },
+        blob: new Blob(['{}'], { type: 'application/json' }),
+      });
+
+      service.startAutoBackup(
+        () => [{ id: 'p1', name: 'Test', tasks: [], connections: [] }],
+        1000,
+        { silent: true },
+      );
+      await vi.advanceTimersByTimeAsync(1000);
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(service.autoBackupEnabled()).toBe(true);
+      expect(service.isAuthorized()).toBe(false);
+      expect(service.hasSavedHandle()).toBe(false);
+      expect(service.directoryName()).toBeNull();
+    });
+
+    it('浏览器网络挂起时应静默跳过本轮自动备份', async () => {
+      vi.useFakeTimers();
+      Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' });
+      setPrivateSignal(service, '_isAuthorized', true);
+
+      service.startAutoBackup(
+        () => [{ id: 'p1', name: 'Test', tasks: [], connections: [] }],
+        1000,
+        { silent: true },
+      );
+      await vi.advanceTimersByTimeAsync(1000);
+
+      expect(disasterBackupServiceMock.buildLocalBlob).not.toHaveBeenCalled();
+      expect(mockLoggerCategory.warn).not.toHaveBeenCalledWith('自动备份失败', expect.anything());
+      expect(mockLoggerCategory.debug).toHaveBeenCalledWith(
+        '浏览器网络恢复窗口内跳过本轮自动备份',
+        expect.objectContaining({ resumeDelayMs: expect.any(Number) }),
+      );
+      service.stopAutoBackup();
+    });
+
+    it('浏览器网络挂起结束后应补跑刚刚跳过的自动备份', async () => {
+      vi.useFakeTimers();
+      const performBackupSpy = vi.spyOn(service, 'performBackup').mockResolvedValue({ success: true, filename: 'backup.json' });
+      Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' });
+      setPrivateSignal(service, '_isAuthorized', true);
+
+      service.startAutoBackup(
+        () => [{ id: 'p1', name: 'Test', tasks: [], connections: [] }],
+        1000,
+        { silent: true },
+      );
+      await vi.advanceTimersByTimeAsync(1000);
+
+      expect(performBackupSpy).not.toHaveBeenCalled();
+
+      Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
+      document.dispatchEvent(new Event('visibilitychange'));
+      await vi.advanceTimersByTimeAsync(1600);
+
+      expect(performBackupSpy).toHaveBeenCalledTimes(1);
+      performBackupSpy.mockRestore();
+      service.stopAutoBackup();
+    });
   });
 
   describe('performBackup', () => {
@@ -198,6 +280,41 @@ describe('LocalBackupService', () => {
       expect(exportServiceMock.recordLocalBackupSuccess).toHaveBeenCalledWith(result.timestamp);
       expect(writes).toHaveLength(1);
     });
+
+    it('云端用户态延后时不应写入部分备份文件', async () => {
+      const writable = {
+        write: vi.fn(async () => undefined),
+        close: vi.fn(async () => undefined),
+      };
+      const fileHandle = {
+        createWritable: vi.fn(async () => writable),
+        getFile: vi.fn(),
+      };
+
+      (service as unknown as { directoryHandle: unknown }).directoryHandle = {
+        name: 'backups',
+        getFileHandle: vi.fn(async () => fileHandle),
+        removeEntry: vi.fn(async () => undefined),
+      };
+      (service as unknown as { checkAndRestorePermission: () => Promise<boolean> }).checkAndRestorePermission = vi.fn(async () => true);
+
+      disasterBackupServiceMock.buildLocalBlob.mockResolvedValue({
+        payload: { payloadVersion: '2.0.0', coverage: { includesCloudUserState: false } },
+        blob: new Blob(['{"payloadVersion":"2.0.0"}'], { type: 'application/json' }),
+        deferredCloudUserState: true,
+      });
+
+      const result = await service.performBackup([{
+        id: 'p1', name: 'Test', tasks: [], connections: [],
+      }]);
+
+      expect(result).toEqual(expect.objectContaining({
+        success: false,
+        deferred: true,
+      }));
+      expect(fileHandle.createWritable).not.toHaveBeenCalled();
+      expect(exportServiceMock.recordLocalBackupSuccess).not.toHaveBeenCalled();
+    });
   });
 
   function setPrivateSignal<T>(target: LocalBackupService, key: string, value: T): void {
@@ -214,6 +331,13 @@ describe('LocalBackupService', () => {
       removeEntry: vi.fn(),
       values: vi.fn(),
     } as unknown as FileSystemDirectoryHandle;
+  }
+
+  function createStaleDirectoryHandleError(): DOMException {
+    return new DOMException(
+      'An operation that depends on state cached in an interface object was made but the state had changed since it was read from disk.',
+      'InvalidStateError',
+    );
   }
 
   function createService(): LocalBackupService {

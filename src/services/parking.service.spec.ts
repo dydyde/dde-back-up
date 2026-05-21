@@ -4,10 +4,10 @@
  */
 
 import { TestBed } from '@angular/core/testing';
-import { computed, signal } from '@angular/core';
+import { signal } from '@angular/core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { Task, TaskParkingMeta } from '../models';
+import { Project, Task, TaskParkingMeta } from '../models';
 import { TaskStore, ProjectStore } from '../app/core/state/stores';
 import { ParkingService } from './parking.service';
 import { ToastService } from './toast.service';
@@ -28,6 +28,7 @@ describe('ParkingService', () => {
   const taskMap = new Map<string, Task>();
   const parkedTasksSignal = signal<Task[]>([]);
   const parkedTaskIdsSignal = signal<Set<string>>(new Set());
+  const projectListSignal = signal<Project[]>([]);
 
   const syncParkedSignals = (): void => {
     const parked = Array.from(taskMap.values()).filter(t => !!t.parkingMeta);
@@ -63,6 +64,16 @@ describe('ParkingService', () => {
     ...overrides,
   });
 
+  const createProject = (projectId: string): Project => ({
+    id: projectId,
+    name: '测试项目',
+    description: '',
+    createdDate: new Date().toISOString(),
+    tasks: Array.from(taskMap.values()),
+    connections: [],
+    deletedAt: null,
+  });
+
   const mockTaskStore = {
     parkedTaskIds: parkedTaskIdsSignal,
     parkedTasks: parkedTasksSignal,
@@ -76,6 +87,7 @@ describe('ParkingService', () => {
 
   const mockProjectStore = {
     activeProjectId: signal<string | null>('proj-1'),
+    projects: projectListSignal,
     getProject: vi.fn((projectId: string) => ({
       id: projectId,
       name: '测试项目',
@@ -152,6 +164,7 @@ describe('ParkingService', () => {
     setVisibilityState('visible');
 
     taskMap.clear();
+    projectListSignal.set([createProject('proj-1')]);
     parkedTasksSignal.set([]);
     parkedTaskIdsSignal.set(new Set());
     mockGateService.isActive.set(false);
@@ -461,6 +474,30 @@ describe('ParkingService', () => {
       await (service as unknown as { syncParkedDelta: () => Promise<void> }).syncParkedDelta();
 
       expect(mockProjectDataService.pullParkedTasksDelta).toHaveBeenCalledTimes(1);
+      expect(mockProjectDataService.pullParkedTasksDelta).toHaveBeenCalledWith(null, [], ['proj-1']);
+    });
+
+    it('项目列表未就绪时不应使用 activeProjectId 推进停泊游标', async () => {
+      currentUserIdSignal.set('user-1');
+      projectListSignal.set([]);
+
+      await (service as unknown as { syncParkedDelta: () => Promise<void> }).syncParkedDelta();
+
+      expect(mockProjectDataService.pullParkedTasksDelta).not.toHaveBeenCalled();
+    });
+
+    it('项目列表恢复后应快速补拉一次停泊任务增量', async () => {
+      currentUserIdSignal.set('user-1');
+      projectListSignal.set([]);
+
+      await (service as unknown as { syncParkedDelta: () => Promise<void> }).syncParkedDelta();
+      expect(mockProjectDataService.pullParkedTasksDelta).not.toHaveBeenCalled();
+
+      projectListSignal.set([createProject('proj-1')]);
+      await vi.advanceTimersByTimeAsync(500);
+
+      expect(mockProjectDataService.pullParkedTasksDelta).toHaveBeenCalledTimes(1);
+      expect(mockProjectDataService.pullParkedTasksDelta).toHaveBeenCalledWith(null, [], ['proj-1']);
     });
 
     it('挂起窗口内不应触发停泊任务云端拉取', async () => {

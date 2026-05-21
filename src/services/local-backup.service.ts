@@ -38,12 +38,21 @@ import {
   LocalBackupCompatibility,
 } from '../config/local-backup.config';
 import { SentryLazyLoaderService } from './sentry-lazy-loader.service';
+import {
+  getRemainingBrowserNetworkResumeDelayMs,
+  isBrowserNetworkSuspendedError,
+  isBrowserNetworkSuspendedWindow,
+} from '../utils/browser-network-suspension';
 // ============================================
 // IndexedDB 存储键
 // ============================================
 const IDB_KEYS = {
   DIRECTORY_HANDLE: 'nanoflow.local-backup.directory-handle',
 } as const;
+
+const STALE_DIRECTORY_HANDLE_MESSAGE = '备份目录状态已变化，请重新选择本地备份目录';
+const AUTO_BACKUP_RETRY_BUFFER_MS = 50;
+const AUTO_BACKUP_RETRY_MIN_DELAY_MS = 100;
 
 type LocalBackupProjectSnapshot = { id: string; name: string; tasks: unknown[]; connections: unknown[] };
 
@@ -79,6 +88,8 @@ export class LocalBackupService implements OnDestroy {
   private directoryHandle: FileSystemDirectoryHandle | null = null;
   private restoreHandlePromise: Promise<boolean> | null = null;
   private autoBackupTimer: ReturnType<typeof setInterval> | null = null;
+  private autoBackupDeferredRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  private autoBackupVisibilityRetryHandler: (() => void) | null = null;
   /** 用于自动备份的项目获取函数（持久化后恢复使用） */
   private getProjectsFn: (() => LocalBackupProjectSnapshot[]) | null = null;
   
@@ -261,6 +272,11 @@ export class LocalBackupService implements OnDestroy {
       return false;
       
     } catch (error) {
+      if (this.isStaleDirectoryHandleError(error)) {
+        await this.invalidateDirectoryHandleAfterStateError(options.request !== false);
+        return false;
+      }
+
       this.logger.warn('权限检查失败', error);
       this._permissionState.set('denied');
       return false;
@@ -303,6 +319,11 @@ export class LocalBackupService implements OnDestroy {
       return false;
       
     } catch (error) {
+      if (this.isStaleDirectoryHandleError(error)) {
+        await this.invalidateDirectoryHandleAfterStateError(true);
+        return false;
+      }
+
       this.logger.error('恢复权限失败', error);
       this.toast.error('恢复权限失败');
       return false;
@@ -359,10 +380,18 @@ export class LocalBackupService implements OnDestroy {
     try {
       this.logger.info('开始本地备份...', { projectCount: projects.length });
       
-      const { blob } = await this.disasterBackupService.buildLocalBlob(projects as Project[], {
+      const { blob, deferredCloudUserState } = await this.disasterBackupService.buildLocalBlob(projects as Project[], {
         autoBackupEnabled: this._autoBackupEnabled(),
         autoBackupIntervalMs: this._autoBackupIntervalMs(),
       });
+
+      if (deferredCloudUserState) {
+        return {
+          success: false,
+          error: '浏览器恢复连接中，自动备份稍后重试',
+          deferred: true,
+        };
+      }
       
       // 生成文件名
       const timestamp = this.formatTimestamp();
@@ -402,6 +431,19 @@ export class LocalBackupService implements OnDestroy {
       };
       
     } catch (error) {
+      if (this.isStaleDirectoryHandleError(error)) {
+        await this.invalidateDirectoryHandleAfterStateError(options.requestPermission !== false);
+        return { success: false, error: STALE_DIRECTORY_HANDLE_MESSAGE };
+      }
+
+      if (isBrowserNetworkSuspendedError(error)) {
+        return {
+          success: false,
+          error: '浏览器恢复连接中，自动备份稍后重试',
+          deferred: true,
+        };
+      }
+
       const e = error as Error;
       this.logger.error('本地备份失败', error);
       this.sentryLazyLoader.captureException(error, { tags: { operation: 'localBackup.perform' } });
@@ -456,8 +498,12 @@ export class LocalBackupService implements OnDestroy {
         try {
           await this.directoryHandle.removeEntry(file.name);
           this.logger.debug('已删除旧备份', { filename: file.name });
-        } catch (e) {
-          this.logger.warn('删除旧备份失败', { filename: file.name, error: e });
+        } catch (error) {
+          if (this.isStaleDirectoryHandleError(error)) {
+            throw error;
+          }
+
+          this.logger.warn('删除旧备份失败', { filename: file.name, error });
         }
       }
       
@@ -466,6 +512,10 @@ export class LocalBackupService implements OnDestroy {
       }
       
     } catch (error) {
+      if (this.isStaleDirectoryHandleError(error)) {
+        throw error;
+      }
+
       this.logger.warn('清理旧备份时出错', error);
     }
   }
@@ -505,6 +555,11 @@ export class LocalBackupService implements OnDestroy {
       files.sort((a, b) => b.timestamp - a.timestamp);
       return files;
     } catch (error) {
+      if (this.isStaleDirectoryHandleError(error)) {
+        await this.invalidateDirectoryHandleAfterStateError(true);
+        return [];
+      }
+
       this.logger.error('列出备份文件失败', error);
       return [];
     }
@@ -528,6 +583,11 @@ export class LocalBackupService implements OnDestroy {
       const fileHandle = await this.directoryHandle.getFileHandle(filename);
       return await fileHandle.getFile();
     } catch (error) {
+      if (this.isStaleDirectoryHandleError(error)) {
+        await this.invalidateDirectoryHandleAfterStateError(true);
+        return null;
+      }
+
       this.logger.error('读取备份文件失败', { filename, error });
         return null; // eslint-disable-line no-restricted-syntax -- 文件读取失败时"无法获取"语义正确，null 触发调用方错误提示
     }
@@ -559,17 +619,10 @@ export class LocalBackupService implements OnDestroy {
     
     // 保存获取项目的函数，用于权限恢复后自动恢复备份
     this.getProjectsFn = getProjects;
+    this.clearDeferredAutoBackupRetry();
     
-    this.autoBackupTimer = setInterval(async () => {
-      const projects = getProjects();
-      if (projects.length > 0) {
-        const result = await this.performBackup(projects, { requestPermission: false });
-        if (result.success) {
-          this.logger.debug('自动备份成功', { filename: result.filename });
-        } else {
-          this.logger.warn('自动备份失败', { error: result.error });
-        }
-      }
+    this.autoBackupTimer = setInterval(() => {
+      void this.runAutoBackupCycle();
     }, interval);
     
     this._autoBackupEnabled.set(true);
@@ -591,6 +644,7 @@ export class LocalBackupService implements OnDestroy {
       clearInterval(this.autoBackupTimer);
       this.autoBackupTimer = null;
     }
+    this.clearDeferredAutoBackupRetry();
     
     if (updateState) {
       this._autoBackupEnabled.set(false);
@@ -733,6 +787,143 @@ export class LocalBackupService implements OnDestroy {
       });
     } catch (error) {
       this.logger.warn('清除持久化状态失败', error);
+    }
+  }
+
+  private shouldDeferAutoBackupForBrowserNetwork(): boolean {
+    if (!isBrowserNetworkSuspendedWindow()) {
+      return false;
+    }
+
+    this.logger.debug('浏览器网络恢复窗口内跳过本轮自动备份', {
+      resumeDelayMs: getRemainingBrowserNetworkResumeDelayMs(),
+    });
+    return true;
+  }
+
+  private async runAutoBackupCycle(): Promise<void> {
+    if (!this.getProjectsFn || !this._autoBackupEnabled()) {
+      return;
+    }
+
+    if (this.shouldDeferAutoBackupForBrowserNetwork()) {
+      this.scheduleDeferredAutoBackupRetry();
+      return;
+    }
+
+    const projects = this.getProjectsFn();
+    if (projects.length === 0) {
+      return;
+    }
+
+    const result = await this.performBackup(projects, { requestPermission: false });
+    if (result.success) {
+      this.logger.debug('自动备份成功', { filename: result.filename });
+      return;
+    }
+
+    if (result.deferred) {
+      this.logger.debug('自动备份已延后', { error: result.error });
+      this.scheduleDeferredAutoBackupRetry();
+      return;
+    }
+
+    this.logger.warn('自动备份失败', { error: result.error });
+  }
+
+  private scheduleDeferredAutoBackupRetry(): void {
+    if (!this._autoBackupEnabled() || !this.getProjectsFn) {
+      return;
+    }
+
+    if (typeof document !== 'undefined' && document.visibilityState !== 'visible') {
+      if (this.autoBackupVisibilityRetryHandler) {
+        return;
+      }
+
+      const onVisibilityChange = () => {
+        if (document.visibilityState !== 'visible') {
+          return;
+        }
+
+        document.removeEventListener('visibilitychange', onVisibilityChange);
+        this.autoBackupVisibilityRetryHandler = null;
+        this.armDeferredAutoBackupRetry();
+      };
+
+      document.addEventListener('visibilitychange', onVisibilityChange);
+      this.autoBackupVisibilityRetryHandler = onVisibilityChange;
+      return;
+    }
+
+    this.armDeferredAutoBackupRetry();
+  }
+
+  private armDeferredAutoBackupRetry(): void {
+    if (this.autoBackupDeferredRetryTimer) {
+      return;
+    }
+
+    const delayMs = Math.max(
+      AUTO_BACKUP_RETRY_MIN_DELAY_MS,
+      getRemainingBrowserNetworkResumeDelayMs() + AUTO_BACKUP_RETRY_BUFFER_MS,
+    );
+
+    this.autoBackupDeferredRetryTimer = setTimeout(() => {
+      this.autoBackupDeferredRetryTimer = null;
+      void this.runAutoBackupCycle();
+    }, delayMs);
+  }
+
+  private clearDeferredAutoBackupRetry(): void {
+    if (this.autoBackupDeferredRetryTimer) {
+      clearTimeout(this.autoBackupDeferredRetryTimer);
+      this.autoBackupDeferredRetryTimer = null;
+    }
+
+    if (this.autoBackupVisibilityRetryHandler && typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', this.autoBackupVisibilityRetryHandler);
+      this.autoBackupVisibilityRetryHandler = null;
+    }
+  }
+
+  private clearPersistedDirectoryHandleName(): void {
+    try {
+      localStorage.removeItem(LOCAL_BACKUP_CONFIG.STORAGE_KEYS.DIRECTORY_HANDLE);
+    } catch (error) {
+      this.logger.warn('清除本地备份目录名称失败', error);
+    }
+  }
+
+  private isStaleDirectoryHandleError(error: unknown): boolean {
+    if (typeof error !== 'object' || error === null) {
+      return false;
+    }
+
+    const candidate = error as { name?: unknown; message?: unknown };
+    const name = typeof candidate.name === 'string' ? candidate.name : '';
+    const message = typeof candidate.message === 'string' ? candidate.message : '';
+
+    return name === 'InvalidStateError'
+      && /state cached|changed since it was read from disk|read from disk/i.test(message);
+  }
+
+  private async invalidateDirectoryHandleAfterStateError(notifyUser: boolean): Promise<void> {
+    const directoryName = this._directoryName();
+    this.stopAutoBackup(false);
+    this.directoryHandle = null;
+    this.restoreHandlePromise = null;
+    this._isAuthorized.set(false);
+    this._hasSavedHandle.set(false);
+    this._permissionState.set(null);
+    this._directoryName.set(null);
+    this.clearPersistedDirectoryHandleName();
+    await this.clearDirectoryHandleFromIDB();
+    this.savePersistedState();
+
+    this.logger.warn('备份目录句柄失效，已暂停自动备份', { directoryName });
+    if (notifyUser) {
+      this.toast.error(STALE_DIRECTORY_HANDLE_MESSAGE);
     }
   }
   

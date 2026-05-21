@@ -634,11 +634,32 @@ export class FlowOverviewService {
       return extended;
     };
 
-    const ensureViewportEdgeBuffer = (bounds: go.Rect, viewportBounds: go.Rect): go.Rect => {
+    const ensureViewportEdgeBuffer = (
+      bounds: go.Rect,
+      viewportBounds: go.Rect,
+      mode: 'default' | 'passive-pan' = 'default',
+    ): go.Rect => {
       const containerW = this.overviewContainer?.clientWidth ?? 200;
       const containerH = this.overviewContainer?.clientHeight ?? 150;
-      const bufferW = Math.max(400, containerW * 0.3);
-      const bufferH = Math.max(400, containerH * 0.3);
+      // 【2026-05-20 生产复发修复 - 主图持续 pan 残影】
+      // 默认 buffer ~400 world-px：用户持续拖动主图时只要每次 pan 越过 fixedBounds
+      // ~400px 就触发一次 setOverviewFixedBounds → GoJS Overview remeasure 所有节点
+      // → 缩略任务块全量重映射 → 视觉上呈现"快速移动残影"。
+      // 在 isPassiveObservedViewportUpdate 进入此路径时使用 passive-pan 模式：
+      // 用 viewport 自身尺寸（再带 1x 余量）作为最小 buffer，让一次扩边后
+      // 至少能覆盖再走一个完整 viewport 的连续 pan，从而把 setOverviewFixedBounds
+      // 频率从"每帧"降到"每过一整屏才一次"。
+      // 注意：scale 自适应链路（smoothManualScale / 远拖缩小 / 拖回放大）只在
+      // usingFakeViewportBounds && hasManualBoxMovement 时启用，不依赖此 buffer，
+      // 所以这里放大 buffer 不会影响 box drag 的远拖语义。
+      const baseBufferW = Math.max(400, containerW * 0.3);
+      const baseBufferH = Math.max(400, containerH * 0.3);
+      const bufferW = mode === 'passive-pan'
+        ? Math.max(baseBufferW, viewportBounds.width)
+        : baseBufferW;
+      const bufferH = mode === 'passive-pan'
+        ? Math.max(baseBufferH, viewportBounds.height)
+        : baseBufferH;
       const buffered = bounds.copy();
 
       const leftGap = viewportBounds.x - buffered.x;
@@ -989,7 +1010,7 @@ export class FlowOverviewService {
               && viewportIsInsideBounds(this.overviewFixedBounds, viewportBounds);
             let candidateWorldBounds = calculateExtendedBounds(nodeBounds.copy().unionRect(boundsViewport), boundsViewport);
             if (isPassiveObservedViewportUpdate && !viewportIsInsideCurrentOverviewBounds) {
-              candidateWorldBounds = ensureViewportEdgeBuffer(candidateWorldBounds, viewportBounds);
+              candidateWorldBounds = ensureViewportEdgeBuffer(candidateWorldBounds, viewportBounds, 'passive-pan');
             }
             const { bounds: worldBounds, reusedStableBounds } = resolveWorldBoundsForViewport(
               candidateWorldBounds,

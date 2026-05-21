@@ -68,6 +68,8 @@ export interface LocalBackupResult {
   timestamp?: string;
   /** 备份文件路径提示 */
   pathHint?: string;
+  /** 浏览器网络恢复窗口内延后执行，不应作为失败刷屏 */
+  deferred?: boolean;
 }
 
 /**

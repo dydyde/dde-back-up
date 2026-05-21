@@ -218,7 +218,9 @@ export class KnowledgeAnchorComponent implements OnDestroy {
 
   onMouseEnter(event: MouseEvent, link: ExternalSourceLink): void {
     if (this.isMobile() || this.previewMode() === 'deep-link-only') return;
-    void this.withPopover((p) => p.scheduleOpen(link, event.currentTarget as HTMLElement))
+    const origin = event.currentTarget instanceof HTMLElement ? event.currentTarget : null;
+    if (!origin) return;
+    void this.withPopover((p) => p.scheduleOpen(link, origin))
       .catch((error) => {
         this.previewService.abortActive();
         this.logger.debug('桌面预览浮层加载失败（mouseenter）', {
@@ -230,7 +232,9 @@ export class KnowledgeAnchorComponent implements OnDestroy {
 
   onFocus(event: FocusEvent, link: ExternalSourceLink): void {
     if (this.isMobile() || this.previewMode() === 'deep-link-only') return;
-    void this.withPopover((p) => p.scheduleOpen(link, event.currentTarget as HTMLElement))
+    const origin = event.currentTarget instanceof HTMLElement ? event.currentTarget : null;
+    if (!origin) return;
+    void this.withPopover((p) => p.scheduleOpen(link, origin))
       .catch((error) => {
         this.previewService.abortActive();
         this.logger.debug('桌面预览浮层加载失败（focus）', {

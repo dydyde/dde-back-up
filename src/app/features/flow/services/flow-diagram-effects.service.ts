@@ -6,6 +6,7 @@ import { FlowDiagramService } from './flow-diagram.service';
 import { FlowCommandService } from './flow-command.service';
 import { LoggerService } from '../../../../services/logger.service';
 import { Task } from '../../../../models';
+import { ExternalSourceLinkService } from '../../../core/external-sources/external-source-link.service';
 
 /**
  * 图表响应式效果服务
@@ -27,6 +28,7 @@ export class FlowDiagramEffectsService {
   private readonly flowCommand = inject(FlowCommandService);
   private readonly logger = inject(LoggerService);
   private readonly zone = inject(NgZone);
+  private readonly externalSourceLinks = inject(ExternalSourceLinkService, { optional: true });
 
   /** rAF 调度 ID（用于取消） */
   private pendingRafId: number | null = null;
@@ -90,6 +92,7 @@ export class FlowDiagramEffectsService {
    */
   // 【P2-26 修复】保存上次连接签名，只在真正变化时才触发更新
   private lastConnectionSignature = '';
+  private lastExternalSourceLinkSignature = '';
   
   createConnectionsEffect(
     injector: Injector,
@@ -108,6 +111,30 @@ export class FlowDiagramEffectsService {
       // 只在签名实际变化时才触发更新
       if (connectionSignature !== this.lastConnectionSignature && this.diagram.isInitialized) {
         this.lastConnectionSignature = connectionSignature;
+        scheduleRafDiagramUpdate(this.projectState.tasks(), true);
+      }
+    }, { injector });
+  }
+
+  createExternalSourceLinksEffect(
+    injector: Injector,
+    scheduleRafDiagramUpdate: (tasks: Task[], forceRefresh: boolean) => void
+  ): EffectRef {
+    return effect(() => {
+      const linkSignature = this.externalSourceLinks?.activeLinks()
+        .map(link => [
+          link.taskId,
+          link.sourceType,
+          link.targetId,
+          String(link.sortOrder),
+          link.label ?? '',
+          link.hpath ?? '',
+          link.updatedAt,
+        ].join('|'))
+        .sort()
+        .join('|') ?? '';
+      if (linkSignature !== this.lastExternalSourceLinkSignature && this.diagram.isInitialized) {
+        this.lastExternalSourceLinkSignature = linkSignature;
         scheduleRafDiagramUpdate(this.projectState.tasks(), true);
       }
     }, { injector });

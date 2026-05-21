@@ -244,6 +244,7 @@ export class FlowViewComponent implements AfterViewInit, OnDestroy {
     this.managedEffectRefs.push(
       this.diagramEffects.createTasksEffect(this.injector, scheduleRaf),
       this.diagramEffects.createConnectionsEffect(this.injector, scheduleRaf),
+      this.diagramEffects.createExternalSourceLinksEffect(this.injector, scheduleRaf),
       this.diagramEffects.createSearchEffect(this.injector, scheduleRaf),
       this.diagramEffects.createThemeEffect(this.injector, scheduleRaf),
       this.diagramEffects.createSelectionSyncEffect(
