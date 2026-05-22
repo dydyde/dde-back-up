@@ -34,7 +34,7 @@ NanoFlow 适合迁移到 Cloudflare Pages；仓库侧 Direct Upload 发布链路
 
 配置后验证（2026-04-29 续跑）：
 
-- Cloudflare 账号 ID / API Token / Pages 项目名已能被本地 `.env.local` 读取；`npx --yes wrangler@3.114.0 pages deployment list --project-name=nanoflow` 成功返回 production 部署，当前生产 deployment 为 `https://a34c65fd.nanoflow.pages.dev`，分支 `main`，source `b058899`。
+- Cloudflare 账号 ID / API Token / Pages 项目名已能被本地 `.env.local` 读取；`npx --yes wrangler@3.112.0 pages deployment list --project-name=nanoflow` 成功返回 production 部署，当前生产 deployment 为 `https://a34c65fd.nanoflow.pages.dev`，分支 `main`，source `b058899`。
 - `https://a34c65fd.nanoflow.pages.dev` 与 `https://nanoflow.pages.dev` 的 `/version.json` 均读到 `gitSha=b05889949680553f3838a481f5410dfea91b8139`、`deploymentTarget=production`、同一 `ngswHash=5663bc774c9f...`。
 - 生产环境校验 `npm run validate-env:prod` 通过；本地 `.env.local` 未提供 `NG_APP_GOJS_LICENSE_KEY`，因此本地校验仍提示 GoJS 水印警告，若生产 GitHub Secret 已配置则以 workflow build 环境为准。
 - 部署产物校验 `npm run quality:guard:deploy-artifacts` 通过：`dist/browser` 150 files，无 `.map`、无 Pages Functions 入口、`_headers` 21 rules、`! Link`、worker safety、manifest origin-neutral、assetlinks package/fingerprint 与 artifact manifest 均通过。
@@ -66,7 +66,7 @@ NanoFlow 适合迁移到 Cloudflare Pages；仓库侧 Direct Upload 发布链路
 已完成并复核的最佳实践项：
 
 - **远端数据库同步更新已完成**：生产 Supabase 项目 `fkhihclpghmmtbbywvoj` 已应用 `20260518162000_external_source_links_stale_write_protection.sql`；MCP 复查 `prevent_external_source_links_stale_write` 函数存在，`trg_external_source_links_prevent_stale_write` 触发器存在且启用。该项补上 SiYuan / external source 指针的服务端 stale-write 最后防线，避免旧离线 pending upsert 回滚较新的 `role`、`sort_order`、`deleted_at`。
-- **Cloudflare 官方约束复核通过**：Context7 查询到的 Cloudflare Pages 文档仍以 Wrangler / API Token / Account ID 作为 Direct Upload CI 主路径；`_headers` 的 `! Link` 是关闭自动 Link header 生成的官方写法；`_headers` 仍有 100 条规则上限；Pages Functions 存在时不支持 Dashboard Direct Upload。当前仓库选择 `wrangler@3.114.0`、`public/_headers`、`dist/browser`、无 Pages Functions 的静态 SPA 路径与这些约束一致。
+- **Cloudflare 官方约束复核通过**：Context7 查询到的 Cloudflare Pages 文档仍以 Wrangler / API Token / Account ID 作为 Direct Upload CI 主路径；`_headers` 的 `! Link` 是关闭自动 Link header 生成的官方写法；`_headers` 仍有 100 条规则上限；Pages Functions 存在时不支持 Dashboard Direct Upload。当前仓库选择 `wrangler@3.112.0`、`public/_headers`、`dist/browser`、无 Pages Functions 的静态 SPA 路径与这些约束一致。
 - **CI/CD 实现优先级正确**：`.github/workflows/deploy-cloudflare-pages.yml` 已拆分 secret-free test job 与 build/deploy job；Cloudflare token 只出现在 deploy step；deploy 后等待 `/` 与 `/version.json` 健康，再跑 header smoke。`.github/workflows/deploy-cloudflare-pages-dry-run.yml` 可在不读取发布 token 的情况下跑 deterministic build、artifact guard 和本地 Pages smoke。
 - **预览环境策略已从早期 `PREVIEW_*` 草案收敛为 GitHub Environment**：当前事实源是 `NanoFlow-Preview` 环境中同名 `NG_APP_SUPABASE_URL` / `NG_APP_SUPABASE_ANON_KEY` secrets；合同测试明确禁止 `PREVIEW_NG_APP_*` 和生产 fallback 表达式进入 workflow。这比 `PREVIEW_* || PROD_*` 更不容易误把 PR preview 打到生产项目。
 - **PWA / 缓存 / 产物门禁已落地**：`public/_headers` 使 app shell、`ngsw.json`、SW 脚本、`version.json` no-store，hash bundle immutable，非 hash public assets revalidate；artifact guard 覆盖 `version.json`、`artifact-manifest.json`、TWA assetlinks、无 `_redirects`、无 sourcemap、无 Pages Functions、安全 worker 不进 `ngsw.json`。
@@ -229,7 +229,7 @@ Cloudflare Pages
 
 | 常量 | 值 | 用途 |
 | --- | --- | --- |
-| `WRANGLER_VERSION` | `3.114.0` | Direct Upload 首版验证版本；升级必须通过独立 PR 和 `wrangler pages dev/deploy` dry-run |
+| `WRANGLER_VERSION` | `3.112.0` | 当前安全 pin 版本；`3.114.0` 在 `nodejs_compat` 路径上存在已知部署故障，升级必须通过独立 PR 和 `wrangler pages dev/deploy` dry-run |
 | `SENTRY_CLI_VERSION` | `2.58.2` | 首版 sourcemap inject/upload pin 版本；不是为了规避已知漏洞，而是避免 `latest` 漂移，后续升级需显式验证 Debug ID 与 `ngsw.json` 流程 |
 | `HSTS_STABILIZATION_WINDOW` | `7 天` | Cloudflare TLS 与所有相关子域稳定观察窗口；首版迁移不启用 HSTS |
 | `ROOT_JS_ARTIFACT_ALLOW_PATTERN` | `^(main\|polyfills\|chunk\|worker\|runtime)-\|^(sw-composed\|ngsw-worker\|safety-worker\|worker-basic\.min)\.js$` | 根目录 JS 产物 allow-list；它不是缓存分类器。`runtime-` 是防御性兜底（`@angular/build:application` 走 esbuild，当前不会产出独立 `runtime-*.js`，仅在未来切回 webpack 或第三方 bundler 时才会出现）；`worker-basic.min.js` 虽然匹配 `worker-` 前缀，但必须由精确 no-store 规则覆盖，禁止静态 `/worker-*.js` immutable 规则；新增 root JS 入口时必须同步更新 |
@@ -742,7 +742,7 @@ jobs:
       READ_ONLY_PREVIEW: ${{ vars.READ_ONLY_PREVIEW || 'true' }}
       CANONICAL_PRODUCTION_ORIGIN: ${{ vars.CANONICAL_PRODUCTION_ORIGIN || 'https://app.nanoflow.app' }}
       CLOUDFLARE_PAGES_PROJECT_NAME: ${{ secrets.CLOUDFLARE_PAGES_PROJECT_NAME }}
-      WRANGLER_VERSION: 3.114.0
+      WRANGLER_VERSION: 3.112.0
       SENTRY_CLI_VERSION: 2.58.2
       ROOT_JS_ARTIFACT_ALLOW_PATTERN: '^(main|polyfills|chunk|worker|runtime)-|^(sw-composed|ngsw-worker|safety-worker|worker-basic\.min)\.js$'
 
@@ -2334,14 +2334,14 @@ CREATE OR REPLACE FUNCTION cleanup_preview_user_data() ...
 
 阶段 1 必做：
 
-- **wrangler**：`WRANGLER_VERSION` 环境变量（§3.2 定义）固定到 `3.114.0`，所有 `npx wrangler@...` 调用必须显式引用该变量，不要让 `npx wrangler` 隐式跟随 latest。
+- **wrangler**：`WRANGLER_VERSION` 环境变量（§3.2 定义）固定到 `3.112.0`，所有 `npx wrangler@...` 调用必须显式引用该变量，不要让 `npx wrangler` 隐式跟随 latest；`3.114.0` 已因 `nodejs_compat` 部署故障退役。
 - **Sentry CLI**：`SENTRY_CLI_VERSION` 固定到 `2.58.2`，`npx @sentry/cli@"$SENTRY_CLI_VERSION"` 显式 pinning，不改 `package.json`。
 
 不推荐替换为 `cloudflare/wrangler-action@v3`，理由：
 
 - 该 action 的 `wranglerVersion` 输入也只能 pin wrangler 本体，不会减少 retry/超时控制需求。
 - §5.3 已用 `nick-fields/retry@v3` 包裹 `npx wrangler` 直接调用，对 5xx/401 限流可控。两套机制混用反而复杂。
-- 保持单一 invocation 风格便于本地复现：开发者只需 `WRANGLER_VERSION=3.114.0 npx wrangler@$WRANGLER_VERSION pages deploy dist/browser ...` 即可对齐 CI。
+- 保持单一 invocation 风格便于本地复现：开发者只需 `WRANGLER_VERSION=3.112.0 npx wrangler@$WRANGLER_VERSION pages deploy dist/browser ...` 即可对齐 CI。
 
 升级路径：
 

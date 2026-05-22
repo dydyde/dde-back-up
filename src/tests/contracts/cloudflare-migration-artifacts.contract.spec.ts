@@ -5,6 +5,10 @@ import { describe, expect, it } from 'vitest';
 const root = process.cwd();
 const read = (relativePath: string): string =>
   fs.readFileSync(path.join(root, relativePath), 'utf-8');
+const EXPECTED_WRANGLER_VERSION = '3.112.0';
+const WRANGLER_VERSION_REFERENCE = '${WRANGLER_VERSION}';
+const collectWranglerInvocations = (workflow: string): string[] =>
+  Array.from(workflow.matchAll(/wrangler@([^\s"']+)/g), (match) => match[1]);
 const readAllMigrations = (): string =>
   fs.readdirSync(path.join(root, 'supabase', 'migrations'))
     .filter((file) => file.endsWith('.sql'))
@@ -310,13 +314,25 @@ describe('Cloudflare migration artifact contracts', () => {
   it('Cloudflare workflows use the pinned Wrangler version env instead of hardcoded command versions', () => {
     const deployWorkflow = read('.github/workflows/deploy-cloudflare-pages.yml');
     const dryRunWorkflow = read('.github/workflows/deploy-cloudflare-pages-dry-run.yml');
+    const deployWranglerInvocations = collectWranglerInvocations(deployWorkflow);
+    const dryRunWranglerInvocations = collectWranglerInvocations(dryRunWorkflow);
 
-    expect(deployWorkflow).toContain("WRANGLER_VERSION: '3.114.0'");
-    expect(dryRunWorkflow).toContain("WRANGLER_VERSION: '3.114.0'");
-    expect(deployWorkflow).toContain('wrangler@${WRANGLER_VERSION}');
-    expect(dryRunWorkflow).toContain('wrangler@${WRANGLER_VERSION}');
-    expect(deployWorkflow).not.toContain('wrangler@3.114.0');
-    expect(dryRunWorkflow).not.toContain('wrangler@3.114.0');
+    expect(deployWorkflow).toContain(`WRANGLER_VERSION: '${EXPECTED_WRANGLER_VERSION}'`);
+    expect(dryRunWorkflow).toContain(`WRANGLER_VERSION: '${EXPECTED_WRANGLER_VERSION}'`);
+    expect(deployWranglerInvocations.length).toBeGreaterThan(0);
+    expect(dryRunWranglerInvocations.length).toBeGreaterThan(0);
+    expect(deployWranglerInvocations).toEqual(
+      expect.arrayContaining([WRANGLER_VERSION_REFERENCE]),
+    );
+    expect(dryRunWranglerInvocations).toEqual(
+      expect.arrayContaining([WRANGLER_VERSION_REFERENCE]),
+    );
+    expect(deployWranglerInvocations.every((invocation) => invocation === WRANGLER_VERSION_REFERENCE)).toBe(true);
+    expect(dryRunWranglerInvocations.every((invocation) => invocation === WRANGLER_VERSION_REFERENCE)).toBe(true);
+    expect(deployWorkflow).not.toContain('wrangler@latest');
+    expect(dryRunWorkflow).not.toContain('wrangler@latest');
+    expect(deployWorkflow).not.toContain(`wrangler@${EXPECTED_WRANGLER_VERSION}`);
+    expect(dryRunWorkflow).not.toContain(`wrangler@${EXPECTED_WRANGLER_VERSION}`);
   });
 
   it('keeps Supabase resource hints aligned with the injected Supabase URL', () => {
