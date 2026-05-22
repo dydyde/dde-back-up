@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   hasAndroidWidgetBootstrapFlag,
   normalizeAndroidWidgetBootstrapRequest,
+  normalizeStartupEntryIntent,
   resolveAndroidWidgetBootstrapRequest,
   resolveStartupEntryIntent,
   resolveStartupEntryRouteIntent,
@@ -30,6 +31,16 @@ describe('resolveStartupEntryIntent', () => {
     });
   });
 
+  it('should preserve Android widget bootstrap source on twa envelopes', () => {
+    expect(resolveStartupEntryIntent('/projects?entry=twa&intent=open-workspace&widgetBootstrap=1')).toEqual({
+      entry: 'twa',
+      intent: 'open-workspace',
+      rawIntent: 'open-workspace',
+      androidWidgetBootstrap: true,
+      widgetGateEntryId: null,
+    });
+  });
+
   it('should preserve an invalid intent so callers can degrade safely', () => {
     expect(resolveStartupEntryIntent('/projects?entry=shortcut&intent=not-real')).toEqual({
       entry: 'shortcut',
@@ -41,6 +52,24 @@ describe('resolveStartupEntryIntent', () => {
 
   it('should ignore unknown entry sources', () => {
     expect(resolveStartupEntryIntent('/projects?entry=share&intent=open-workspace')).toBeNull();
+  });
+});
+
+describe('normalizeStartupEntryIntent', () => {
+  it('should restore Android widget bootstrap source from persisted startup intent', () => {
+    expect(normalizeStartupEntryIntent({
+      entry: 'twa',
+      intent: 'open-workspace',
+      rawIntent: 'open-workspace',
+      androidWidgetBootstrap: true,
+      widgetGateEntryId: null,
+    })).toEqual({
+      entry: 'twa',
+      intent: 'open-workspace',
+      rawIntent: 'open-workspace',
+      androidWidgetBootstrap: true,
+      widgetGateEntryId: null,
+    });
   });
 });
 

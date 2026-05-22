@@ -1492,11 +1492,17 @@ export class WorkspaceShellComponent implements OnInit, OnDestroy, AfterViewInit
   }
 
   private primeWidgetWorkspaceGateSync(startupEntryIntent: StartupEntryIntent): void {
-    if (startupEntryIntent.entry !== 'widget' || startupEntryIntent.intent !== 'open-workspace') {
+    const isAndroidWidgetBootstrapOpen = startupEntryIntent.entry === 'twa'
+      && startupEntryIntent.androidWidgetBootstrap === true;
+    if (
+      startupEntryIntent.intent !== 'open-workspace'
+      || (startupEntryIntent.entry !== 'widget' && !isAndroidWidgetBootstrapOpen)
+    ) {
       return;
     }
 
-    const primeKey = `${startupEntryIntent.entry}:${startupEntryIntent.rawIntent ?? ''}:${this.routeUrl()}`;
+    const primeSource = isAndroidWidgetBootstrapOpen ? 'android-widget-bootstrap' : startupEntryIntent.entry;
+    const primeKey = `${primeSource}:${startupEntryIntent.rawIntent ?? ''}:${this.routeUrl()}`;
     if (this.primedWidgetWorkspaceGateSyncKey === primeKey) {
       return;
     }

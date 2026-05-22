@@ -309,6 +309,7 @@ describe('WorkspaceShellComponent Android widget bootstrap', () => {
       entry: 'twa',
       intent: 'open-workspace',
       rawIntent: 'open-workspace',
+      androidWidgetBootstrap: true,
       widgetGateEntryId: null,
     });
     expect(persistPendingAndroidWidgetBootstrapToStorage).toHaveBeenCalledWith({
@@ -327,6 +328,7 @@ describe('WorkspaceShellComponent Android widget bootstrap', () => {
       entry: 'twa',
       intent: 'open-workspace',
       rawIntent: 'open-workspace',
+      androidWidgetBootstrap: true,
       widgetGateEntryId: null,
     });
     expect(consumeStartupEntryIntent).toHaveBeenCalledTimes(1);
@@ -370,6 +372,7 @@ describe('WorkspaceShellComponent Android widget bootstrap', () => {
       entry: 'twa',
       intent: 'open-workspace',
       rawIntent: 'open-workspace',
+      androidWidgetBootstrap: true,
       widgetGateEntryId: null,
     });
     expect(warn).toHaveBeenCalledWith('忽略不可信环境中的 Android widget bootstrap 请求');
@@ -406,6 +409,7 @@ describe('WorkspaceShellComponent Android widget bootstrap', () => {
       entry: 'twa',
       intent: 'open-workspace',
       rawIntent: 'open-workspace',
+      androidWidgetBootstrap: true,
       widgetGateEntryId: null,
     });
     expect(persistPendingAndroidWidgetBootstrapToStorage).toHaveBeenCalledWith(null);
@@ -413,6 +417,7 @@ describe('WorkspaceShellComponent Android widget bootstrap', () => {
       entry: 'twa',
       intent: 'open-workspace',
       rawIntent: 'open-workspace',
+      androidWidgetBootstrap: true,
       widgetGateEntryId: null,
     });
     expect(warn).toHaveBeenCalledWith('忽略损坏的 Android widget bootstrap 参数');
@@ -2575,6 +2580,76 @@ describe('WorkspaceShellComponent 输入事件处理', () => {
 
     expect(primeWidgetWorkspaceGateSync).toHaveBeenCalledTimes(1);
     expect(refreshFocusSessionFromCloud).toHaveBeenCalledWith('user-1');
+  });
+
+  it('TWA bootstrap 形式的小组件 open-workspace 也应触发同源 Gate 复核', () => {
+    const primeWidgetWorkspaceGateSync = vi.fn();
+    const refreshFocusSessionFromCloud = vi.fn();
+    const context = {
+      routeUrl: () => '/projects?entry=twa&intent=open-workspace&widgetBootstrap=1',
+      currentUserId: () => 'user-1',
+      focusStartupProbe: {
+        primeWidgetWorkspaceGateSync,
+      },
+      bootStage: {
+        isApplicationReady: () => false,
+      },
+      dockEngine: {
+        refreshFocusSessionFromCloud,
+      },
+      primedWidgetWorkspaceGateSyncKey: null,
+    } as unknown as WorkspaceShellComponent;
+
+    (WorkspaceShellComponent.prototype as unknown as {
+      primeWidgetWorkspaceGateSync: (this: WorkspaceShellComponent, startupEntryIntent: {
+        entry: 'shortcut' | 'widget' | 'twa';
+        intent: 'open-workspace' | null;
+        rawIntent: string | null;
+        androidWidgetBootstrap?: true;
+      }) => void;
+    }).primeWidgetWorkspaceGateSync.call(context, {
+      entry: 'twa',
+      intent: 'open-workspace',
+      rawIntent: 'open-workspace',
+      androidWidgetBootstrap: true,
+    });
+
+    expect(primeWidgetWorkspaceGateSync).toHaveBeenCalledTimes(1);
+    expect(refreshFocusSessionFromCloud).toHaveBeenCalledWith('user-1');
+  });
+
+  it('普通 TWA open-workspace 不应绕过已处理过的大门状态', () => {
+    const primeWidgetWorkspaceGateSync = vi.fn();
+    const refreshFocusSessionFromCloud = vi.fn();
+    const context = {
+      routeUrl: () => '/projects?entry=twa&intent=open-workspace',
+      currentUserId: () => 'user-1',
+      focusStartupProbe: {
+        primeWidgetWorkspaceGateSync,
+      },
+      bootStage: {
+        isApplicationReady: () => false,
+      },
+      dockEngine: {
+        refreshFocusSessionFromCloud,
+      },
+      primedWidgetWorkspaceGateSyncKey: null,
+    } as unknown as WorkspaceShellComponent;
+
+    (WorkspaceShellComponent.prototype as unknown as {
+      primeWidgetWorkspaceGateSync: (this: WorkspaceShellComponent, startupEntryIntent: {
+        entry: 'shortcut' | 'widget' | 'twa';
+        intent: 'open-workspace' | null;
+        rawIntent: string | null;
+      }) => void;
+    }).primeWidgetWorkspaceGateSync.call(context, {
+      entry: 'twa',
+      intent: 'open-workspace',
+      rawIntent: 'open-workspace',
+    });
+
+    expect(primeWidgetWorkspaceGateSync).not.toHaveBeenCalled();
+    expect(refreshFocusSessionFromCloud).not.toHaveBeenCalled();
   });
 
   it('consumeStartupEntryIntent 应在执行后保留当前深链接并清理一次性 startup query', () => {

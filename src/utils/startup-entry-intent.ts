@@ -17,6 +17,8 @@ export interface StartupEntryIntent {
   entry: StartupEntrySource;
   intent: StartupEntryIntentKind | null;
   rawIntent: string | null;
+  /** Android 小组件经 TWA bootstrap 进入时，entry 会是 twa，这里保留小组件来源语义。 */
+  androidWidgetBootstrap?: true;
   /** 小组件大门按钮透传的 BlackBoxEntry ID（mark-gate-read / mark-gate-complete 专用）。 */
   widgetGateEntryId: string | null;
 }
@@ -139,12 +141,18 @@ export function resolveStartupEntryIntent(routeUrl: string | null): StartupEntry
 
   const rawIntent = params.get('intent');
   const rawGateEntryId = params.get('widgetGateEntryId');
-  return {
+  const intent: StartupEntryIntent = {
     entry: rawEntry,
     intent: isStartupEntryIntentKind(rawIntent) ? rawIntent : null,
     rawIntent,
     widgetGateEntryId: isUuidLike(rawGateEntryId) ? rawGateEntryId : null,
   };
+
+  if (rawEntry === 'twa' && params.get('widgetBootstrap') === '1') {
+    intent.androidWidgetBootstrap = true;
+  }
+
+  return intent;
 }
 
 export function normalizeStartupEntryIntent(value: unknown): StartupEntryIntent | null {
@@ -169,12 +177,18 @@ export function normalizeStartupEntryIntent(value: unknown): StartupEntryIntent 
 
   const rawGateEntryId = typeof record.widgetGateEntryId === 'string' ? record.widgetGateEntryId : null;
 
-  return {
+  const intentValue: StartupEntryIntent = {
     entry: rawEntry,
     intent,
     rawIntent,
     widgetGateEntryId: isUuidLike(rawGateEntryId) ? rawGateEntryId : null,
   };
+
+  if (record.androidWidgetBootstrap === true) {
+    intentValue.androidWidgetBootstrap = true;
+  }
+
+  return intentValue;
 }
 
 export function resolveAndroidWidgetBootstrapRequest(routeUrl: string | null): AndroidWidgetBootstrapRequest | null {
