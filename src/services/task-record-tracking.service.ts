@@ -462,15 +462,12 @@ export class TaskRecordTrackingService {
       const project = this.projectState.activeProject();
       if (!project) return;
 
-      const justDeletedTaskIds = project.tasks
-        .filter(t => t.deletedAt && explicitIds.some(id => {
-          return t.id === id || this.isDescendantOf(t, id, project.tasks);
-        }))
-        .map(t => t.id);
+      const justDeletedTaskIds = this.collectJustDeletedTaskIds(project.tasks, explicitIds);
+      const justDeletedTaskIdSet = new Set(justDeletedTaskIds);
 
       const tombstoneTimestamps = Object.fromEntries(
         project.tasks
-          .filter(t => justDeletedTaskIds.includes(t.id))
+          .filter(t => justDeletedTaskIdSet.has(t.id))
           .map(t => [t.id, t.deletedAt ?? t.updatedAt ?? new Date().toISOString()])
       );
 
@@ -495,19 +492,39 @@ export class TaskRecordTrackingService {
     }
   }
 
-  /** 检查任务是否是某个 ID 的后代 */
-  private isDescendantOf(task: Task, ancestorId: string, _allTasks: Task[]): boolean {
-    let current = task;
-    const visited = new Set<string>();
+  private collectJustDeletedTaskIds(tasks: Task[], explicitIds: string[]): string[] {
+    const tasksById = new Map(tasks.map((task) => [task.id, task] as const));
+    const childrenByParent = new Map<string, string[]>();
 
-    while (current.parentId && !visited.has(current.id)) {
-      visited.add(current.id);
-      if (current.parentId === ancestorId) return true;
-      const parent = this.projectState.getTask(current.parentId);
-      if (!parent) break;
-      current = parent;
+    for (const task of tasks) {
+      if (!task.parentId) continue;
+
+      const childIds = childrenByParent.get(task.parentId) ?? [];
+      childIds.push(task.id);
+      childrenByParent.set(task.parentId, childIds);
     }
 
-    return false;
+    const resultIds = new Set<string>();
+    const visitedIds = new Set<string>();
+    const stack = [...new Set(explicitIds)];
+
+    while (stack.length > 0) {
+      const currentId = stack.pop();
+      if (!currentId || visitedIds.has(currentId)) continue;
+
+      visitedIds.add(currentId);
+      const task = tasksById.get(currentId);
+      if (!task) continue;
+
+      if (task.deletedAt) {
+        resultIds.add(currentId);
+      }
+
+      for (const childId of childrenByParent.get(currentId) ?? []) {
+        stack.push(childId);
+      }
+    }
+
+    return [...resultIds];
   }
 }

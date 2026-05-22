@@ -74,6 +74,140 @@ export class TaskTrashService {
     this.recorder.recordAndUpdate(mutator);
   }
 
+  private createEmptyDeleteResult(): DeleteResult {
+    return { deletedTaskIds: new Set(), deletedConnectionIds: [] };
+  }
+
+  private createTaskMap(tasks: Task[]): Map<string, Task> {
+    return new Map(tasks.map((task) => [task.id, task] as const));
+  }
+
+  private buildChildrenByParent(tasks: Task[], includeDeletedTasks: boolean): Map<string, Task[]> {
+    const childrenByParent = new Map<string, Task[]>();
+
+    for (const task of tasks) {
+      if (!includeDeletedTasks && task.deletedAt) continue;
+      if (!task.parentId) continue;
+
+      const children = childrenByParent.get(task.parentId) ?? [];
+      children.push(task);
+      childrenByParent.set(task.parentId, children);
+    }
+
+    return childrenByParent;
+  }
+
+  private normalizeActiveTaskIds(explicitIds: string[], tasksById: Map<string, Task>): string[] {
+    const seen = new Set<string>();
+    const normalizedIds: string[] = [];
+
+    for (const id of explicitIds) {
+      if (seen.has(id)) continue;
+
+      const task = tasksById.get(id);
+      if (!task || task.deletedAt) continue;
+
+      seen.add(id);
+      normalizedIds.push(id);
+    }
+
+    return normalizedIds;
+  }
+
+  private collectCascadeTaskIds(
+    rootIds: string[],
+    tasksById: Map<string, Task>,
+    childrenByParent: Map<string, Task[]>
+  ): Set<string> {
+    const idsToCollect = new Set<string>();
+    const stack = [...rootIds];
+
+    while (stack.length > 0) {
+      const currentId = stack.pop();
+      if (!currentId || idsToCollect.has(currentId)) continue;
+
+      const currentTask = tasksById.get(currentId);
+      if (!currentTask || currentTask.deletedAt) continue;
+
+      idsToCollect.add(currentId);
+      for (const childTask of childrenByParent.get(currentId) ?? []) {
+        stack.push(childTask.id);
+      }
+    }
+
+    return idsToCollect;
+  }
+
+  private groupConnectionsByTaskId(connections: Connection[]): Map<string, Connection[]> {
+    const connectionsByTaskId = new Map<string, Connection[]>();
+
+    for (const connection of connections) {
+      for (const taskId of [connection.source, connection.target]) {
+        const taskConnections = connectionsByTaskId.get(taskId) ?? [];
+        taskConnections.push(connection);
+        connectionsByTaskId.set(taskId, taskConnections);
+      }
+    }
+
+    return connectionsByTaskId;
+  }
+
+  private collectSavedConnections(tasks: Task[], idsToRestore: Set<string>): Connection[] {
+    const connectionsById = new Map<string, Connection>();
+
+    for (const task of tasks) {
+      if (!idsToRestore.has(task.id)) continue;
+
+      for (const connection of task.deletedConnections ?? []) {
+        connectionsById.set(connection.id, connection);
+      }
+    }
+
+    return [...connectionsById.values()];
+  }
+
+  private createDeletedTaskDraft(
+    task: Task,
+    now: string,
+    connectionsByTaskId: Map<string, Connection[]>
+  ): Task {
+    const taskConnections = connectionsByTaskId.get(task.id) ?? [];
+    return {
+      ...task,
+      deletedAt: now,
+      updatedAt: now,
+      deletedMeta: {
+        parentId: task.parentId,
+        stage: task.stage,
+        order: task.order,
+        rank: task.rank,
+        x: task.x,
+        y: task.y,
+        parkingMeta: task.parkingMeta ?? null,
+      },
+      parkingMeta: null,
+      stage: null,
+      deletedConnections: taskConnections.length > 0 ? taskConnections : undefined,
+    };
+  }
+
+  private applyBatchSoftDeleteMutation(
+    project: Project,
+    idsToDelete: Set<string>,
+    now: string,
+    connectionsByTaskId: Map<string, Connection[]>
+  ): Project {
+    return this.layoutService.rebalance({
+      ...project,
+      tasks: project.tasks.map(task => idsToDelete.has(task.id)
+        ? this.createDeletedTaskDraft(task, now, connectionsByTaskId)
+        : task),
+      connections: project.connections.filter(
+        connection => !idsToDelete.has(connection.source) && !idsToDelete.has(connection.target)
+      )
+    });
+  }
+
   // ========== 公开方法 ==========
   
   /**
@@ -85,7 +219,7 @@ export class TaskTrashService {
   deleteTask(taskId: string, keepChildren: boolean = false): DeleteResult {
     const activeP = this.getActiveProject();
     if (!activeP) {
-      return { deletedTaskIds: new Set(), deletedConnectionIds: [] };
+      return this.createEmptyDeleteResult();
     }
     
     const task = this.projectState.getTask(taskId);
@@ -190,6 +324,54 @@ export class TaskTrashService {
       deletedConnectionIds: deletedConnections.map(c => c.id)
     };
   }
+
+  /**
+   * 批量软删除任务（移动到回收站）
+   *
+   * 父子任务同时选中时只写入一次，避免二次软删覆盖 deletedMeta / deletedConnections。
+   */
+  deleteTasksBatch(explicitIds: string[]): DeleteResult {
+    const activeP = this.getActiveProject();
+    if (!activeP || explicitIds.length === 0) {
+      return this.createEmptyDeleteResult();
+    }
+
+    const tasksById = this.createTaskMap(activeP.tasks);
+    const normalizedExplicitIds = this.normalizeActiveTaskIds(explicitIds, tasksById);
+    if (normalizedExplicitIds.length === 0) {
+      return this.createEmptyDeleteResult();
+    }
+
+    const childrenByParent = this.buildChildrenByParent(activeP.tasks, false);
+    const idsToDelete = this.collectCascadeTaskIds(normalizedExplicitIds, tasksById, childrenByParent);
+    if (idsToDelete.size === 0) {
+      return this.createEmptyDeleteResult();
+    }
+
+    const now = new Date().toISOString();
+    const deletedConnections = activeP.connections.filter(
+      (connection) => idsToDelete.has(connection.source) || idsToDelete.has(connection.target)
+    );
+    const connectionsByTaskId = this.groupConnectionsByTaskId(deletedConnections);
+
+    this.recordAndUpdate(project => this.applyBatchSoftDeleteMutation(
+      project,
+      idsToDelete,
+      now,
+      connectionsByTaskId
+    ));
+
+    this.logger.info(`批量软删除任务: 显式 ${normalizedExplicitIds.length} 个, 共删除 ${idsToDelete.size} 个任务, ${deletedConnections.length} 条连接`);
+
+    for (const id of idsToDelete) {
+      this.parkingService.handleTaskSoftDelete(id);
+    }
+
+    return {
+      deletedTaskIds: idsToDelete,
+      deletedConnectionIds: deletedConnections.map(connection => connection.id)
+    };
+  }
   
   /**
    * 永久删除任务（不可恢复）
@@ -246,16 +428,23 @@ export class TaskTrashService {
       return { restoredTaskIds: new Set(), restoredConnectionIds: [] };
     }
     
-    const savedConnections = (mainTask.deletedConnections) || [];
-    
     const idsToRestore = new Set<string>();
+    const tasksById = this.createTaskMap(activeP.tasks);
+    const childrenByParent = this.buildChildrenByParent(activeP.tasks, true);
     const stack = [taskId];
     while (stack.length > 0) {
-      const id = stack.pop()!;
+      const id = stack.pop();
+      if (!id) continue;
       if (idsToRestore.has(id)) continue;
       idsToRestore.add(id);
-      activeP.tasks.filter(t => t.parentId === id).forEach(child => stack.push(child.id));
+      for (const childTask of childrenByParent.get(id) ?? []) {
+        if (tasksById.has(childTask.id)) {
+          stack.push(childTask.id);
+        }
+      }
     }
+
+    const savedConnections = this.collectSavedConnections(activeP.tasks, idsToRestore);
     
     const restoredConnectionIds: string[] = [];
     const now = new Date().toISOString();
@@ -322,8 +511,15 @@ export class TaskTrashService {
       const existingConnKeys = new Set(
         p.connections.map(c => `${c.source}->${c.target}`)
       );
+      const activeOrRestoredTaskIds = new Set(
+        restoredTasks
+          .filter(task => !task.deletedAt)
+          .map(task => task.id)
+      );
       const connectionsToRestore = savedConnections.filter(
-        (c: Connection) => !existingConnKeys.has(`${c.source}->${c.target}`)
+        (connection: Connection) => !existingConnKeys.has(`${connection.source}->${connection.target}`)
+          && activeOrRestoredTaskIds.has(connection.source)
+          && activeOrRestoredTaskIds.has(connection.target)
       );
       
       restoredConnectionIds.push(...connectionsToRestore.map((c: Connection) => c.id));
@@ -450,24 +646,11 @@ export class TaskTrashService {
       return { total: 0, explicit: 0, cascaded: 0 };
     }
     
-    const allIdsToDelete = new Set<string>();
-    const stack = [...explicitIds];
-    
-    while (stack.length > 0) {
-      const currentId = stack.pop()!;
-      if (allIdsToDelete.has(currentId)) continue;
-      
-      const task = this.projectState.getTask(currentId);
-      if (!task || task.deletedAt) continue;
-      
-      allIdsToDelete.add(currentId);
-      
-      activeP.tasks
-        .filter(t => t.parentId === currentId && !t.deletedAt)
-        .forEach(child => stack.push(child.id));
-    }
-    
-    const explicitCount = explicitIds.filter(id => allIdsToDelete.has(id)).length;
+    const tasksById = this.createTaskMap(activeP.tasks);
+    const normalizedExplicitIds = this.normalizeActiveTaskIds(explicitIds, tasksById);
+    const childrenByParent = this.buildChildrenByParent(activeP.tasks, false);
+    const allIdsToDelete = this.collectCascadeTaskIds(normalizedExplicitIds, tasksById, childrenByParent);
+    const explicitCount = normalizedExplicitIds.filter(id => allIdsToDelete.has(id)).length;
     const cascadedCount = allIdsToDelete.size - explicitCount;
     
     return {

@@ -359,16 +359,11 @@ export class TaskOperationService {
    * 
    * @param explicitIds 用户显式选中的任务 ID 列表
    * @returns 实际删除的任务数量（含级联子任务）
-   * @see TaskTrashService.deleteTask
+   * @see TaskTrashService.deleteTasksBatch
    */
   deleteTasksBatch(explicitIds: string[]): number {
-    // 【P1-14 修复】累加所有删除结果，而非仅返回第一个
-    let totalDeleted = 0;
-    for (const id of explicitIds) {
-      const result = this.trashService.deleteTask(id, false);
-      totalDeleted += result.deletedTaskIds.size;
-    }
-    return totalDeleted;
+    const result = this.trashService.deleteTasksBatch(explicitIds);
+    return result.deletedTaskIds.size;
   }
   
   /**

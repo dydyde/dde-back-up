@@ -62,9 +62,11 @@ describe('TaskTrashService', () => {
   let mockLayoutService: Partial<LayoutService>;
   let mockTombstoneService: { clearLocalTombstones: ReturnType<typeof vi.fn> };
   let currentProject: Project | null;
+  let recordAndUpdateCalls: number;
   
   beforeEach(() => {
     currentProject = null;
+    recordAndUpdateCalls = 0;
     
     const loggerMock = {
       info: vi.fn(),
@@ -88,6 +90,7 @@ describe('TaskTrashService', () => {
     
     const mockRecorder = {
       recordAndUpdate: (mutator: (p: Project) => Project) => {
+        recordAndUpdateCalls++;
         if (currentProject) {
           currentProject = mutator(currentProject);
         }
@@ -207,6 +210,65 @@ describe('TaskTrashService', () => {
       expect(result.deletedConnectionIds).toContain('conn1');
       expect(result.deletedConnectionIds).toContain('conn2');
       expect(currentProject.connections).toHaveLength(0);
+    });
+
+    it('批量删除父子重叠选择应只写入一次并保留原始恢复元数据', () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-04-23T02:00:00.000Z'));
+
+      const root = createTask({ id: 'root', stage: 1, order: 1, rank: 100, parentId: null });
+      const child = createTask({ id: 'child', stage: 2, order: 7, rank: 700, parentId: 'root' });
+      const grandchild = createTask({ id: 'grandchild', stage: 3, order: 9, rank: 900, parentId: 'child' });
+      currentProject = createProject([root, child, grandchild]);
+      currentProject.connections = [
+        { id: 'conn-root-child', source: 'root', target: 'child' },
+        { id: 'conn-child-grandchild', source: 'child', target: 'grandchild' },
+      ];
+
+      try {
+        const result = service.deleteTasksBatch(['root', 'child', 'child']);
+
+        expect(recordAndUpdateCalls).toBe(1);
+        expect(result.deletedTaskIds).toEqual(new Set(['root', 'child', 'grandchild']));
+        expect(result.deletedConnectionIds).toEqual(['conn-root-child', 'conn-child-grandchild']);
+        expect(currentProject.connections).toHaveLength(0);
+
+        const deletedChild = currentProject.tasks.find(task => task.id === 'child');
+        expect(deletedChild?.deletedAt).toBe('2026-04-23T02:00:00.000Z');
+        expect(deletedChild?.deletedMeta).toMatchObject({ parentId: 'root', stage: 2, order: 7, rank: 700 });
+        expect(deletedChild?.stage).toBeNull();
+        expect(deletedChild?.deletedConnections?.map(connection => connection.id).sort()).toEqual([
+          'conn-child-grandchild',
+          'conn-root-child',
+        ]);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('恢复批量删除的父任务应恢复子树内保存的连接', () => {
+      const root = createTask({ id: 'root', stage: 1, parentId: null });
+      const child = createTask({ id: 'child', stage: 1, parentId: 'root' });
+      const grandchild = createTask({ id: 'grandchild', stage: 1, parentId: 'child' });
+      currentProject = createProject([root, child, grandchild]);
+      currentProject.connections = [
+        { id: 'conn-root-child', source: 'root', target: 'child' },
+        { id: 'conn-child-grandchild', source: 'child', target: 'grandchild' },
+      ];
+
+      service.deleteTasksBatch(['root']);
+      const restoreResult = service.restoreTask('root');
+
+      expect(restoreResult.restoredTaskIds).toEqual(new Set(['root', 'child', 'grandchild']));
+      expect(restoreResult.restoredConnectionIds.sort()).toEqual([
+        'conn-child-grandchild',
+        'conn-root-child',
+      ]);
+      expect(currentProject.connections.map(connection => connection.id).sort()).toEqual([
+        'conn-child-grandchild',
+        'conn-root-child',
+      ]);
+      expect(currentProject.tasks.every(task => task.deletedAt === null)).toBe(true);
     });
   });
   

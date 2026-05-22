@@ -4,7 +4,14 @@ import { ProjectStateService } from '../../../services/project-state.service';
 import { TaskOperationAdapterService } from '../../../services/task-operation-adapter.service';
 import { ToastService } from '../../../services/toast.service';
 import { Task } from '../../../models';
-import { TRASH_CONFIG } from '../../../config';
+import { FLOATING_TREE_CONFIG, TRASH_CONFIG } from '../../../config';
+
+interface TrashChildCountIndex {
+  childIdsByParent: Map<string, string[]>;
+  parentIdByTaskId: Map<string, string | null>;
+  remainingChildrenByTaskId: Map<string, number>;
+  childCountByTaskId: Map<string, number>;
+}
 
 /**
  * 回收站模态框组件
@@ -308,6 +315,10 @@ export class TrashModalComponent {
   archivedTasks = computed(() => 
     this.projectState.tasks().filter(t => t.status === 'archived' && !t.deletedAt)
   );
+
+  private readonly childCountByTaskId = computed(() => {
+    return this.buildChildCountByTaskId(this.projectState.tasks());
+  });
   
   /**
    * 格式化删除时间
@@ -340,23 +351,122 @@ export class TrashModalComponent {
    * 检查任务是否有子任务
    */
   hasChildren(taskId: string): boolean {
-    // 同时检查当前任务列表和已删除任务列表
-    const allTasks = [...this.projectState.tasks(), ...this.projectState.deletedTasks()];
-    return allTasks.some(t => t.parentId === taskId);
+    return (this.childCountByTaskId().get(taskId) ?? 0) > 0;
   }
   
   /**
    * 获取子任务数量（包括已删除的子任务）
    */
   getChildCount(taskId: string): number {
-    // 同时计算当前任务和已删除任务中的子任务
-    const allTasks = [...this.projectState.tasks(), ...this.projectState.deletedTasks()];
-    
-    const countDescendants = (id: string): number => {
-      const children = allTasks.filter(t => t.parentId === id);
-      return children.length + children.reduce((sum, child) => sum + countDescendants(child.id), 0);
+    return this.childCountByTaskId().get(taskId) ?? 0;
+  }
+
+  private buildChildCountByTaskId(tasks: Task[]): Map<string, number> {
+    const index = this.createChildCountIndex(tasks);
+    const processedIds = this.propagateLeafChildCounts(tasks, index);
+    this.applyFallbackChildCounts(tasks, index, processedIds);
+    return index.childCountByTaskId;
+  }
+
+  private createChildCountIndex(tasks: Task[]): TrashChildCountIndex {
+    const childIdsByParent = new Map<string, string[]>();
+    const parentIdByTaskId = new Map<string, string | null>();
+    const remainingChildrenByTaskId = new Map<string, number>();
+    const childCountByTaskId = new Map<string, number>();
+
+    for (const task of tasks) {
+      parentIdByTaskId.set(task.id, task.parentId);
+      childCountByTaskId.set(task.id, 0);
+    }
+
+    for (const task of tasks) {
+      if (!task.parentId || !parentIdByTaskId.has(task.parentId)) continue;
+
+      const childIds = childIdsByParent.get(task.parentId) ?? [];
+      childIds.push(task.id);
+      childIdsByParent.set(task.parentId, childIds);
+    }
+
+    for (const task of tasks) {
+      remainingChildrenByTaskId.set(task.id, childIdsByParent.get(task.id)?.length ?? 0);
+    }
+
+    return {
+      childIdsByParent,
+      parentIdByTaskId,
+      remainingChildrenByTaskId,
+      childCountByTaskId,
     };
-    return countDescendants(taskId);
+  }
+
+  private propagateLeafChildCounts(tasks: Task[], index: TrashChildCountIndex): Set<string> {
+    const stack = tasks
+      .filter(task => (index.remainingChildrenByTaskId.get(task.id) ?? 0) === 0)
+      .map(task => task.id);
+    const processedIds = new Set<string>();
+
+    while (stack.length > 0) {
+      const taskId = stack.pop();
+      if (!taskId || processedIds.has(taskId)) continue;
+
+      processedIds.add(taskId);
+      const parentId = index.parentIdByTaskId.get(taskId);
+      if (!parentId || !index.parentIdByTaskId.has(parentId)) continue;
+
+      index.childCountByTaskId.set(
+        parentId,
+        (index.childCountByTaskId.get(parentId) ?? 0) + 1 + (index.childCountByTaskId.get(taskId) ?? 0)
+      );
+      const remainingChildren = (index.remainingChildrenByTaskId.get(parentId) ?? 0) - 1;
+      index.remainingChildrenByTaskId.set(parentId, remainingChildren);
+      if (remainingChildren === 0) {
+        stack.push(parentId);
+      }
+    }
+
+    return processedIds;
+  }
+
+  private applyFallbackChildCounts(
+    tasks: Task[],
+    index: TrashChildCountIndex,
+    processedIds: Set<string>
+  ): void {
+    for (const task of tasks) {
+      if (processedIds.has(task.id)) continue;
+
+      index.childCountByTaskId.set(
+        task.id,
+        Math.max(
+          index.childCountByTaskId.get(task.id) ?? 0,
+          this.countDescendantsBounded(task.id, index.childIdsByParent)
+        )
+      );
+    }
+  }
+
+  private countDescendantsBounded(rootId: string, childIdsByParent: Map<string, string[]>): number {
+    const visitedIds = new Set<string>([rootId]);
+    const stack = (childIdsByParent.get(rootId) ?? []).map(childId => ({
+      taskId: childId,
+      depth: 1,
+    }));
+    let count = 0;
+
+    while (stack.length > 0) {
+      const frame = stack.pop();
+      if (!frame || visitedIds.has(frame.taskId)) continue;
+
+      visitedIds.add(frame.taskId);
+      count++;
+      if (frame.depth >= FLOATING_TREE_CONFIG.MAX_SUBTREE_DEPTH) continue;
+
+      for (const childId of childIdsByParent.get(frame.taskId) ?? []) {
+        stack.push({ taskId: childId, depth: frame.depth + 1 });
+      }
+    }
+
+    return count;
   }
   
   /**
