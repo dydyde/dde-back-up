@@ -1883,6 +1883,7 @@ describe('WorkspaceShellComponent 输入事件处理', () => {
       },
       startupTier: { markHandoffReady },
       workspaceReadyCommitted: false,
+      flushWidgetWorkspaceGateRecheck: vi.fn(),
     } as unknown as WorkspaceShellComponent;
 
     try {
@@ -2564,6 +2565,7 @@ describe('WorkspaceShellComponent 输入事件处理', () => {
         refreshFocusSessionFromCloud,
       },
       primedWidgetWorkspaceGateSyncKey: null,
+      flushWidgetWorkspaceGateRecheck: vi.fn(),
     } as unknown as WorkspaceShellComponent;
 
     (WorkspaceShellComponent.prototype as unknown as {
@@ -2598,6 +2600,7 @@ describe('WorkspaceShellComponent 输入事件处理', () => {
         refreshFocusSessionFromCloud,
       },
       primedWidgetWorkspaceGateSyncKey: null,
+      flushWidgetWorkspaceGateRecheck: vi.fn(),
     } as unknown as WorkspaceShellComponent;
 
     (WorkspaceShellComponent.prototype as unknown as {
@@ -2616,6 +2619,127 @@ describe('WorkspaceShellComponent 输入事件处理', () => {
 
     expect(primeWidgetWorkspaceGateSync).toHaveBeenCalledTimes(1);
     expect(refreshFocusSessionFromCloud).toHaveBeenCalledWith('user-1');
+  });
+
+  it('小组件 open-workspace 在探针已初始化但早于应用 ready 时，应在 ready 后补跑 Gate 复核', () => {
+    let applicationReady = false;
+    const primeWidgetWorkspaceGateSync = vi.fn();
+    const recheckGate = vi.fn();
+    const refreshFocusSessionFromCloud = vi.fn();
+    const context = {
+      routeUrl: () => '/projects/project-1/text?entry=widget&intent=open-workspace',
+      currentUserId: () => 'user-1',
+      focusStartupProbe: {
+        primeWidgetWorkspaceGateSync,
+        recheckGate,
+      },
+      bootStage: {
+        isApplicationReady: () => applicationReady,
+      },
+      dockEngine: {
+        refreshFocusSessionFromCloud,
+      },
+      primedWidgetWorkspaceGateSyncKey: null,
+      pendingWidgetWorkspaceGateRecheckKey: null,
+      focusProbeInitializedForUser: 'user-1',
+      flushWidgetWorkspaceGateRecheck: (WorkspaceShellComponent.prototype as unknown as {
+        flushWidgetWorkspaceGateRecheck: (this: WorkspaceShellComponent) => void;
+      }).flushWidgetWorkspaceGateRecheck,
+    } as unknown as WorkspaceShellComponent & {
+      pendingWidgetWorkspaceGateRecheckKey: string | null;
+      focusProbeInitializedForUser: string | null;
+    };
+
+    (WorkspaceShellComponent.prototype as unknown as {
+      primeWidgetWorkspaceGateSync: (this: WorkspaceShellComponent, startupEntryIntent: {
+        entry: 'shortcut' | 'widget' | 'twa';
+        intent: 'open-workspace' | null;
+        rawIntent: string | null;
+      }) => void;
+    }).primeWidgetWorkspaceGateSync.call(context, {
+      entry: 'widget',
+      intent: 'open-workspace',
+      rawIntent: 'open-workspace',
+    });
+
+    expect(recheckGate).not.toHaveBeenCalled();
+    applicationReady = true;
+
+    (WorkspaceShellComponent.prototype as unknown as {
+      flushWidgetWorkspaceGateRecheck: (this: WorkspaceShellComponent) => void;
+    }).flushWidgetWorkspaceGateRecheck.call(context);
+
+    expect(recheckGate).toHaveBeenCalledWith({
+      source: 'widget-open-workspace',
+      reloadLocal: false,
+    });
+    expect(context.pendingWidgetWorkspaceGateRecheckKey).toBeNull();
+  });
+
+  it('小组件 open-workspace 早于 Focus 探针初始化时，应交给 initialize 消费 remote-first 而不排重复复核', () => {
+    const primeWidgetWorkspaceGateSync = vi.fn();
+    const recheckGate = vi.fn();
+    const refreshFocusSessionFromCloud = vi.fn();
+    const context = {
+      routeUrl: () => '/projects/project-1/text?entry=widget&intent=open-workspace',
+      currentUserId: () => 'user-1',
+      focusStartupProbe: {
+        primeWidgetWorkspaceGateSync,
+        recheckGate,
+      },
+      bootStage: {
+        isApplicationReady: () => true,
+      },
+      dockEngine: {
+        refreshFocusSessionFromCloud,
+      },
+      primedWidgetWorkspaceGateSyncKey: null,
+      pendingWidgetWorkspaceGateRecheckKey: null,
+      focusProbeInitializedForUser: null,
+      flushWidgetWorkspaceGateRecheck: (WorkspaceShellComponent.prototype as unknown as {
+        flushWidgetWorkspaceGateRecheck: (this: WorkspaceShellComponent) => void;
+      }).flushWidgetWorkspaceGateRecheck,
+    } as unknown as WorkspaceShellComponent & {
+      pendingWidgetWorkspaceGateRecheckKey: string | null;
+      focusProbeInitializedForUser: string | null;
+    };
+
+    (WorkspaceShellComponent.prototype as unknown as {
+      primeWidgetWorkspaceGateSync: (this: WorkspaceShellComponent, startupEntryIntent: {
+        entry: 'shortcut' | 'widget' | 'twa';
+        intent: 'open-workspace' | null;
+        rawIntent: string | null;
+      }) => void;
+    }).primeWidgetWorkspaceGateSync.call(context, {
+      entry: 'widget',
+      intent: 'open-workspace',
+      rawIntent: 'open-workspace',
+    });
+
+    expect(primeWidgetWorkspaceGateSync).toHaveBeenCalledTimes(1);
+    expect(recheckGate).not.toHaveBeenCalled();
+    expect(context.pendingWidgetWorkspaceGateRecheckKey).toBeNull();
+  });
+
+  it('小组件 Gate pending 复核在用户未恢复前不应被 flush 清空', () => {
+    const recheckGate = vi.fn();
+    const context = {
+      currentUserId: () => null,
+      focusStartupProbe: { recheckGate },
+      bootStage: { isApplicationReady: () => true },
+      pendingWidgetWorkspaceGateRecheckKey: 'widget:open-workspace:/projects',
+      focusProbeInitializedForUser: null,
+    } as unknown as WorkspaceShellComponent & {
+      pendingWidgetWorkspaceGateRecheckKey: string | null;
+      focusProbeInitializedForUser: string | null;
+    };
+
+    (WorkspaceShellComponent.prototype as unknown as {
+      flushWidgetWorkspaceGateRecheck: (this: WorkspaceShellComponent) => void;
+    }).flushWidgetWorkspaceGateRecheck.call(context);
+
+    expect(recheckGate).not.toHaveBeenCalled();
+    expect(context.pendingWidgetWorkspaceGateRecheckKey).toBe('widget:open-workspace:/projects');
   });
 
   it('普通 TWA open-workspace 不应绕过已处理过的大门状态', () => {

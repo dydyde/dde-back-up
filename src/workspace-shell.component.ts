@@ -947,6 +947,7 @@ export class WorkspaceShellComponent implements OnInit, OnDestroy, AfterViewInit
   private rootStartupTextNavigationApplied = false;
   private handledStartupEntryIntentKey: string | null = null;
   private primedWidgetWorkspaceGateSyncKey: string | null = null;
+  private pendingWidgetWorkspaceGateRecheckKey: string | null = null;
   private readonly pendingAndroidWidgetBootstrap = signal<AndroidWidgetBootstrapRequest | null>(null);
   readonly pendingAndroidWidgetManualCallback = signal<AndroidWidgetBootstrapCallbackResult | null>(null);
   private readonly deferredStartupEntryIntent = signal<StartupEntryIntent | null>(null);
@@ -1510,12 +1511,34 @@ export class WorkspaceShellComponent implements OnInit, OnDestroy, AfterViewInit
     this.primedWidgetWorkspaceGateSyncKey = primeKey;
     this.focusStartupProbe.primeWidgetWorkspaceGateSync();
     this.dockEngine.refreshFocusSessionFromCloud(this.currentUserId());
-    if (this.bootStage.isApplicationReady() && this.focusProbeInitializedForUser === this.currentUserId()) {
-      void this.focusStartupProbe.recheckGate({
-        source: 'widget-open-workspace',
-        reloadLocal: false,
-      });
+
+    const currentUserId = this.currentUserId();
+    if (currentUserId && this.focusProbeInitializedForUser === currentUserId) {
+      this.pendingWidgetWorkspaceGateRecheckKey = primeKey;
     }
+
+    this.flushWidgetWorkspaceGateRecheck();
+  }
+
+  private flushWidgetWorkspaceGateRecheck(): void {
+    if (!this.pendingWidgetWorkspaceGateRecheckKey) {
+      return;
+    }
+
+    if (!this.bootStage.isApplicationReady()) {
+      return;
+    }
+
+    const currentUserId = this.currentUserId();
+    if (!currentUserId || this.focusProbeInitializedForUser !== currentUserId) {
+      return;
+    }
+
+    this.pendingWidgetWorkspaceGateRecheckKey = null;
+    void this.focusStartupProbe.recheckGate({
+      source: 'widget-open-workspace',
+      reloadLocal: false,
+    });
   }
 
   /** 小组件大门按钮 → 应用侧直接调用 BlackBoxService 对指定条目执行标记。 */
@@ -1936,6 +1959,7 @@ export class WorkspaceShellComponent implements OnInit, OnDestroy, AfterViewInit
     this.bootStage.noteLoaderHidden();
     this.startupTier.markHandoffReady();
     this.bootStage.markApplicationReady();
+    this.flushWidgetWorkspaceGateRecheck();
   }
 
   /** Focus 启动探针：登录后尽早执行本地 gate 检查 */
@@ -1954,6 +1978,7 @@ export class WorkspaceShellComponent implements OnInit, OnDestroy, AfterViewInit
 
       this.focusProbeInitializedForUser = userId;
       this.focusStartupProbe.initialize();
+      this.flushWidgetWorkspaceGateRecheck();
     });
   }
 
