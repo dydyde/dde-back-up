@@ -70,11 +70,24 @@ describe('startup launch contract', () => {
     expect(manifest.id).toBe('/launch.html');
   });
 
-  it('manifest should navigate an existing standalone client on launcher open', () => {
+  it('manifest should focus an existing standalone client on launcher open', () => {
     const manifestPath = path.join(process.cwd(), 'public', 'manifest.webmanifest');
     const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
 
-    expect(manifest.launch_handler).toEqual({ client_mode: 'navigate-existing' });
+    expect(manifest.launch_handler).toEqual({ client_mode: 'focus-existing' });
+  });
+
+  it('Android TWA launcher should reuse the existing task on warm app-icon opens', () => {
+    const manifestPath = path.join(process.cwd(), 'android', 'app', 'src', 'main', 'AndroidManifest.xml');
+    const manifest = fs.readFileSync(manifestPath, 'utf8');
+    const activityMatch = manifest.match(/<activity\s+[^>]*android:name="app\.nanoflow\.host\.NanoflowTwaLauncherActivity"[\s\S]*?<intent-filter>/);
+
+    expect(activityMatch?.[0]).toContain('android:launchMode="singleTask"');
+    expect(manifest).toContain('android.support.customtabs.trusted.LAUNCH_HANDLER_CLIENT_MODE');
+    expect(manifest).toContain('android:value="focus-existing"');
+    expect(activityMatch?.[0]).not.toContain('android:taskAffinity=""');
+    expect(activityMatch?.[0]).not.toContain('android:finishOnTaskLaunch="true"');
+    expect(activityMatch?.[0]).not.toContain('android:excludeFromRecents="true"');
   });
 
   it('manifest launch colors should match native TWA and web loader background', () => {

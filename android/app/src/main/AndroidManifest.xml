@@ -24,38 +24,18 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/nanoflow_twa_filepaths" />
         </provider>
-
         <!--
-          2026-04-20 TWA 闪白屏根因修复（方案 C：task 彻底隔离）。
-          现象：warm tap（HOME 后再次点击图标）出现一瞬 #F9F8F6 splash → Chrome CCT 黑色空窗的
-          "闪白"观感。abd logcat 抓到决定性证据：
-            ActivityTaskManager: START ... LAUNCH_SINGLE_TASK ... result code=2   // START_TASK_TO_FRONT
-            WindowManager: Try to add startingWindow type = STARTING_WINDOW_TYPE_SPLASH_SCREEN
-              resolvedTheme = Theme.NanoFlow.Twa.Launcher
-          原因：singleTask 让 LauncherActivity 长期驻留为 task 的 baseActivity；warm 点击图标时
-          Android 走 START_TASK_TO_FRONT（result code=2）路径，既不创建新实例也不触发
-          onCreate/onNewIntent，系统直接基于 baseActivity 的主题强制加 splash window，所有现有
-          splash-hold 补丁（installSplashScreen / super.onCreate(null) / onNewIntent override）
-          全部无法介入这条路径。
-          修复：
-          1. 去掉 android:launchMode="singleTask"，改回 standard（默认）。
-          2. 加 android:taskAffinity=""：空 affinity 让该 activity 不属于任何 task，每次 LAUNCHER
-             intent 都创建全新 task，旧 task 不会被 LAUNCHER intent 命中并 task-to-front。
-          3. 加 android:excludeFromRecents="true"：旧 task 不在 recents 里，避免累积。
-          4. 加 android:finishOnTaskLaunch="true"：哪怕系统边界情况仍尝试把旧 task 带回前台，
-             LauncherActivity 会立即 finish，不会再作为目标容器加 splash。
-          效果：每次点图标都走 cold path（onCreate → installSplashScreen 的 splash-hold → launchTwa →
-          Chrome CCT）。Chrome CCT intent 默认在此 task 内启动，LauncherActivity 在 CCT 就位后
-          被 ABH 基类 finish，旧 task 随 LauncherActivity finish + noHistory-style 清理被系统回收。
-          widget intent 路径（intentForWidget 已带 NEW_TASK | CLEAR_TASK）不受影响：空 affinity 下
-          CLEAR_TASK 等价于 NEW_TASK，每次都是全新 task。
+          PWA 图标 warm tap 必须优先复用已有 TWA task。
+          之前为了规避短暂启动白屏，曾用空 taskAffinity + finishOnTaskLaunch 强制每次点击都走
+          cold path；这会在用户已经看到文本栏后再次向 Chrome 发送默认启动 URL，表现为不到一秒
+          又回到 Web initial-loader 转圈。singleTask 让 HOME 后再次点击图标走 task-to-front，已有
+          文本栏保持交互态；真正需要深链/小组件跳转时，专用 widget intent 仍会显式带 NEW_TASK /
+          CLEAR_TASK 进入独立流程。
         -->
         <activity
             android:name="app.nanoflow.host.NanoflowTwaLauncherActivity"
-            android:excludeFromRecents="true"
             android:exported="true"
-            android:finishOnTaskLaunch="true"
-            android:taskAffinity=""
+            android:launchMode="singleTask"
             android:theme="@style/Theme.NanoFlow.Twa.Launcher">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -66,6 +46,9 @@
             <meta-data
                 android:name="android.support.customtabs.trusted.DEFAULT_URL"
                 android:value="${nanoflowDefaultUrl}" />
+            <meta-data
+                android:name="android.support.customtabs.trusted.LAUNCH_HANDLER_CLIENT_MODE"
+                android:value="focus-existing" />
             <meta-data
                 android:name="asset_statements"
                 android:resource="@string/asset_statements" />
