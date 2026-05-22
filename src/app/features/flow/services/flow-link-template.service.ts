@@ -641,7 +641,7 @@ export class FlowLinkTemplateService {
     // 构建面板配置对象，只在桌面端添加 toolTip 属性
     const panelConfig: Partial<go.Panel> & { toolTip?: go.Adornment } = {
       segmentIndex: NaN,
-      segmentFraction: 0.5,
+      segmentFraction: LAYOUT_CONFIG.AUTO_LAYOUT_CROSS_TREE_LABEL_TARGET_SIDE_FRACTION,
       cursor: "pointer",
       background: "transparent",
     };
@@ -660,7 +660,9 @@ export class FlowLinkTemplateService {
       new go.Binding(
         "segmentFraction",
         "labelSegmentFraction",
-        (fraction: number | undefined) => typeof fraction === 'number' ? fraction : 0.5,
+        (fraction: number | undefined) => typeof fraction === 'number'
+          ? fraction
+          : LAYOUT_CONFIG.AUTO_LAYOUT_CROSS_TREE_LABEL_TARGET_SIDE_FRACTION,
       ),
       new go.Binding(
         "segmentOffset",
@@ -680,11 +682,9 @@ export class FlowLinkTemplateService {
             let viewY = 0;
 
             if (diagram && link) {
-              // 使用连接线的中点作为参考（关联块标签通常在中点附近）
-              const midPoint = link.midPoint;
-              if (midPoint && isFinite(midPoint.x) && isFinite(midPoint.y)) {
-                // 转换为视图坐标
-                const viewPoint = diagram.transformDocToView(midPoint);
+              const labelPoint = obj.getDocumentPoint(go.Spot.Center);
+              if (labelPoint && isFinite(labelPoint.x) && isFinite(labelPoint.y)) {
+                const viewPoint = diagram.transformDocToView(labelPoint);
                 viewX = viewPoint.x;
                 viewY = viewPoint.y;
               } else {

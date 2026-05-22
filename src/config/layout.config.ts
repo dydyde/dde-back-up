@@ -88,6 +88,11 @@ export const LAYOUT_CONFIG = {
    */
   AUTO_LAYOUT_CROSS_TREE_LABEL_FRACTION_STEP: 0.22,
   /**
+   * 关联块默认落点：从 source 指向 target 的连线长度约 2/3 处，
+   * 也就是更靠近被关联目标端的 1/3 区域，避免压在连线正中遮挡走势。
+   */
+  AUTO_LAYOUT_CROSS_TREE_LABEL_TARGET_SIDE_FRACTION: 2 / 3,
+  /**
    * 【补丁 C 2026-04-23 / v2 调参 14:50】关联块垂直方向额外错开（像素/档）。
    * 解决短连线上多 label 时 fraction 距离不够的场景；与 fraction 双重保证可读。
    */

@@ -131,6 +131,53 @@ describe('FlowDiagramConfigService', () => {
     );
 
     expectEmbeddedCrossTreeLinks(result.linkDataArray, 2);
+    const fractions = result.linkDataArray
+      .filter(link => link.isCrossTree)
+      .map(link => link.labelSegmentFraction as number);
+    expect(fractions.every(fraction => fraction > 0.5)).toBe(true);
+  });
+
+  it('places a single cross-tree relation block near the target-side third of the line', () => {
+    const tasks = [
+      createTask({ id: 'source-task', title: 'Source', stage: 1, displayId: '1' }),
+      createTask({ id: 'target-task', title: 'Target', stage: 2, displayId: '2' }),
+    ];
+    const connections: Connection[] = [
+      { id: 'target-side-conn', source: 'source-task', target: 'target-task', title: 'Near Target' },
+    ];
+
+    const result = service.buildDiagramData(
+      tasks,
+      createProject(tasks, connections),
+      '',
+      new Map<string, go.ObjectData>(),
+      { dockedTaskIds: new Set<string>(), focusedTaskId: null },
+    );
+
+    const crossTreeLink = result.linkDataArray.find(link => link.isCrossTree);
+    expect(crossTreeLink?.labelSegmentFraction).toBeCloseTo(2 / 3, 6);
+    expect(crossTreeLink?.labelSegmentOffsetY).toBe(0);
+  });
+
+  it('keeps reverse cross-tree relation blocks near the target side instead of the stage midpoint', () => {
+    const tasks = [
+      createTask({ id: 'late-source', title: 'Late Source', stage: 3, displayId: '1' }),
+      createTask({ id: 'early-target', title: 'Early Target', stage: 1, displayId: '2' }),
+    ];
+    const connections: Connection[] = [
+      { id: 'reverse-conn', source: 'late-source', target: 'early-target', title: 'Reverse' },
+    ];
+
+    const result = service.buildDiagramData(
+      tasks,
+      createProject(tasks, connections),
+      '',
+      new Map<string, go.ObjectData>(),
+      { dockedTaskIds: new Set<string>(), focusedTaskId: null },
+    );
+
+    const crossTreeLink = result.linkDataArray.find(link => link.isCrossTree);
+    expect(crossTreeLink?.labelSegmentFraction).toBeCloseTo(2 / 3, 6);
   });
 
   it('keeps same-stage cross-tree relation blocks embedded by spreading them along the link instead of lifting them away', () => {

@@ -68,8 +68,8 @@ export interface GoJSLinkData {
   category?: string;
   /**
    * 【关联块错开 2026-04-23】同一 stage-pair 内跨树链接的 label 沿线长方
-   * 向的错开位置（范围 0.10-0.90）。默认 0.5（中点），同 stage-pair 多链接
-   * 时自动分散避免关联块堆叠。
+    * 向的错开位置（范围 0.10-0.90）。默认靠近 target 端三分之一处，
+    * 同 stage-pair 多链接时自动分散避免关联块堆叠。
    */
   labelSegmentFraction?: number;
   /**
@@ -266,6 +266,8 @@ export class FlowDiagramConfigService {
             category: 'crossTree',
             title: conn.title || '',
             description: conn.description || '',
+            labelSegmentFraction: LAYOUT_CONFIG.AUTO_LAYOUT_CROSS_TREE_LABEL_TARGET_SIDE_FRACTION,
+            labelSegmentOffsetY: 0,
           };
           linkDataArray.push(linkData);
           crossTreeLinksToStagger.push(linkData);
@@ -314,8 +316,8 @@ export class FlowDiagramConfigService {
    *
    * 新算法：按"链接实际穿越的 stage 边界"做贪心分配。
    *   1. 每条跨树链接 [minStage, maxStage] 穿越边界 b ∈ [minStage, maxStage)。
-   *   2. 按 span 升序（窄范围优先，选择余地少），为每条链接挑选"当前最空
-   *      的边界"作为 label 锚点；填入该边界桶，slot = 桶内序号。
+  *   2. 按 span 升序（窄范围优先，选择余地少），为每条链接挑选"当前最空
+  *      且最靠近 target 端三分之一处的边界"作为 label 锚点；填入该边界桶，slot = 桶内序号。
   *   3. segmentFraction 基于锚点边界相对链接 from->to 方向的位置计算，
   *      同一边界桶内按 slot 做微抖动，全部沿线分散，不再把关联块抬离连线。
   *   4. span=0（同 stage 跨树连线）单独分组，也只在连线内部做前后分散。
@@ -330,6 +332,7 @@ export class FlowDiagramConfigService {
     if (crossTreeLinks.length < 2) return;
 
     const FRACTION_STEP = LAYOUT_CONFIG.AUTO_LAYOUT_CROSS_TREE_LABEL_FRACTION_STEP;
+    const TARGET_SIDE_FRACTION = LAYOUT_CONFIG.AUTO_LAYOUT_CROSS_TREE_LABEL_TARGET_SIDE_FRACTION;
     const FRACTION_MIN = 0.08;
     const FRACTION_MAX = 0.92;
     const DENSE_THRESHOLD = LAYOUT_CONFIG.AUTO_LAYOUT_CROSS_TREE_LABEL_DENSE_STAGE_THRESHOLD;
@@ -376,13 +379,21 @@ export class FlowDiagramConfigService {
     const boundaryBuckets = new Map<number, LinkSpan[]>();
     const linkAssignments = new Map<string, { boundary: number; slot: number }>();
     for (const span of crossSpans) {
+      const rangeSpan = span.maxStage - span.minStage;
+      const desiredFractionFromMin = span.fromStage === span.minStage
+        ? TARGET_SIDE_FRACTION
+        : 1 - TARGET_SIDE_FRACTION;
       let bestBoundary = span.minStage;
       let bestSize = Infinity;
-      // 选跨度内最空的边界；并列时选最小编号（稳定）
+      let bestDistance = Infinity;
+      // 选跨度内最空的边界；并列时选更靠近 target 端三分之一的位置。
       for (let b = span.minStage; b < span.maxStage; b += 1) {
         const size = boundaryBuckets.get(b)?.length ?? 0;
-        if (size < bestSize) {
+        const boundaryFractionFromMin = (b - span.minStage + 0.5) / rangeSpan;
+        const distance = Math.abs(boundaryFractionFromMin - desiredFractionFromMin);
+        if (size < bestSize || (size === bestSize && distance < bestDistance)) {
           bestSize = size;
+          bestDistance = distance;
           bestBoundary = b;
         }
       }
@@ -407,7 +418,9 @@ export class FlowDiagramConfigService {
       const rangeSpan = span.maxStage - span.minStage;
       // 锚点边界在链接 minStage->maxStage 方向上的分数位置
       const baseFractionFromMin = (boundary - span.minStage + 0.5) / rangeSpan;
-      const baseFractionFromSource = span.fromStage === span.minStage
+      const baseFractionFromSource = rangeSpan === 1
+        ? TARGET_SIDE_FRACTION
+        : span.fromStage === span.minStage
         ? baseFractionFromMin
         : 1 - baseFractionFromMin;
       // 桶内微抖动：同一边界内多条 label 继续沿 fraction 分散，并按当前
@@ -448,7 +461,7 @@ export class FlowDiagramConfigService {
         const fractionStep = FRACTION_STEP * (isDense ? DENSE_BOOST : 1);
         for (let i = 0; i < n; i++) {
           bucket[i].link.labelSegmentFraction = this.computeEmbeddedLabelFraction(
-            0.5,
+            TARGET_SIDE_FRACTION,
             i,
             n,
             fractionStep,
