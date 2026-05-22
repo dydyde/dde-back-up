@@ -361,7 +361,7 @@ describe('SettingsModalComponent', () => {
 
     const badge = fixture.nativeElement.querySelector('[data-testid="siyuan-extension-status"]') as HTMLElement | null;
     expect(badge).toBeTruthy();
-    expect(badge!.textContent ?? '').toContain('扩展连接可用，但缺少页面配置通道');
+    expect(badge!.textContent ?? '').toContain('当前扩展版本不支持页面配置读写');
     const saveBtn = fixture.nativeElement.querySelector('[data-testid="siyuan-save-to-extension"]') as HTMLButtonElement | null;
     expect(saveBtn).toBeTruthy();
     expect(saveBtn!.disabled).toBe(true);
@@ -401,8 +401,11 @@ describe('SettingsModalComponent', () => {
     const badge = fixture.nativeElement.querySelector('[data-testid="siyuan-extension-status"]') as HTMLElement | null;
     const saveBtn = fixture.nativeElement.querySelector('[data-testid="siyuan-save-to-extension"]') as HTMLButtonElement | null;
     expect(badge).toBeTruthy();
-    expect(badge!.textContent ?? '').toContain('扩展连接可用，但缺少页面配置通道');
+    expect(badge!.textContent ?? '').toContain('扩展预览通道已连通');
+    expect(badge!.textContent ?? '').toContain('当前配置由扩展 Options 管理');
     expect(badge!.textContent ?? '').not.toContain('扩展未安装或版本过旧');
+    expect(badge!.textContent ?? '').not.toContain('缺少页面配置通道');
+    expect(component.siyuanConnectionStatus()).toContain('思源预览通道可用');
     expect(saveBtn).toBeTruthy();
     expect(saveBtn!.disabled).toBe(true);
   });

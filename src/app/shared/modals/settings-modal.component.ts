@@ -32,6 +32,7 @@ interface SiyuanExtensionStatusView {
   baseUrl?: string;
   hasToken: boolean;
   configChannelAvailable?: boolean;
+  connectionVerified?: boolean;
   readError?: boolean;
 }
 
@@ -935,7 +936,7 @@ export class SettingsModalComponent {
    * 扩展中已保存的配置状态：
    * - undefined：尚未加载（首次渲染前）
    * - null：扩展未安装/未注入/旧版本不支持 get-config-status
-    * - 对象：扩展可达，hasToken 反映扩展侧实际授权；configChannelAvailable=false 表示连接可用但页面配置通道不可用；readError=true 表示连接可用但状态读取失败
+    * - 对象：扩展可达，hasToken 反映扩展侧实际授权；configChannelAvailable=false 表示页面配置读写通道不可用；connectionVerified=true 表示预览通道已通过连接测试；readError=true 表示连接可用但状态读取失败
    */
   readonly siyuanExtensionStatus = signal<SiyuanExtensionStatusView | null | undefined>(undefined);
   readonly isSavingSiyuanToExtension = signal(false);
@@ -952,8 +953,11 @@ export class SettingsModalComponent {
   readonly siyuanExtensionStatusMessage = computed(() => {
     const status = this.siyuanExtensionStatus();
     if (status === undefined) return '正在读取扩展状态…';
-    if (status === null) return '扩展未安装或版本过旧（缺少页面配置通道），请安装/更新扩展后刷新页面';
-    if (status.configChannelAvailable === false) return '扩展连接可用，但缺少页面配置通道；请在扩展 Options 中配置，或更新扩展后刷新页面';
+    if (status === null) return '扩展未安装或版本过旧，请安装/更新扩展后刷新页面';
+    if (status.configChannelAvailable === false) {
+      if (status.connectionVerified) return '扩展预览通道已连通，当前配置由扩展 Options 管理；页面保存配置需更新扩展后刷新页面';
+      return '当前扩展版本不支持页面配置读写；请在扩展 Options 中配置，或更新扩展后刷新页面';
+    }
     if (status.readError === true) return '扩展连接可用，但读取配置状态失败；可直接保存到扩展后重试';
     if (!status.hasToken) return '扩展已就绪，但尚未配置思源 Token，请在下方填写后点击"保存到扩展"';
     const baseUrl = status.baseUrl ?? SIYUAN_CONFIG.DEFAULT_BASE_URL;
@@ -1009,7 +1013,7 @@ export class SettingsModalComponent {
   }
 
   /** 拉取扩展中已保存的 baseUrl/hasToken 状态，供徽标渲染。 */
-  private async refreshSiyuanExtensionStatus(): Promise<SiyuanExtensionStatusView | null> {
+  private async refreshSiyuanExtensionStatus(options: { connectionVerified?: boolean } = {}): Promise<SiyuanExtensionStatusView | null> {
     try {
       const probe = await this.siyuanPreview.probeExtensionConfigStatus();
       if (probe.kind === 'ok') {
@@ -1024,8 +1028,9 @@ export class SettingsModalComponent {
       if (probe.kind === 'unsupported') {
         const unsupportedStatus: SiyuanExtensionStatusView = {
           baseUrl: this.siyuanBaseUrl() || SIYUAN_CONFIG.DEFAULT_BASE_URL,
-          hasToken: false,
+          hasToken: options.connectionVerified === true,
           configChannelAvailable: false,
+          connectionVerified: options.connectionVerified === true,
         };
         this.siyuanExtensionStatus.set(unsupportedStatus);
         return unsupportedStatus;
@@ -1175,9 +1180,13 @@ export class SettingsModalComponent {
       const result = await this.siyuanPreview.diagnoseConnection();
       if (result.ok) {
         if (result.mode === 'extension-relay') {
-          const status = await this.refreshSiyuanExtensionStatus();
+          const status = await this.refreshSiyuanExtensionStatus({ connectionVerified: true });
           if (status?.readError) {
             this.siyuanConnectionStatus.set('思源预览通道可用，但读取扩展配置状态失败，请稍后重试');
+            return;
+          }
+          if (status?.configChannelAvailable === false && status.connectionVerified) {
+            this.siyuanConnectionStatus.set('思源预览通道可用；当前配置由扩展 Options 管理');
             return;
           }
           if (status === null) {
