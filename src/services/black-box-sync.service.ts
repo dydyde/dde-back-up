@@ -76,6 +76,13 @@ export interface PullChangesOptions {
   expectedRealtimeGeneration?: number;
 }
 
+export type BlackBoxWidgetNotifyAction = 'read' | 'complete';
+
+export interface ScheduleBlackBoxSyncOptions {
+  immediate?: boolean;
+  widgetNotifyAction?: BlackBoxWidgetNotifyAction;
+}
+
 @Injectable({
   providedIn: 'root'
 })
@@ -704,7 +711,7 @@ export class BlackBoxSyncService {
    * 2. 防抖结束后通过 RetryQueue 推送（持久化队列）
    * 3. 即使浏览器崩溃，下次启动时 recoverPendingEntries 会恢复
    */
-  async scheduleSync(entry: BlackBoxEntry): Promise<void> {
+  async scheduleSync(entry: BlackBoxEntry, options: ScheduleBlackBoxSyncOptions = {}): Promise<void> {
     // 校验 ID，拦截脏数据进入同步流程
     if (!entry.id || !isValidUUID(entry.id)) {
       this.logger.warn(`scheduleSync: 拦截非法 ID "${entry.id}"，不进入同步`);
@@ -720,10 +727,30 @@ export class BlackBoxSyncService {
       this.logger.error('scheduleSync: IDB 写入失败，条目加入内存队列等待重试', e instanceof Error ? e.message : String(e));
     }
 
+    if (options.immediate) {
+      this.pendingPushEntries.delete(entry.id);
+      if (this.pendingPushEntries.size === 0 && this.pushDebounceTimer) {
+        clearTimeout(this.pushDebounceTimer);
+        this.pushDebounceTimer = null;
+      }
+      void this.pushImmediateGateAction(pendingEntry, options.widgetNotifyAction).catch((error: unknown) => {
+        this.logger.warn('黑匣子 Gate 关键动作立即同步失败，已转入重试兜底', {
+          entryId: entry.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        this.enqueueEntryForRetry(pendingEntry);
+      });
+      return;
+    }
+
     // 2. 加入防抖批次
     this.pendingPushEntries.set(entry.id, pendingEntry);
 
     // 3. 防抖处理
+    this.schedulePendingPushFlush();
+  }
+
+  private schedulePendingPushFlush(): void {
     if (this.pushDebounceTimer) {
       clearTimeout(this.pushDebounceTimer);
     }
@@ -731,6 +758,69 @@ export class BlackBoxSyncService {
     this.pushDebounceTimer = setTimeout(() => {
       this.flushPendingToRetryQueue();
     }, this.DEBOUNCE_DELAY);
+  }
+
+  private async pushImmediateGateAction(
+    entry: BlackBoxEntry,
+    widgetNotifyAction?: BlackBoxWidgetNotifyAction,
+  ): Promise<void> {
+    const pushed = await this.pushToServer(entry, entry.userId);
+    if (pushed) {
+      await this.sendDirectWidgetBlackBoxNotify(entry, widgetNotifyAction);
+      return;
+    }
+
+    this.enqueueEntryForRetry(entry);
+  }
+
+  private enqueueEntryForRetry(entry: BlackBoxEntry): void {
+    if (this.retryQueueHandler) {
+      this.retryQueueHandler(entry);
+      return;
+    }
+
+    this.pendingPushEntries.set(entry.id, entry);
+    this.schedulePendingPushFlush();
+  }
+
+  private async sendDirectWidgetBlackBoxNotify(
+    entry: BlackBoxEntry,
+    action?: BlackBoxWidgetNotifyAction,
+  ): Promise<void> {
+    if (!action) return;
+
+    try {
+      const client = await this.supabase.clientAsync();
+      if (!client) return;
+
+      const latestEntry = blackBoxEntriesMap().get(entry.id) ?? entry;
+      const updatedAt = latestEntry.updatedAt || new Date().toISOString();
+      const webhookId = `pwa-blackbox-${entry.id}-${action}-${Math.floor(Date.now() / 1000)}`;
+      const { error } = await client.functions.invoke('widget-notify', {
+        body: {
+          directNotify: true,
+          table: 'black_box_entries',
+          webhookId,
+          entryId: entry.id,
+          blackBoxAction: action,
+          updatedAt,
+        },
+      });
+
+      if (error) {
+        this.logger.debug('direct black-box widget-notify skipped', {
+          entryId: entry.id,
+          action,
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
+    } catch (error) {
+      this.logger.debug('direct black-box widget-notify threw', {
+        entryId: entry.id,
+        action,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   /**
@@ -1922,6 +2012,7 @@ export class BlackBoxSyncService {
     sessionUserId: string,
     reason: string,
   ): Promise<BlackBoxEntry | null> {
+    let remoteEntry: BlackBoxEntry | null = null;
     try {
       const { data, error } = await client
         .from('black_box_entries')
@@ -1945,15 +2036,15 @@ export class BlackBoxSyncService {
         return null;
       }
 
-      return this.mapRowToEntry(data as Record<string, unknown>);
+      remoteEntry = this.mapRowToEntry(data as Record<string, unknown>);
     } catch (error) {
       this.logger.warn('黑匣子远端权威对账异常，保留 pending 状态', {
         entryId,
         reason,
         error: error instanceof Error ? error.message : String(error),
       });
-      return null;
     }
+    return remoteEntry;
   }
 
   /**

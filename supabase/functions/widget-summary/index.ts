@@ -155,6 +155,68 @@ const SUMMARY_SCHEMA_VERSION = 1;
 const ENTRY_QUERY = 'entry=widget&intent=open-workspace';
 const ENTRY_URL = `./#/projects?${ENTRY_QUERY}`;
 const MAX_BLACK_BOX_PREVIEW_COUNT = 5;
+const GATE_READ_REAPPEAR_COOLDOWN_MS = 30 * 60 * 1000;
+
+function parseTimestampMs(value: string | null | undefined): number | null {
+  if (!value) return null;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function isBlackBoxRowReadCoolingDown(row: BlackBoxRow, nowMs: number): boolean {
+  if (row.is_read !== true) return false;
+  const anchorMs = parseTimestampMs(row.updated_at) ?? parseTimestampMs(row.created_at);
+  if (anchorMs === null) return false;
+  return anchorMs > nowMs - GATE_READ_REAPPEAR_COOLDOWN_MS;
+}
+
+function isBlackBoxRowGateEligible(row: BlackBoxRow, todayIsoDate: string, nowMs: number): boolean {
+  if (typeof row.date === 'string' && row.date >= todayIsoDate) return false;
+  const snoozeDate = typeof row.snooze_until === 'string' ? row.snooze_until.slice(0, 10) : null;
+  if (snoozeDate && snoozeDate > todayIsoDate) return false;
+  return !isBlackBoxRowReadCoolingDown(row, nowMs);
+}
+
+function normalizeBlackBoxGateWave(input: {
+  pendingBlackBoxCount: number;
+  unreadBlackBoxCount: number;
+  blackBoxPreviewRows: BlackBoxRow[];
+  todayIsoDate: string;
+  nowIso: string;
+}): {
+  pendingBlackBoxCount: number;
+  unreadBlackBoxCount: number;
+  blackBoxPreviewRows: BlackBoxRow[];
+} {
+  const nowMs = parseTimestampMs(input.nowIso);
+  if (nowMs === null) {
+    return {
+      pendingBlackBoxCount: input.pendingBlackBoxCount,
+      unreadBlackBoxCount: input.unreadBlackBoxCount,
+      blackBoxPreviewRows: input.blackBoxPreviewRows,
+    };
+  }
+
+  const eligibleRows = input.blackBoxPreviewRows.filter(row => (
+    isBlackBoxRowGateEligible(row, input.todayIsoDate, nowMs)
+  ));
+  const hiddenCooldownCount = input.blackBoxPreviewRows.filter(row => (
+    isBlackBoxRowReadCoolingDown(row, nowMs)
+  )).length;
+  const previewCoversPending = input.blackBoxPreviewRows.length >= input.pendingBlackBoxCount;
+  const pendingBlackBoxCount = previewCoversPending
+    ? eligibleRows.length
+    : Math.max(0, input.pendingBlackBoxCount - hiddenCooldownCount);
+  const unreadBlackBoxCount = previewCoversPending
+    ? eligibleRows.filter(row => row.is_read !== true).length
+    : Math.min(input.unreadBlackBoxCount, pendingBlackBoxCount);
+
+  return {
+    pendingBlackBoxCount,
+    unreadBlackBoxCount,
+    blackBoxPreviewRows: eligibleRows,
+  };
+}
 
 async function loadWidgetDeviceByTokenHash(
   client: ReturnType<typeof createServiceRoleClient>,
@@ -1108,10 +1170,20 @@ Deno.serve(async (req: Request) => {
   const wave1 = (wave1RpcResult.data ?? {}) as Partial<Wave1Payload>;
   const latestSession: FocusSessionRow | null = wave1.focusSession ?? null;
   const accessibleProjectIds: string[] = Array.isArray(wave1.accessibleProjectIds) ? wave1.accessibleProjectIds : [];
-  const pendingBlackBoxCount: number = typeof wave1.pendingBlackBoxCount === 'number' ? wave1.pendingBlackBoxCount : 0;
-  const unreadBlackBoxCount: number = typeof wave1.unreadBlackBoxCount === 'number' ? wave1.unreadBlackBoxCount : pendingBlackBoxCount;
+  const rawPendingBlackBoxCount = typeof wave1.pendingBlackBoxCount === 'number' ? wave1.pendingBlackBoxCount : 0;
+  const rawUnreadBlackBoxCount = typeof wave1.unreadBlackBoxCount === 'number' ? wave1.unreadBlackBoxCount : rawPendingBlackBoxCount;
   const nextGateReviewAt = normalizeIsoTimestamp(wave1.nextGateReviewAt ?? null);
-  const blackBoxPreviewRows: BlackBoxRow[] = Array.isArray(wave1.blackBoxPreview) ? wave1.blackBoxPreview : [];
+  const rawBlackBoxPreviewRows: BlackBoxRow[] = Array.isArray(wave1.blackBoxPreview) ? wave1.blackBoxPreview : [];
+  const normalizedBlackBoxGate = normalizeBlackBoxGateWave({
+    pendingBlackBoxCount: rawPendingBlackBoxCount,
+    unreadBlackBoxCount: rawUnreadBlackBoxCount,
+    blackBoxPreviewRows: rawBlackBoxPreviewRows,
+    todayIsoDate,
+    nowIso,
+  });
+  const pendingBlackBoxCount = normalizedBlackBoxGate.pendingBlackBoxCount;
+  const unreadBlackBoxCount = normalizedBlackBoxGate.unreadBlackBoxCount;
+  const blackBoxPreviewRows = normalizedBlackBoxGate.blackBoxPreviewRows;
   const blackBoxWatermark = normalizeIsoTimestamp(wave1.blackBoxWatermark ?? null);
   const dockCountFromTasks: number = typeof wave1.dockCount === 'number' ? wave1.dockCount : 0;
   const dockTasksWatermark = normalizeIsoTimestamp(wave1.dockWatermark ?? null);

@@ -160,7 +160,9 @@ export class FocusStartupProbeService {
   }
 
   private applyGateSnapshot(source: FocusProbeSource, phase: 'local' | 'remote'): void {
-    this.gateService.checkGate();
+    this.gateService.checkGate({
+      ignoreHandledToday: source === 'widget-open-workspace',
+    });
     this.pendingGateWorkSignal.set(this.gateService.state() === 'reviewing');
 
     this.logger.debug('Focus 大门探针完成', {

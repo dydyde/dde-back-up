@@ -15,7 +15,11 @@ import {
   updateBlackBoxEntry,
   getTodayDate
 } from '../state/focus-stores';
-import { BlackBoxSyncService, type PullChangesOptions } from './black-box-sync.service';
+import {
+  BlackBoxSyncService,
+  type PullChangesOptions,
+  type ScheduleBlackBoxSyncOptions,
+} from './black-box-sync.service';
 import { AuthService } from './auth.service';
 import { LoggerService } from './logger.service';
 import { AUTH_CONFIG } from '../config/auth.config';
@@ -158,7 +162,11 @@ export class BlackBoxService {
   /**
    * 更新条目
    */
-  update(id: string, updates: Partial<BlackBoxEntry>): Result<BlackBoxEntry, OperationError> {
+  update(
+    id: string,
+    updates: Partial<BlackBoxEntry>,
+    syncOptions?: ScheduleBlackBoxSyncOptions,
+  ): Result<BlackBoxEntry, OperationError> {
     const entry = blackBoxEntriesMap().get(id);
     if (!entry) {
       return failure(ErrorCodes.FOCUS_ENTRY_NOT_FOUND, '条目不存在');
@@ -180,7 +188,7 @@ export class BlackBoxService {
     updateBlackBoxEntry(updated);
     
     // 后台同步或本地模式持久化
-    this.persistAfterLocalChange(updated);
+    this.persistAfterLocalChange(updated, syncOptions);
     
     return success(updated);
   }
@@ -211,14 +219,20 @@ export class BlackBoxService {
    * 标记为已读
    */
   markAsRead(id: string): Result<BlackBoxEntry, OperationError> {
-    return this.update(id, { isRead: true });
+    return this.update(id, { isRead: true }, {
+      immediate: true,
+      widgetNotifyAction: 'read',
+    });
   }
   
   /**
    * 标记为完成
    */
   markAsCompleted(id: string): Result<BlackBoxEntry, OperationError> {
-    return this.update(id, { isCompleted: true });
+    return this.update(id, { isCompleted: true }, {
+      immediate: true,
+      widgetNotifyAction: 'complete',
+    });
   }
   
   /**
@@ -392,9 +406,13 @@ export class BlackBoxService {
     return this.auth.isConfigured && userId !== AUTH_CONFIG.LOCAL_MODE_USER_ID;
   }
 
-  private persistAfterLocalChange(entry: BlackBoxEntry): void {
+  private persistAfterLocalChange(entry: BlackBoxEntry, syncOptions?: ScheduleBlackBoxSyncOptions): void {
     if (this.shouldSyncRemotely(entry.userId)) {
-      void this.syncService.scheduleSync(entry);
+      if (syncOptions) {
+        void this.syncService.scheduleSync(entry, syncOptions);
+      } else {
+        void this.syncService.scheduleSync(entry);
+      }
       return;
     }
 

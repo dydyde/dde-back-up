@@ -597,8 +597,11 @@ Deno.serve(async (req) => {
   // 调用本函数（带 Authorization: Bearer <user_jwt>）绕过 DB trigger + pg_net 的 ~3s 轮询，
   // 端到端从「ended_at → FCM 抵达」压缩 2-5s。
   //
-  // 请求体格式：{ directNotify: true, focusActive: boolean, focusSessionId: string,
-  //              webhookId: string /* 幂等键，由 PWA 生成 uuid */, updatedAt?: string }
+  // 请求体格式：
+  // - Focus: { directNotify: true, focusActive: boolean, focusSessionId: string,
+  //            webhookId: string /* 幂等键，由 PWA 生成 uuid */, updatedAt?: string }
+  // - BlackBox: { directNotify: true, table: 'black_box_entries', entryId: string,
+  //               webhookId: string, updatedAt?: string }
   //
   // 安全与幂等：verifyJwtUser 确认 token 合法后取 user.id 作为事件主体；webhookId 走与
   // DB 触发路径同一张 widget_notify_events 唯一约束表，天然去重（若 pg_net 后到达，会被
@@ -632,33 +635,61 @@ Deno.serve(async (req) => {
     }
 
     const directWebhookId = asNonEmptyText(parsedBody['webhookId'], 256);
-    const focusActiveRaw = parsedBody['focusActive'];
-    const focusSessionId = asNonEmptyText(parsedBody['focusSessionId'], 64);
+    const directTable = asNonEmptyText(parsedBody['table'], 64) ?? 'focus_sessions';
     const updatedAt = asNonEmptyText(parsedBody['updatedAt'], 128) ?? new Date().toISOString();
-    if (!directWebhookId || typeof focusActiveRaw !== 'boolean' || !focusSessionId) {
+    if (!directWebhookId) {
       return jsonResponse({ error: 'Direct notify payload invalid', code: 'INVALID_PAYLOAD' }, responseHeaders, 400);
     }
 
-    // 合成一个与 DB trigger 等价的 UPDATE 形 payload。ended_at 的口径：active=true 时视为 null，
-    // active=false 时填入 updatedAt 作为结束时刻——与 focus_sessions 的真实列语义一致，
-    // 下游 extractFocusHint / resolveUserId 均能复用现成逻辑。
-    verifiedPayload = {
-      type: 'UPDATE' as const,
-      table: 'focus_sessions' as const,
-      schema: 'public',
-      record: {
-        id: focusSessionId,
-        user_id: authResult.userId,
-        ended_at: focusActiveRaw ? null : updatedAt,
-        updated_at: updatedAt,
-      },
-      old_record: {
-        id: focusSessionId,
-        user_id: authResult.userId,
-        ended_at: focusActiveRaw ? updatedAt : null,
-        updated_at: updatedAt,
-      },
-    };
+    if (directTable === 'black_box_entries') {
+      const entryId = asNonEmptyText(parsedBody['entryId'], 64);
+      if (!entryId) {
+        return jsonResponse({ error: 'Direct notify payload invalid', code: 'INVALID_PAYLOAD' }, responseHeaders, 400);
+      }
+
+      verifiedPayload = {
+        type: 'UPDATE' as const,
+        table: 'black_box_entries' as const,
+        schema: 'public',
+        record: {
+          id: entryId,
+          user_id: authResult.userId,
+          updated_at: updatedAt,
+        },
+        old_record: {
+          id: entryId,
+          user_id: authResult.userId,
+          updated_at: updatedAt,
+        },
+      };
+    } else {
+      const focusActiveRaw = parsedBody['focusActive'];
+      const focusSessionId = asNonEmptyText(parsedBody['focusSessionId'], 64);
+      if (directTable !== 'focus_sessions' || typeof focusActiveRaw !== 'boolean' || !focusSessionId) {
+        return jsonResponse({ error: 'Direct notify payload invalid', code: 'INVALID_PAYLOAD' }, responseHeaders, 400);
+      }
+
+      // 合成一个与 DB trigger 等价的 UPDATE 形 payload。ended_at 的口径：active=true 时视为 null，
+      // active=false 时填入 updatedAt 作为结束时刻——与 focus_sessions 的真实列语义一致，
+      // 下游 extractFocusHint / resolveUserId 均能复用现成逻辑。
+      verifiedPayload = {
+        type: 'UPDATE' as const,
+        table: 'focus_sessions' as const,
+        schema: 'public',
+        record: {
+          id: focusSessionId,
+          user_id: authResult.userId,
+          ended_at: focusActiveRaw ? null : updatedAt,
+          updated_at: updatedAt,
+        },
+        old_record: {
+          id: focusSessionId,
+          user_id: authResult.userId,
+          ended_at: focusActiveRaw ? updatedAt : null,
+          updated_at: updatedAt,
+        },
+      };
+    }
     webhookId = directWebhookId;
     directNotifyUserId = authResult.userId;
   } else {

@@ -303,6 +303,9 @@ describe('Widget backend foundation contract', () => {
     expect(summaryFn).toContain('pendingBlackBoxCount');
     expect(summaryFn).toContain('unreadBlackBoxCount');
     expect(summaryFn).toContain('nextGateReviewAt');
+    expect(summaryFn).toContain('GATE_READ_REAPPEAR_COOLDOWN_MS');
+    expect(summaryFn).toContain('function normalizeBlackBoxGateWave');
+    expect(summaryFn).toContain('isBlackBoxRowReadCoolingDown');
     expect(summaryFn).toContain('nextReviewAt');
     expect(summaryFn).toContain('dockCountFromTasks');
     expect(summaryFn).toContain('dockTasksWatermark');
@@ -336,6 +339,9 @@ describe('Widget backend foundation contract', () => {
     expect(notifyFn).not.toContain('Math.max(limits.notifyUserPerMinute');
     expect(notifyFn).toContain('limits.notifyUserPerMinute === 0');
     expect(notifyFn).toContain('const usesStandardWebhookHeaders = hasStandardWebhookHeaders(req);');
+    expect(notifyFn).toContain("table: 'black_box_entries' as const");
+    expect(notifyFn).toContain("directTable === 'black_box_entries'");
+    expect(notifyFn).toContain("table: 'focus_sessions' as const");
     expect(notifyFn).toContain('const throttleRow = await loadNotifyThrottle(client, userId);');
     expect(notifyFn).toContain("await finishNotifyEvent(client, webhookId, 'provider-unavailable', userId, summaryCursor);");
     expect(notifyFn).toContain('if (usesStandardWebhookHeaders) {');

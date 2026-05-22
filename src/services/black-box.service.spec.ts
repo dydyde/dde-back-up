@@ -302,6 +302,7 @@ describe('BlackBoxService', () => {
     it('应该标记条目为已读', () => {
       const createResult = service.create({ content: '测试' });
       if (!createResult.ok) throw new Error('Create failed');
+      mockSyncService.scheduleSync.mockClear();
 
       const result = service.markAsRead(createResult.value.id);
 
@@ -309,6 +310,10 @@ describe('BlackBoxService', () => {
       if (result.ok) {
         expect(result.value.isRead).toBe(true);
       }
+      expect(mockSyncService.scheduleSync).toHaveBeenCalledWith(
+        expect.objectContaining({ id: createResult.value.id, isRead: true }),
+        { immediate: true, widgetNotifyAction: 'read' },
+      );
     });
   });
 
@@ -316,6 +321,7 @@ describe('BlackBoxService', () => {
     it('应该标记条目为完成', () => {
       const createResult = service.create({ content: '测试' });
       if (!createResult.ok) throw new Error('Create failed');
+      mockSyncService.scheduleSync.mockClear();
 
       const result = service.markAsCompleted(createResult.value.id);
 
@@ -323,6 +329,10 @@ describe('BlackBoxService', () => {
       if (result.ok) {
         expect(result.value.isCompleted).toBe(true);
       }
+      expect(mockSyncService.scheduleSync).toHaveBeenCalledWith(
+        expect.objectContaining({ id: createResult.value.id, isCompleted: true }),
+        { immediate: true, widgetNotifyAction: 'complete' },
+      );
     });
   });
 

@@ -41,6 +41,10 @@ type DeferredGateMutation =
   | { kind: 'mark-completed'; entryId: string }
   | { kind: 'snooze'; entryId: string; snoozeUntil: string };
 
+interface CheckGateOptions {
+  ignoreHandledToday?: boolean;
+}
+
 /** LocalStorage 键：上次大门检查日期 */
 const GATE_LAST_CHECK_DATE_KEY = 'focus_gate_last_check_date';
 /** LocalStorage 键：当日跳过次数重置日期 */
@@ -501,7 +505,7 @@ export class GateService {
    * 检查是否需要显示大门
    * 在应用启动时调用
    */
-  checkGate(): void {
+  checkGate(options: CheckGateOptions = {}): void {
     refreshGateReviewClock();
 
     // 如果大门已经在审查中，不要重复初始化（避免动画叠加和状态重置）
@@ -515,7 +519,7 @@ export class GateService {
     // 避免后台闲置恢复时 FocusStartupProbe 的 local→remote 两阶段探针在用户刚审完
     // 之后再次把 gateState 推回 'reviewing'，出现"两次大门"。手机端和电脑端共享
     // 同一条 visibility/pageshow 恢复链路，因此修复一处即覆盖两端。
-    if (this.isGateHandledToday()) {
+    if (!options.ignoreHandledToday && this.isGateHandledToday()) {
       // 短路时无论原状态是 'completed' / 'bypassed' / 其他都清掉缓存的 pendingItems，
       // 它们仅在 reviewing 期间用于显示，非激活态保留只会让外部观察到陈旧数据。
       gatePendingItems.set([]);

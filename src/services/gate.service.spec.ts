@@ -275,6 +275,22 @@ describe('GateService', () => {
       vi.useRealTimers();
     });
 
+    it('从小组件显式进入工作区时应绕过今日已处理标记并复核大门', () => {
+      localStorage.setItem('focus_gate_last_check_date', getDateOffset(0));
+      const entry = createMockEntry({
+        id: 'widget-open-workspace-entry',
+        date: getDateOffset(-1),
+        isRead: false,
+        isCompleted: false,
+      });
+      setBlackBoxEntries([entry]);
+
+      service.checkGate({ ignoreHandledToday: true });
+
+      expect(gateState()).toBe('reviewing');
+      expect(gatePendingItems().map(item => item.id)).toEqual(['widget-open-workspace-entry']);
+    });
+
     it('今日大门完成的标记跨天后失效，次日新 pending 应重新激活大门', () => {
       // 直接以 localStorage 标记"昨日"已处理，验证 checkGate 不再短路。
       // 不使用跨天 fake timer，因为 pendingBlackBoxEntries 依赖每分钟刷新的 todayDate
