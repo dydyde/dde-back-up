@@ -270,17 +270,38 @@ jobs:
             fi
           done
 
+          short_sha="${GITHUB_SHA:0:7}"
           if [ "$DEPLOYMENT_TARGET" = "production" ]; then
             npx --yes wrangler@${WRANGLER_VERSION} pages deployment list \
               --project-name="$CLOUDFLARE_PAGES_PROJECT_NAME" | head -40 || true
             BRANCH_FLAG="--branch=main"
+            expected_branch="main"
           else
             PR_NUM="${{ github.event.pull_request.number }}"
             if [ -z "$PR_NUM" ]; then PR_NUM="${GITHUB_RUN_ID}"; fi
             BRANCH_FLAG="--branch=pr-$PR_NUM"
+            expected_branch="pr-$PR_NUM"
           fi
 
+          extract_deploy_url() {
+            printf '%s' "$1" | grep -oE 'https://[a-zA-Z0-9.-]+\.pages\.dev' | head -n1 || true
+          }
+
+          lookup_deploy_url_for_commit() {
+            local deployments_output resolved_url
+            deployments_output="$(npx --yes wrangler@${WRANGLER_VERSION} pages deployment list \
+              --project-name="$CLOUDFLARE_PAGES_PROJECT_NAME" 2>&1 || true)"
+            printf '%s\n' "$deployments_output" >&2
+            resolved_url="$(printf '%s\n' "$deployments_output" \
+              | grep -F "$short_sha" \
+              | grep -F "$expected_branch" \
+              | grep -oE 'https://[a-zA-Z0-9.-]+\.pages\.dev' \
+              | head -n1 || true)"
+            printf '%s' "$resolved_url"
+          }
+
           deploy_output=""
+          deploy_url=""
           safe_commit_message="${CF_COMMIT_MESSAGE//$'\r'/ }"
           safe_commit_message="${safe_commit_message//$'\n'/ }"
           for attempt in 1 2 3; do
@@ -294,15 +315,28 @@ jobs:
             status=$?
             set -e
             echo "$deploy_output"
-            if [ "$status" = "0" ]; then break; fi
-            if [ "$attempt" = "3" ]; then exit "$status"; fi
+
+            deploy_url="$(extract_deploy_url "$deploy_output")"
+            if [ -z "$deploy_url" ]; then
+              echo "Wrangler did not return a deployment URL; querying deployments for commit $short_sha on branch $expected_branch"
+              deploy_url="$(lookup_deploy_url_for_commit)"
+            fi
+
+            if [ -n "$deploy_url" ]; then
+              echo "Resolved deployment URL: $deploy_url"
+              break
+            fi
+
+            if [ "$attempt" = "3" ]; then
+              if [ "$status" = "0" ]; then
+                echo "::error::Wrangler finished without a deployment URL for commit $short_sha on branch $expected_branch"
+                exit 1
+              fi
+              exit "$status"
+            fi
             sleep $((attempt * 10))
           done
 
-          deploy_url="$(echo "$deploy_output" | grep -oE 'https://[a-zA-Z0-9.-]+\.pages\.dev' | head -n1)"
-          if [ -z "$deploy_url" ] && [ "$DEPLOYMENT_TARGET" = "production" ]; then
-            deploy_url="https://${CLOUDFLARE_PAGES_PROJECT_NAME}.pages.dev"
-          fi
           echo "deploy_url=$deploy_url" >> "$GITHUB_OUTPUT"
 
       - name: Wait for edge health
@@ -313,14 +347,15 @@ jobs:
           for attempt in $(seq 1 30); do
             root_code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 "$origin/" || echo 000)"
             version_json="$(curl -sS --max-time 10 "$origin/version.json" || true)"
-            if [ "$root_code" = "200" ] && echo "$version_json" | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const j=JSON.parse(s); if(!j.gitSha) process.exit(1)})" 2>/dev/null; then
+            deployed_sha="$(printf '%s' "$version_json" | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{try{const j=JSON.parse(s); process.stdout.write(typeof j.gitSha === 'string' ? j.gitSha : '')}catch{process.exit(1)}})" 2>/dev/null || true)"
+            if [ "$root_code" = "200" ] && [ "$deployed_sha" = "$GITHUB_SHA" ]; then
               echo "Edge health OK at $origin"
               exit 0
             fi
-            echo "Waiting for edge health ($attempt/30): /=$root_code version=${version_json:0:80}"
+            echo "Waiting for edge health ($attempt/30): /=$root_code sha=${deployed_sha:0:12} version=${version_json:0:80}"
             sleep 5
           done
-          echo "::error::Cloudflare Pages deployment did not become healthy"
+          echo "::error::Cloudflare Pages deployment did not become healthy for GITHUB_SHA=$GITHUB_SHA"
           exit 1
 
       - name: Post-deploy header smoke

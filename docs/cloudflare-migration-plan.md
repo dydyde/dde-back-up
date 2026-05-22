@@ -1586,8 +1586,8 @@ OnPush / Signals 桥接门禁：
 - [x] PR preview deploy 条件限制为同仓库 PR，不使用 `pull_request_target`；fork PR 只跑 test job，不执行 `validate-env:prod`。
 - [x] workflow 使用显式的 `Select Supabase build env` step：PR preview 通过 GitHub Environment `NanoFlow-Preview` 读取同名 Supabase secrets；缺少 `NG_APP_SUPABASE_URL` / `NG_APP_SUPABASE_ANON_KEY` 时直接失败，合同测试禁止 `PREVIEW_NG_APP_*` 与生产 fallback 进入 workflow。
 - [x] workflow 敏感 token 下沉到 step：`SENTRY_AUTH_TOKEN` 只给 Sentry upload step，`CLOUDFLARE_API_TOKEN` 只给 deploy step；`npm ci`、test、build 不应读到发布 token。
-- [x] 固定 `wrangler` 和 Sentry CLI 版本，并为 Direct Upload 增加最多 3 次 retry。
-- [x] Direct Upload deploy step 后增加等待式 health check：Wrangler/API 返回成功后，循环请求 `/` 与 `/version.json`，直到返回 200 且 `version.json.gitSha` 可读，再进入 header smoke / Playwright smoke。生产部署前先执行 `wrangler pages deployment list`，确认没有明显未完成或异常的上一轮 deployment。
+- [x] 固定 `wrangler` 和 Sentry CLI 版本，并为 Direct Upload 增加最多 3 次 retry；若 Wrangler 在 Cloudflare 5xx / malformed response 场景下退出码或输出不稳定，workflow 还会回查 `pages deployment list`，并把解析出的同一 `commit hash + branch` deployment URL 继续交给后续 `gitSha === GITHUB_SHA` 健康校验。对于同一 SHA 的 rerun，允许复用已存在的健康 deployment，因为验收目标是“该 SHA 已上线且健康”，不是强制生成全新 deployment id。
+- [x] Direct Upload deploy step 后增加等待式 health check：Wrangler/API 返回成功后，先解析本轮 deployment URL（必要时从 `wrangler pages deployment list` 回查），再循环请求该 deployment 的 `/` 与 `/version.json`；只有根路径返回 200 且 `version.json.gitSha === GITHUB_SHA`，才进入 header smoke / Playwright smoke。生产部署前先执行 `wrangler pages deployment list`，确认没有明显未完成或异常的上一轮 deployment；禁止直接回退到 `https://<project>.pages.dev` 把旧生产别名误判为新部署成功。
 - [x] 新增 Canonical Origin Gate：`index.html` 最早期脚本或等价 boot guard 在非 canonical origin 阻断 SW 注册、Supabase 初始化、Realtime 和队列 flush，并进入 redirect/read-only/export-only。
 - [x] Canonical Origin Gate 必须位于 `index.html` `<head>` 最前面的同步 inline script，早于 modulepreload、Angular bootstrap、SW 注册和 Supabase 初始化；旧 origin、非 canonical origin、`ngswHash` 不匹配或 `forceSwReset` 时，只允许一次受控 SW unregister + app cache/`ngsw:*` cache delete，并用 marker 防止 reload loop。（2026-04-29 已完成 early gate、非 canonical/redirect、`forceSwReset=1`、一次性 SW/cache cleanup 与 `__NANOFLOW_WRITE_GUARD__` 标记；2026-04-30 已补 `/version.json.ngswHash` mismatch 早期自愈并加入 contract。）
 - [ ] 新增 stale SW 负向测试：先安装旧部署 SW，再部署新版本，刷新时旧 SW 可能先拦截 `index.html`；测试必须证明 gate/GlobalErrorHandler 能触发 unregister + cache delete，并且不会在旧 `ngsw.json` / 旧 `index.html` 下继续 flush 队列。
@@ -2370,7 +2370,7 @@ Cloudflare Direct Upload 偶发 5xx / 401（token 限流）。workflow 加 retry
 
 本节使用 `npx wrangler@"$WRANGLER_VERSION"` + `nick-fields/retry@v3` 包装的方案，与 §5.3 / §16.12 保持一致；不推荐再叠一层 `cloudflare/wrangler-action@v3`（会和 retry 机制重叠且不易本地复现）。
 
-retry 只覆盖上传 API 失败，不覆盖“API 返回成功但边缘还没健康”的窗口。Deploy step 后必须立即执行等待式 health check：对目标 `pages.dev` / branch alias 请求 `/` 和 `/version.json`，最多等待 3 分钟；只有两者都返回 200，且 `/version.json` 能读到 `gitSha`，才进入 §14 header smoke 和 Playwright smoke。生产 deploy 前先跑一次 `wrangler pages deployment list --project-name=...`，把最近 deployment 状态写进日志，避免在上一轮 deployment 未稳定时叠加生产发布。
+retry 只覆盖上传 API 失败，不覆盖“Wrangler 输出异常但 deployment 其实已经创建”或“API 返回成功但边缘还没健康”的窗口。Deploy step 后必须先从 Wrangler 输出或 `wrangler pages deployment list --project-name=...` 中解析出候选 deployment URL；如果解析不到，就继续重试并在最终失败时中止，不能直接回退到 `https://<project>.pages.dev` 这种通用别名。拿到候选 deployment URL 后，再对该 URL 的 `/` 和 `/version.json` 做最多 3 分钟等待式 health check；只有根路径返回 200，且 `/version.json.gitSha === GITHUB_SHA`，才进入 §14 header smoke 和 Playwright smoke。这里的门禁目标是保证“当前 SHA 的 deployment 可用且健康”；对于同一 SHA 的 rerun，允许复用已存在的健康 deployment URL，而不是强制要求本次运行新建 deployment id。生产 deploy 前先跑一次 `wrangler pages deployment list --project-name=...`，把最近 deployment 状态写进日志，避免在上一轮 deployment 未稳定时叠加生产发布。
 
 `Direct Upload` 用 Wrangler 上传时单次最多 20,000 文件、单文件 25 MiB；Dashboard drag-and-drop 是 1,000 文件。NanoFlow 当前产物 1-3k 文件，首版不要用 drag-and-drop 上传完整 `dist/browser`，项目创建后直接走 Wrangler 或只用最小占位 `index.html` 建项目。Sentry sourcemap 启用后文件数会翻倍，需要确认 `.map` 已删后再上传。CI 额外设置 18,000 文件软上限，给 Cloudflare 限额、未来 assets 和紧急诊断文件保留余量：
 
