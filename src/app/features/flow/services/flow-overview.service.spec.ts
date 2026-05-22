@@ -71,13 +71,33 @@ vi.mock('gojs', () => {
     }
   }
 
+  class Size {
+    constructor(
+      public width = 0,
+      public height = 0
+    ) {}
+
+    equals(size: Size): boolean {
+      return this.width === size.width && this.height === size.height;
+    }
+  }
+
   class Overview {
-    box = { actualBounds: new Rect(0, 0, 800, 600), position: new Point(0, 0) };
+    box = {
+      actualBounds: new Rect(0, 0, 800, 600),
+      position: new Point(0, 0),
+      location: new Point(0, 0),
+      selectionObject: { desiredSize: new Size(800, 600), strokeWidth: 2 },
+      isSelected: false,
+    };
     position = new Point(0, 0);
     centerRect = vi.fn((rect: Rect) => {
       this.position = new Point(rect.x, rect.y);
       this.box.actualBounds = rect.copy();
       this.box.position = new Point(rect.x, rect.y);
+      this.box.location = new Point(rect.x, rect.y);
+      this.box.selectionObject.desiredSize = new Size(rect.width, rect.height);
+      this.box.isSelected = true;
     });
     requestUpdate = vi.fn();
     transformViewToDoc = vi.fn((point: Point) => point);
@@ -102,6 +122,7 @@ vi.mock('gojs', () => {
     Overview,
     Point,
     Rect,
+    Size,
     Spot: { Center: new Point(0.5, 0.5) },
     AutoScale: { None: 1, Uniform: 2, UniformToFill: 3 },
   };
@@ -298,6 +319,7 @@ describe('FlowOverviewService', () => {
 
   it('点击小地图预览框但不移动时不应改变主视图位置', () => {
     const overview = service.overviewInstance as unknown as {
+      box: { position: InstanceType<typeof go.Point> };
       centerRect: ReturnType<typeof vi.fn>;
       fixedBounds: InstanceType<typeof go.Rect> | undefined;
       scale: number;
@@ -343,9 +365,9 @@ describe('FlowOverviewService', () => {
 
     expect(diagramPosition.x).toBe(1400);
     expect(diagramPosition.y).toBe(1000);
-    expect(overview.centerRect).toHaveBeenCalled();
-    const latestCenteredBounds = overview.centerRect.mock.calls.at(-1)?.[0] as InstanceType<typeof go.Rect>;
-    expectCenteredBoundsToContainViewport(latestCenteredBounds, 1400, 1000);
+    expect(overview.centerRect).not.toHaveBeenCalled();
+    expect(overview.box.position.x).toBe(1400);
+    expect(overview.box.position.y).toBe(1000);
   });
 
   it('实际拖动松手后的同位置异步刷新不应再次重居中', () => {
@@ -1160,8 +1182,10 @@ describe('FlowOverviewService', () => {
 
   it('【回归保护】主图在稳定边界内拖动画布时不应重居中小地图底图', () => {
     const overview = service.overviewInstance as unknown as {
+      box: { position: InstanceType<typeof go.Point> };
       centerRect: ReturnType<typeof vi.fn>;
       fixedBounds: InstanceType<typeof go.Rect> | undefined;
+      requestUpdate: ReturnType<typeof vi.fn>;
     };
     let fixedBoundsWriteCount = 0;
     let stored: InstanceType<typeof go.Rect> | undefined = overview.fixedBounds;
@@ -1179,6 +1203,7 @@ describe('FlowOverviewService', () => {
     viewportListener?.();
     vi.runOnlyPendingTimers();
     overview.centerRect.mockClear();
+    overview.requestUpdate.mockClear();
     fixedBoundsWriteCount = 0;
 
     diagramPosition = new go.Point(20, 20);
@@ -1188,6 +1213,9 @@ describe('FlowOverviewService', () => {
 
     expect(fixedBoundsWriteCount).toBe(0);
     expect(overview.centerRect).not.toHaveBeenCalled();
+    expect(overview.requestUpdate).not.toHaveBeenCalled();
+    expect(overview.box.position.x).toBe(20);
+    expect(overview.box.position.y).toBe(20);
   });
 
   it('【回归保护】主图拖动后立刻拖小地图预览框，起点必须使用当前 viewport 不瞬移', () => {
@@ -1246,8 +1274,90 @@ describe('FlowOverviewService', () => {
     expect(overview.updateAllTargetBindings.mock.calls.length).toBe(bindingCallsBeforeMainPan);
   });
 
+  it('【回归保护】小地图拖拽释放后的待处理刷新不应覆盖随后的主图 pan', () => {
+    const overview = service.overviewInstance as unknown as {
+      box: { position: InstanceType<typeof go.Point> };
+      centerRect: ReturnType<typeof vi.fn>;
+      requestUpdate: ReturnType<typeof vi.fn>;
+    };
+
+    viewportListener?.();
+    vi.runOnlyPendingTimers();
+
+    dispatchPointer('pointerdown', 20, 20);
+    vi.runOnlyPendingTimers();
+    dispatchPointer('pointermove', 120, 90);
+    vi.runOnlyPendingTimers();
+    dispatchPointer('pointerup', 120, 90);
+
+    const releasePosition = diagramPosition.copy();
+    overview.centerRect.mockClear();
+    overview.requestUpdate.mockClear();
+
+    diagramPosition = new go.Point(releasePosition.x + 80, releasePosition.y + 60);
+    viewportListener?.();
+    vi.runOnlyPendingTimers();
+
+    expect(overview.box.position.x).toBe(releasePosition.x + 80);
+    expect(overview.box.position.y).toBe(releasePosition.y + 60);
+    expect(overview.centerRect).not.toHaveBeenCalled();
+    expect(overview.requestUpdate).not.toHaveBeenCalled();
+  });
+
+  it('【回归保护】主图 pan 必须同步 GoJS box 的视觉几何，不能只改 position', () => {
+    const overview = service.overviewInstance as unknown as {
+      box: {
+        position: InstanceType<typeof go.Point>;
+        location: InstanceType<typeof go.Point>;
+        selectionObject: { desiredSize: InstanceType<typeof go.Size>; strokeWidth: number };
+        isSelected: boolean;
+      };
+      centerRect: ReturnType<typeof vi.fn>;
+      requestUpdate: ReturnType<typeof vi.fn>;
+      scale: number;
+    };
+
+    viewportListener?.();
+    vi.runOnlyPendingTimers();
+
+    dispatchPointer('pointerdown', 20, 20);
+    vi.runOnlyPendingTimers();
+    dispatchPointer('pointermove', 120, 90);
+    vi.runOnlyPendingTimers();
+    dispatchPointer('pointerup', 120, 90);
+
+    const releasePosition = diagramPosition.copy();
+    const nextPosition = new go.Point(releasePosition.x + 80, releasePosition.y + 60);
+    const staleStrokeWidth = 2 / overview.scale;
+    overview.box.location = new go.Point(
+      releasePosition.x - staleStrokeWidth / 2,
+      releasePosition.y - staleStrokeWidth / 2,
+    );
+    overview.box.selectionObject.desiredSize = new go.Size(1, 1);
+    overview.box.isSelected = false;
+    overview.centerRect.mockClear();
+    overview.requestUpdate.mockClear();
+
+    diagramPosition = nextPosition;
+    viewportListener?.();
+    vi.runOnlyPendingTimers();
+
+    const expectedStrokeWidth = 2 / overview.scale;
+    expect(overview.box.position.x).toBe(nextPosition.x);
+    expect(overview.box.position.y).toBe(nextPosition.y);
+    expect(overview.box.location.x).toBe(nextPosition.x - expectedStrokeWidth / 2);
+    expect(overview.box.location.y).toBe(nextPosition.y - expectedStrokeWidth / 2);
+    expect(overview.box.selectionObject.desiredSize.width).toBe(800);
+    expect(overview.box.selectionObject.desiredSize.height).toBe(600);
+    expect(overview.box.selectionObject.strokeWidth).toBe(expectedStrokeWidth);
+    expect(overview.box.isSelected).toBe(true);
+    expect(overview.centerRect).not.toHaveBeenCalled();
+    expect(overview.requestUpdate).not.toHaveBeenCalled();
+  });
+
   it('【回归保护】主图拖出稳定边界时只扩边一次，后续边界内平移继续被动同步', () => {
     const overview = service.overviewInstance as unknown as {
+      box: { position: InstanceType<typeof go.Point> };
       centerRect: ReturnType<typeof vi.fn>;
       fixedBounds: InstanceType<typeof go.Rect> | undefined;
       scale: number;
@@ -1278,9 +1388,9 @@ describe('FlowOverviewService', () => {
 
     expect(fixedBoundsWriteCount).toBeGreaterThan(0);
     expect(overview.scale).toBe(scaleBeforeMainPan);
-    expect(overview.centerRect).toHaveBeenCalled();
-    const latestCenteredBounds = overview.centerRect.mock.calls.at(-1)?.[0] as InstanceType<typeof go.Rect>;
-    expectCenteredBoundsToContainViewport(latestCenteredBounds, 1400, 1000);
+    expect(overview.centerRect).not.toHaveBeenCalled();
+    expect(overview.box.position.x).toBe(1400);
+    expect(overview.box.position.y).toBe(1000);
 
     const fixedBoundsWriteCountAfterEscape = fixedBoundsWriteCount;
     overview.centerRect.mockClear();
@@ -1293,10 +1403,73 @@ describe('FlowOverviewService', () => {
     expect(fixedBoundsWriteCount).toBe(fixedBoundsWriteCountAfterEscape);
     expect(overview.scale).toBe(scaleBeforeMainPan);
     expect(overview.centerRect).not.toHaveBeenCalled();
+    expect(overview.box.position.x).toBe(1420);
+    expect(overview.box.position.y).toBe(1020);
   });
 
-  it('【回归保护】主图仍在 fixedBounds 内但离开小地图可见窗口时，只重居中不重写边界', () => {
+  it('【回归保护】小地图拖拽后主图持续 pan 一整屏不应反复重写 fixedBounds', () => {
     const overview = service.overviewInstance as unknown as {
+      box: { position: InstanceType<typeof go.Point> };
+      centerRect: ReturnType<typeof vi.fn>;
+      fixedBounds: InstanceType<typeof go.Rect> | undefined;
+      requestUpdate: ReturnType<typeof vi.fn>;
+      updateAllTargetBindings: ReturnType<typeof vi.fn>;
+    };
+    let fixedBoundsWriteCount = 0;
+    let stored: InstanceType<typeof go.Rect> | undefined = overview.fixedBounds;
+    Object.defineProperty(overview, 'fixedBounds', {
+      configurable: true,
+      get(): InstanceType<typeof go.Rect> | undefined {
+        return stored;
+      },
+      set(value: InstanceType<typeof go.Rect> | undefined) {
+        fixedBoundsWriteCount += 1;
+        stored = value;
+      },
+    });
+
+    viewportListener?.();
+    vi.runOnlyPendingTimers();
+
+    dispatchPointer('pointerdown', 20, 20);
+    vi.runOnlyPendingTimers();
+    dispatchPointer('pointermove', 120, 90);
+    vi.runOnlyPendingTimers();
+    dispatchPointer('pointerup', 120, 90);
+    vi.runOnlyPendingTimers();
+
+    fixedBoundsWriteCount = 0;
+    overview.centerRect.mockClear();
+    overview.updateAllTargetBindings.mockClear();
+
+    diagramPosition = new go.Point(1400, 1000);
+    observedViewportPosition = diagramPosition.copy();
+    viewportListener?.();
+    vi.runOnlyPendingTimers();
+
+    expect(fixedBoundsWriteCount).toBeGreaterThan(0);
+    expect(overview.centerRect).not.toHaveBeenCalled();
+    expect(overview.box.position.x).toBe(1400);
+    expect(overview.box.position.y).toBe(1000);
+    const fixedBoundsWriteCountAfterEscape = fixedBoundsWriteCount;
+    overview.requestUpdate.mockClear();
+
+    diagramPosition = new go.Point(2200, 1600);
+    observedViewportPosition = diagramPosition.copy();
+    viewportListener?.();
+    vi.runOnlyPendingTimers();
+
+    expect(fixedBoundsWriteCount).toBe(fixedBoundsWriteCountAfterEscape);
+    expect(overview.centerRect).not.toHaveBeenCalled();
+    expect(overview.box.position.x).toBe(2200);
+    expect(overview.box.position.y).toBe(1600);
+    expect(overview.requestUpdate).not.toHaveBeenCalled();
+    expect(overview.updateAllTargetBindings).not.toHaveBeenCalled();
+  });
+
+  it('【回归保护】主图仍在 fixedBounds 内但离开小地图可见窗口时，只移动预览框不移动底图', () => {
+    const overview = service.overviewInstance as unknown as {
+      box: { position: InstanceType<typeof go.Point> };
       centerRect: ReturnType<typeof vi.fn>;
       fixedBounds: InstanceType<typeof go.Rect> | undefined;
       position: InstanceType<typeof go.Point>;
@@ -1330,9 +1503,11 @@ describe('FlowOverviewService', () => {
 
     expect(fixedBoundsWriteCount).toBe(0);
     expect(overview.scale).toBe(scaleBeforeMainPan);
-    expect(overview.centerRect).toHaveBeenCalled();
-    const latestCenteredBounds = overview.centerRect.mock.calls.at(-1)?.[0] as InstanceType<typeof go.Rect>;
-    expectCenteredBoundsToContainViewport(latestCenteredBounds, 1400, 1000);
+    expect(overview.centerRect).not.toHaveBeenCalled();
+    expect(overview.position.x).toBe(0);
+    expect(overview.position.y).toBe(0);
+    expect(overview.box.position.x).toBe(1400);
+    expect(overview.box.position.y).toBe(1000);
   });
 
   it('【性能修复】拖拽期间必须复用 overview 容器 rect，避免每次 pointermove 触发布局读', () => {

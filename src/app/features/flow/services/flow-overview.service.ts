@@ -464,10 +464,33 @@ export class FlowOverviewService {
     if (!this.overview || !viewportBounds.isReal()) return;
     const box = this.overview.box;
     if (!box) return;
+    const scale = Number.isFinite(this.overview.scale) && this.overview.scale > 0
+      ? this.overview.scale
+      : 1;
+    const strokeWidth = 2 / scale;
+    const selectionObject = box.selectionObject as (go.GraphObject & { strokeWidth?: number }) | null;
+    if (selectionObject) {
+      const desiredSize = new go.Size(viewportBounds.width, viewportBounds.height);
+      if (!selectionObject.desiredSize.equals(desiredSize)) {
+        selectionObject.desiredSize = desiredSize;
+      }
+      if (typeof selectionObject.strokeWidth === 'number' && Math.abs(selectionObject.strokeWidth - strokeWidth) > 0.001) {
+        selectionObject.strokeWidth = strokeWidth;
+      }
+    }
+
     const nextPosition = new go.Point(viewportBounds.x, viewportBounds.y);
     if (!box.position.equals(nextPosition)) {
       box.position = nextPosition;
     }
+
+    const boxWithLocation = box as go.Part & { location?: go.Point };
+    const nextLocation = new go.Point(viewportBounds.x - strokeWidth / 2, viewportBounds.y - strokeWidth / 2);
+    if (boxWithLocation.location?.equals && !boxWithLocation.location.equals(nextLocation)) {
+      boxWithLocation.location = nextLocation;
+    }
+
+    box.isSelected = true;
   }
   
   private setupOverviewResizeObserver(container: HTMLDivElement): void {
@@ -581,14 +604,6 @@ export class FlowOverviewService {
     this.overview.centerRect(nodeBounds);
     
     // 动态扩展边界（无限画布核心）
-    const viewportBoundsAlmostEqual = (left: go.Rect, right: go.Rect): boolean => {
-      const epsilon = 1;
-      return Math.abs(left.x - right.x) < epsilon
-        && Math.abs(left.y - right.y) < epsilon
-        && Math.abs(left.width - right.width) < epsilon
-        && Math.abs(left.height - right.height) < epsilon;
-    };
-
     const viewportPositionAlmostEqual = (left: go.Rect, right: go.Rect): boolean => {
       const epsilon = 1;
       return Math.abs(left.x - right.x) < epsilon
@@ -643,7 +658,7 @@ export class FlowOverviewService {
       const containerH = this.overviewContainer?.clientHeight ?? 150;
       // 【2026-05-20 生产复发修复 - 主图持续 pan 残影】
       // 默认 buffer ~400 world-px：用户持续拖动主图时只要每次 pan 越过 fixedBounds
-      // ~400px 就触发一次 setOverviewFixedBounds → GoJS Overview remeasure 所有节点
+      // ~400px 就触发一次 setOverviewFixedBounds → GoJS Overview remeasure 所 有节点
       // → 缩略任务块全量重映射 → 视觉上呈现"快速移动残影"。
       // 在 isPassiveObservedViewportUpdate 进入此路径时使用 passive-pan 模式：
       // 用 viewport 自身尺寸（再带 1x 余量）作为最小 buffer，让一次扩边后
@@ -749,26 +764,38 @@ export class FlowOverviewService {
       }
     };
 
+    const cancelPendingViewportOverviewUpdate = (): void => {
+      if (this.overviewScheduledUpdateRafId === null || this.pendingOverviewUpdateSource === 'document') {
+        return;
+      }
+
+      cancelAnimationFrame(this.overviewScheduledUpdateRafId);
+      this.overviewScheduledUpdateRafId = null;
+      this.pendingOverviewUpdateSource = null;
+    };
+
     const clearStaleReleaseViewportForObservedPan = (): void => {
       if (this.isOverviewBoxDragging || this.isOverviewInteracting || !this.overviewReleaseViewportBounds || !this.diagram) {
         return;
       }
 
-      const observedViewportBounds = this.diagram.viewportBounds;
-      if (!observedViewportBounds.isReal() || viewportPositionAlmostEqual(observedViewportBounds, this.overviewReleaseViewportBounds)) {
-        return;
-      }
-
       const currentPosition = this.diagram.position;
-      const diagramHasMovedAway = !currentPosition
-        || !Number.isFinite(currentPosition.x)
-        || !Number.isFinite(currentPosition.y)
+      const hasCurrentPosition = !!currentPosition
+        && Number.isFinite(currentPosition.x)
+        && Number.isFinite(currentPosition.y);
+      const diagramHasMovedAway = !hasCurrentPosition
         || Math.abs(currentPosition.x - this.overviewReleaseViewportBounds.x) > 1
         || Math.abs(currentPosition.y - this.overviewReleaseViewportBounds.y) > 1;
 
-      const observedHasCaughtUpToDiagramPosition = !!currentPosition
-        && Number.isFinite(currentPosition.x)
-        && Number.isFinite(currentPosition.y)
+      const observedViewportBounds = this.diagram.viewportBounds;
+      const observedMatchesRelease = observedViewportBounds.isReal()
+        && viewportPositionAlmostEqual(observedViewportBounds, this.overviewReleaseViewportBounds);
+      if ((!observedViewportBounds.isReal() || observedMatchesRelease) && !diagramHasMovedAway) {
+        return;
+      }
+
+      const observedHasCaughtUpToDiagramPosition = hasCurrentPosition
+        && observedViewportBounds.isReal()
         && Math.abs(observedViewportBounds.x - currentPosition.x) < 1
         && Math.abs(observedViewportBounds.y - currentPosition.y) < 1;
 
@@ -781,6 +808,7 @@ export class FlowOverviewService {
       this.overviewPostDragAnchorSuppressionBounds = null;
       this.overviewSuppressNextViewportAnchor = false;
       cancelPendingOverviewInteractionRefresh();
+      cancelPendingViewportOverviewUpdate();
       cancelPendingViewportBindingsRefresh();
     };
 
@@ -857,11 +885,26 @@ export class FlowOverviewService {
         const usingFakeViewportBounds = !!(this.isOverviewBoxDragging && fakeViewportBounds && fakeViewportBounds.isReal());
         const usingReleaseViewportBounds = !!(!this.isOverviewBoxDragging && releaseViewportBounds && releaseViewportBounds.isReal());
         const usingManualViewportBounds = usingFakeViewportBounds || usingReleaseViewportBounds;
+        const observedViewportBounds = this.diagram.viewportBounds;
+        const currentDiagramPosition = this.diagram.position;
+        const hasCurrentDiagramPosition = !!currentDiagramPosition
+          && Number.isFinite(currentDiagramPosition.x)
+          && Number.isFinite(currentDiagramPosition.y);
+        const passiveViewportBounds = source === 'viewport'
+          && !usingManualViewportBounds
+          && observedViewportBounds.isReal()
+          && hasCurrentDiagramPosition
+          && !viewportPositionAlmostEqual(
+            observedViewportBounds,
+            new go.Rect(currentDiagramPosition.x, currentDiagramPosition.y, observedViewportBounds.width, observedViewportBounds.height),
+          )
+          ? new go.Rect(currentDiagramPosition.x, currentDiagramPosition.y, observedViewportBounds.width, observedViewportBounds.height)
+          : observedViewportBounds;
         const viewportBounds: go.Rect = usingFakeViewportBounds
           ? fakeViewportBounds
           : usingReleaseViewportBounds
             ? releaseViewportBounds
-            : this.diagram.viewportBounds;
+            : passiveViewportBounds;
         if (!viewportBounds.isReal()) {
           if (usingReleaseViewportBounds) {
             this.overviewReleaseViewportBounds = null;
@@ -893,17 +936,12 @@ export class FlowOverviewService {
           if (suppressedPostDragBounds && !shouldSuppressSettledPostDragAnchor) {
             this.overviewPostDragAnchorSuppressionBounds = null;
           }
-          const overviewVisibleBounds = this.overview.viewportBounds;
-          if (!shouldSuppressSettledPostDragAnchor
-            && (!overviewVisibleBounds.isReal() || !overviewVisibleBounds.containsPoint(viewportBounds.center))) {
-            this.overview.centerRect(viewportBounds);
-          }
           cancelPendingOverviewInteractionRefresh();
           cancelPendingViewportBindingsRefresh();
-          this.setOverviewUpdateDelay(FlowOverviewService.OVERVIEW_DRAG_UPDATE_DELAY_MS);
-          this.scheduleOverviewIdleUpdateDelayRestore();
           this.syncOverviewBoxToViewport(viewportBounds);
-          this.overview.requestUpdate();
+          // 主图普通 pan 没有节点数据或 overview 坐标系变化，只需要移动预览框。
+          // 这里避免 requestUpdate/updateDelay=0 把 GoJS Overview 的缩略节点重绘
+          // 拉进每个 viewport 帧，造成小地图任务块拖影。
           // 【2026-05-19 根因修复 - 主图拖动残影】
           // 原代码在此处 `scheduleViewportBindingsUpdate('deferred')`，导致用户持续拖动
           // 主图（>96ms）时，到期 timer 会强制 `updateAllTargetBindings()` 重算所有
@@ -1107,6 +1145,7 @@ export class FlowOverviewService {
             // 追着白框跑或在异步 ViewportBoundsChanged 中把白框拉回。
             // 当主图 viewport 真正改变时再恢复普通锚定，保留非拖拽同步能力。
             const shouldAnchorOverviewOnViewport = !usingFakeViewportBounds
+              && !isPassiveObservedViewportUpdate
               && !shouldSuppressSettledPostDragAnchor
               && (!usingReleaseViewportBounds || this.overviewReleaseShouldAnchor)
               && (source === 'document' || usingReleaseViewportBounds || !viewportIsInsideCurrentOverviewBounds);
@@ -1127,7 +1166,11 @@ export class FlowOverviewService {
           // 导致拖动手感「阻滞」。box 拖拽期间节点本身的数据（位置/颜色）不会变，
           // 16ms 节流肉眼无差异。
           //
-          // requestUpdate 仍每次同步触发，保证视图框/缩略块每帧重绘跟手。
+          // requestUpdate 只保留给主动拖拽、文档变化或被动 pan 触发扩边的路径；
+          // 稳定边界内的主图 pan 已在上方早返回，避免每帧重绘缩略任务块。
+          if (isPassiveObservedViewportUpdate) {
+            this.syncOverviewBoxToViewport(viewportBounds);
+          }
           this.overview.requestUpdate();
           if (usingFakeViewportBounds) {
             if (this.throttledUpdateBindingsTimer) {
@@ -1422,14 +1465,13 @@ export class FlowOverviewService {
       if (!box || !bounds?.isReal()) return;
       const width = viewportSize?.w ?? bounds.width;
       const height = viewportSize?.h ?? bounds.height;
-
-      const nextPosition = new go.Point(
+      const nextBounds = new go.Rect(
         center.x - width / 2,
         center.y - height / 2,
+        width,
+        height,
       );
-      if (!box.position.equals(nextPosition)) {
-        box.position = nextPosition;
-      }
+      this.syncOverviewBoxToViewport(nextBounds);
     };
 
     const onClick = (ev: MouseEvent): void => {
