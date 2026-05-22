@@ -3,6 +3,7 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { ConnectivityRecoveryService } from './connectivity-recovery.service';
 import { SupabaseClientService } from '../../../../services/supabase-client.service';
@@ -13,57 +14,69 @@ import { RetryQueueService } from './retry-queue.service';
 import { SyncStateService } from './sync-state.service';
 import { BlackBoxSyncService } from '../../../../services/black-box-sync.service';
 
+const mockSupabase = {
+  isOfflineMode: signal(false),
+  probeReachability: vi.fn().mockResolvedValue(true),
+};
+
+const mockLogger = {
+  category: vi.fn().mockReturnValue({
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+  }),
+};
+
+const mockSessionManager = {
+  getRecentValidationSnapshot: vi.fn().mockReturnValue({ valid: true }),
+  validateOrRefreshOnResume: vi.fn().mockResolvedValue({ ok: true, deferred: false }),
+};
+
+const mockRealtimePolling = {
+  suspendTransport: vi.fn().mockResolvedValue(undefined),
+  resumeTransport: vi.fn().mockResolvedValue(undefined),
+  resumeRealtimeUpdates: vi.fn(),
+  hasRemoteChangeCallback: vi.fn().mockReturnValue(false),
+  getCurrentProjectId: vi.fn().mockReturnValue(null),
+  triggerRemoteChange: vi.fn().mockResolvedValue(undefined),
+};
+
+const mockRetryQueue = {
+  processQueue: vi.fn(),
+  length: 0,
+};
+
+const mockSyncState = {
+  setOfflineMode: vi.fn(),
+};
+
+const mockBlackBoxSync = {
+  pullChanges: vi.fn().mockResolvedValue({ success: true }),
+};
+
 describe('ConnectivityRecoveryService', () => {
   let service: ConnectivityRecoveryService;
-  let mockSupabase: Partial<SupabaseClientService>;
-  let mockLogger: Partial<LoggerService>;
-  let mockSessionManager: Partial<SessionManagerService>;
-  let mockRealtimePolling: Partial<RealtimePollingService>;
-  let mockRetryQueue: Partial<RetryQueueService>;
-  let mockSyncState: Partial<SyncStateService>;
-  let mockBlackBoxSync: Partial<BlackBoxSyncService>;
 
   beforeEach(() => {
-    mockSupabase = {
-      probeReachability: vi.fn().mockResolvedValue(true),
-      isOfflineMode: vi.fn().mockReturnValue(false),
-    };
+    mockSupabase.isOfflineMode.set(false);
+    mockSupabase.probeReachability.mockReset();
+    mockSupabase.probeReachability.mockResolvedValue(true);
 
-    mockLogger = {
-      category: vi.fn().mockReturnValue({
-        debug: vi.fn(),
-        info: vi.fn(),
-        warn: vi.fn(),
-        error: vi.fn(),
-      }),
-    };
-
-    mockSessionManager = {
-      getRecentValidationSnapshot: vi.fn().mockReturnValue({ valid: true }),
-      validateOrRefreshOnResume: vi.fn().mockResolvedValue({ ok: true, deferred: false }),
-    };
-
-    mockRealtimePolling = {
-      suspendTransport: vi.fn().mockResolvedValue(undefined),
-      resumeTransport: vi.fn().mockResolvedValue(undefined),
-      resumeRealtimeUpdates: vi.fn(),
-      hasRemoteChangeCallback: vi.fn().mockReturnValue(false),
-      getCurrentProjectId: vi.fn().mockReturnValue(null),
-      triggerRemoteChange: vi.fn().mockResolvedValue(undefined),
-    };
-
-    mockRetryQueue = {
-      processQueue: vi.fn(),
-      length: 0,
-    };
-
-    mockSyncState = {
-      setOfflineMode: vi.fn(),
-    };
-
-    mockBlackBoxSync = {
-      pullChanges: vi.fn().mockResolvedValue({ success: true }),
-    };
+    mockLogger.category.mockClear();
+    mockSessionManager.getRecentValidationSnapshot.mockClear();
+    mockSessionManager.validateOrRefreshOnResume.mockClear();
+    mockRealtimePolling.suspendTransport.mockClear();
+    mockRealtimePolling.resumeTransport.mockClear();
+    mockRealtimePolling.resumeRealtimeUpdates.mockClear();
+    mockRealtimePolling.hasRemoteChangeCallback.mockClear();
+    mockRealtimePolling.getCurrentProjectId.mockClear();
+    mockRealtimePolling.triggerRemoteChange.mockClear();
+    mockRetryQueue.processQueue.mockClear();
+    mockRetryQueue.length = 0;
+    mockSyncState.setOfflineMode.mockClear();
+    mockBlackBoxSync.pullChanges.mockClear();
+    mockBlackBoxSync.pullChanges.mockResolvedValue({ success: true });
 
     TestBed.configureTestingModule({
       providers: [

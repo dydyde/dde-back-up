@@ -82,6 +82,7 @@ export interface Task {
     rank: number;
     x: number;
     y: number;
+    parkingMeta?: import('./parking').TaskParkingMeta | null;
   };
   attachments?: Attachment[];
   tags?: string[];

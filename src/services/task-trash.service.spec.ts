@@ -323,6 +323,41 @@ describe('TaskTrashService', () => {
       }
     });
 
+    it('软删除并恢复任务应保留 parkingMeta 快照', () => {
+      const parkingMeta = {
+        state: 'parked' as const,
+        parkedAt: '2026-04-23T00:00:00.000Z',
+        lastVisitedAt: '2026-04-23T00:05:00.000Z',
+        contextSnapshot: null,
+        reminder: null,
+        pinned: true,
+      };
+      const task = createTask({
+        id: 'task-parked',
+        stage: 2,
+        parkingMeta,
+      });
+      currentProject = createProject([task]);
+
+      const deleteResult = service.deleteTask('task-parked');
+
+      expect(deleteResult.deletedTaskIds.has('task-parked')).toBe(true);
+      const deletedTask = currentProject.tasks.find(t => t.id === 'task-parked');
+      expect(deletedTask?.parkingMeta).toBeNull();
+      expect(deletedTask?.deletedMeta).toMatchObject({
+        stage: 2,
+        parkingMeta,
+      });
+
+      const restoreResult = service.restoreTask('task-parked');
+
+      expect(restoreResult.restoredTaskIds.has('task-parked')).toBe(true);
+      const restoredTask = currentProject.tasks.find(t => t.id === 'task-parked');
+      expect(restoredTask?.parkingMeta).toEqual(parkingMeta);
+      expect(restoredTask?.deletedMeta).toBeUndefined();
+      expect(restoredTask?.stage).toBe(2);
+    });
+
     it('恢复 title 和 content 都为空的任务应设置默认 title', () => {
       const task = createTask({ 
         id: 'task-empty', 

@@ -378,9 +378,12 @@ describe('WorkspaceModalCoordinatorService', () => {
     await service.openDashboard({ initialTab: 'conflicts' });
 
     expect(mockDynamicModal.open).toHaveBeenCalledOnce();
-    const callArgs = mockDynamicModal.open.mock.calls[0];
-    const config = callArgs[1] as { inputs?: Record<string, unknown> };
-    expect(config?.inputs).toEqual({ initialTab: 'conflicts' });
+    const openCall = mockDynamicModal.open.mock.calls[0] as unknown[];
+    if (openCall.length < 2) {
+      throw new Error('Expected dashboard modal to be opened');
+    }
+    const config = openCall[1] as { inputs?: Record<string, unknown> };
+    expect(config.inputs).toEqual({ initialTab: 'conflicts' });
   });
 
   it('openConflictCenterFromDashboard 应切换已打开仪表盘的 Tab 而不是关闭它', async () => {

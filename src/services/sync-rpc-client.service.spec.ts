@@ -549,7 +549,9 @@ describe('SyncRpcClientService', () => {
 
     let capturedPayload: Record<string, unknown> | null = null;
     const rpc = vi.fn(async (_name, payload) => {
-      capturedPayload = payload as Record<string, unknown>;
+      capturedPayload = payload && typeof payload === 'object' && !Array.isArray(payload)
+        ? payload as Record<string, unknown>
+        : null;
       return {
         data: {
           status: 'applied',
@@ -577,7 +579,10 @@ describe('SyncRpcClientService', () => {
     });
 
     expect(capturedPayload).not.toBeNull();
-    expect((capturedPayload as Record<string, unknown>)['base_updated_at_map']).toEqual({
+    if (!capturedPayload) {
+      throw new Error('Expected deleteTasks RPC payload to be captured');
+    }
+    expect(capturedPayload['base_updated_at_map']).toEqual({
       'task-1': '2026-05-15T09:00:00.000Z',
       'task-2': '2026-05-15T09:30:00.000Z',
     });
@@ -591,7 +596,9 @@ describe('SyncRpcClientService', () => {
 
     let capturedPayload: Record<string, unknown> | null = null;
     const rpc = vi.fn(async (_name, payload) => {
-      capturedPayload = payload as Record<string, unknown>;
+      capturedPayload = payload && typeof payload === 'object' && !Array.isArray(payload)
+        ? payload as Record<string, unknown>
+        : null;
       return {
         data: { status: 'applied', deleted_count: 0, attachment_paths: [] },
         error: null,
