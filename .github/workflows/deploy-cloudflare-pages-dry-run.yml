@@ -15,7 +15,7 @@ permissions:
 
 env:
   NODE_VERSION: '22'
-  WRANGLER_VERSION: '3.114.0'
+  WRANGLER_VERSION: '3.112.0'
   ENABLE_SENTRY_SOURCEMAPS: 'false'
 
 jobs:

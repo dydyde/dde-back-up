@@ -29,7 +29,7 @@ permissions:
 
 env:
   NODE_VERSION: '22'
-  WRANGLER_VERSION: '3.114.0'
+  WRANGLER_VERSION: '3.112.0'
   ENABLE_SENTRY_SOURCEMAPS: 'false'
   CANONICAL_PRODUCTION_ORIGIN: ${{ vars.CANONICAL_PRODUCTION_ORIGIN || 'https://nanoflow.pages.dev' }}
   READ_ONLY_PREVIEW: ${{ vars.READ_ONLY_PREVIEW || 'true' }}
