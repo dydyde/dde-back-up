@@ -33,5 +33,39 @@ describe('MobileBlackBoxDrawerComponent', () => {
 
     expect(blackBoxService.refreshForView).toHaveBeenCalledTimes(1);
     expect(blackBoxService.loadFromServer).not.toHaveBeenCalled();
+
+    // 清理 visibilitychange 监听器
+    component.ngOnDestroy();
+  });
+
+  it('visibilitychange → visible 时应触发 refreshForView', async () => {
+    const blackBoxService = {
+      entriesByDate: signal([]),
+      pendingCount: signal(0),
+      refreshForView: vi.fn().mockResolvedValue(undefined),
+      loadFromServer: vi.fn(),
+    };
+
+    const injector = Injector.create({
+      providers: [
+        { provide: BlackBoxService, useValue: blackBoxService },
+        { provide: SpeechToTextService, useValue: {} },
+        { provide: FocusPreferenceService, useValue: {} },
+        { provide: ToastService, useValue: {} },
+        { provide: TaskOperationAdapterService, useValue: {} },
+      ],
+    });
+
+    const component = runInInjectionContext(injector, () => new MobileBlackBoxDrawerComponent());
+    component.ngOnInit();
+    blackBoxService.refreshForView.mockClear();
+
+    // 模拟 visibility 变为 visible
+    Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true });
+    document.dispatchEvent(new Event('visibilitychange'));
+
+    expect(blackBoxService.refreshForView).toHaveBeenCalledTimes(1);
+
+    component.ngOnDestroy();
   });
 });

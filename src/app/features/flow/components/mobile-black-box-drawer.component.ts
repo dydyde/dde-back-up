@@ -5,7 +5,7 @@
  * 专为移动端抽屉布局优化
  */
 
-import { Component, ChangeDetectionStrategy, inject, OnInit, output } from '@angular/core';
+import { Component, ChangeDetectionStrategy, inject, OnInit, OnDestroy, output } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { BlackBoxService } from '../../../../services/black-box.service';
 import { SpeechToTextService } from '../../../../services/speech-to-text.service';
@@ -127,7 +127,7 @@ import {
     }
   `]
 })
-export class MobileBlackBoxDrawerComponent implements OnInit {
+export class MobileBlackBoxDrawerComponent implements OnInit, OnDestroy {
   private blackBoxService = inject(BlackBoxService);
   readonly speechService = inject(SpeechToTextService);
   readonly focusPrefs = inject(FocusPreferenceService);
@@ -142,9 +142,34 @@ export class MobileBlackBoxDrawerComponent implements OnInit {
   
   // 滑动手势状态
   private swipeState: SwipeGestureState = { startX: 0, startY: 0, startTime: 0, isActive: false };
+
+  // visibilitychange 监听器引用（用于 cleanup）
+  private visibilityHandler: (() => void) | null = null;
   
   ngOnInit(): void {
     void this.blackBoxService.refreshForView();
+    this.setupVisibilityRefresh();
+  }
+
+  ngOnDestroy(): void {
+    if (this.visibilityHandler) {
+      document.removeEventListener('visibilitychange', this.visibilityHandler);
+      this.visibilityHandler = null;
+    }
+  }
+
+  /**
+   * 【修复 2026-05-24】页面重新可见时触发远端刷新，
+   * 确保手机端切回前台时能获取电脑端的最新修改。
+   * freshness window 对 panel-open 已绕过，因此不会与定时轮询产生冗余请求。
+   */
+  private setupVisibilityRefresh(): void {
+    this.visibilityHandler = () => {
+      if (document.visibilityState === 'visible') {
+        void this.blackBoxService.refreshForView();
+      }
+    };
+    document.addEventListener('visibilitychange', this.visibilityHandler);
   }
   
   /**

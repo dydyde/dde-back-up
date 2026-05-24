@@ -387,7 +387,7 @@ describe('BlackBoxSyncService', () => {
     expect(doPullSpy).toHaveBeenCalledTimes(1);
   });
 
-  it('should not report passive view refresh duplicates to Sentry', async () => {
+  it('panel-open reason should bypass freshness window for cross-device sync', async () => {
     const doPullSpy = vi.spyOn(
       service as unknown as { doPullChanges: () => Promise<boolean> },
       'doPullChanges'
@@ -398,7 +398,8 @@ describe('BlackBoxSyncService', () => {
 
     await service.pullChanges({ reason: 'panel-open' });
 
-    expect(doPullSpy).toHaveBeenCalledTimes(1);
+    // 【修复 2026-05-24】panel-open 绕过 freshness window，确保打开面板时始终获取最新数据
+    expect(doPullSpy).toHaveBeenCalledTimes(2);
     expect(mockSentry.captureMessage).not.toHaveBeenCalled();
   });
 
