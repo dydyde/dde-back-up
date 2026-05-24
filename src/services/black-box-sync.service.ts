@@ -692,8 +692,26 @@ export class BlackBoxSyncService {
       this.recoverPendingEntries();
     };
     window.addEventListener('online', onOnline);
+
+    // 【修复 2026-05-24】Realtime 熔断期间，visibilitychange → visible 时触发兜底拉取，
+    // 降低用户感知的"不同步"时间窗口（正常情况下 Realtime 推送即时通知变更）。
+    const onVisibilityChange = () => {
+      if (document.visibilityState !== 'visible') return;
+      const userId = this.resolveRemoteSessionUserId();
+      if (!userId) return;
+      const circuit = this.getRealtimeCircuitSnapshot(userId);
+      if (circuit.remainingMs > 0) {
+        this.logger.info('Realtime 熔断期 visibility 兜底拉取触发', {
+          circuitRemainingMs: circuit.remainingMs,
+        });
+        void this.pullChanges({ reason: 'resume' });
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+
     this.destroyRef.onDestroy(() => {
       window.removeEventListener('online', onOnline);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
       void this.teardownRealtimeSubscription();
       // 清理防抖定时器
       if (this.pushDebounceTimer) {
@@ -2197,6 +2215,7 @@ export class BlackBoxSyncService {
           preflightServerEntry = serverEntry;
           syncRpcBaseUpdatedAt = serverEntry.updatedAt;
           entry = this.hydrateBlankContentFromSource(entry, serverEntry, 'server-preflight');
+          let skipLocalPreflightComparison = false;
           const rawServerMs = new Date(serverEntry.updatedAt).getTime();
           const rawLocalMs = new Date(entry.updatedAt).getTime();
           const timestampsDiffer = Number.isFinite(rawServerMs)
@@ -2207,14 +2226,27 @@ export class BlackBoxSyncService {
             : null;
 
           if (timestampsDiffer && !clockSyncResult?.reliable) {
-            this.logger.warn('黑匣子推送预检检测到不可信时间基线，延后本轮推送避免误判覆盖或回退本地更新', {
-              entryId: entry.id,
-              localUpdatedAt: entry.updatedAt,
-              serverUpdatedAt: serverEntry.updatedAt,
-            });
-            return false;
+            // 【修复 2026-05-24】时钟不可信时：若 SyncRPC 可用则降级为服务端仲裁（stale-write-protection），
+            // 不再完全阻止 push —— 手机端时钟偏差大时会导致条目长期 pending，电脑端看不到。
+            if (this.shouldUseSyncRpc()) {
+              this.logger.info('黑匣子推送预检时钟不可信，降级为服务端 stale-write-protection 仲裁', {
+                entryId: entry.id,
+                localUpdatedAt: entry.updatedAt,
+                serverUpdatedAt: serverEntry.updatedAt,
+              });
+              // 跳过本地 LWW 判定，直接走 SyncRPC 路径让服务端决定
+              skipLocalPreflightComparison = true;
+            } else {
+              this.logger.warn('黑匣子推送预检检测到不可信时间基线，延后本轮推送避免误判覆盖或回退本地更新', {
+                entryId: entry.id,
+                localUpdatedAt: entry.updatedAt,
+                serverUpdatedAt: serverEntry.updatedAt,
+              });
+              return false;
+            }
           }
 
+          if (!skipLocalPreflightComparison) {
           const serverIsNewer = clockSyncResult?.reliable
             ? this.clockSync.compareTimestamps(entry.updatedAt, serverEntry.updatedAt) < 0
             : rawServerMs > rawLocalMs;
@@ -2281,6 +2313,7 @@ export class BlackBoxSyncService {
               // fall through to upsert with merged entry
             }
           }
+          } // end skipLocalPreflightComparison guard
         } else if (!preflightError && !serverRow) {
           preflightServerEntry = null;
           syncRpcBaseUpdatedAt = null;
@@ -2511,8 +2544,10 @@ export class BlackBoxSyncService {
     }
 
     // 【性能优化 2026-02-14】freshness window 守卫：窗口内已拉取过则跳过
+    // 【修复 2026-05-24】panel-open 是用户主动打开面板的明确意图，应始终获取最新数据，绕过 freshness window
     const freshnessWindow = SYNC_CONFIG.BLACKBOX_PULL_FRESHNESS_WINDOW;
-    if (!force && !pendingEntriesNeedRemoteReconciliation && this.lastPullTime > 0 && Date.now() - this.lastPullTime < freshnessWindow) {
+    const bypassFreshness = reason === 'panel-open';
+    if (!force && !bypassFreshness && !pendingEntriesNeedRemoteReconciliation && this.lastPullTime > 0 && Date.now() - this.lastPullTime < freshnessWindow) {
       const elapsedSec = Math.round((Date.now() - this.lastPullTime) / 1000);
       this.logger.debug(`Freshness window 内跳过拉取 (${elapsedSec}s < ${freshnessWindow / 1000}s)`);
       // 【监控 2026-02-14】记录被阻断的重复拉取，用于 Sentry 告警观测

@@ -10,6 +10,7 @@ import {
   inject,
   output,
   OnInit,
+  OnDestroy,
   input
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
@@ -100,7 +101,7 @@ import {
   `],
   changeDetection: ChangeDetectionStrategy.OnPush
 })
-export class BlackBoxPanelComponent implements OnInit {
+export class BlackBoxPanelComponent implements OnInit, OnDestroy {
   private blackBoxService = inject(BlackBoxService);
   speechService = inject(SpeechToTextService);
   focusPrefs = inject(FocusPreferenceService);
@@ -115,6 +116,9 @@ export class BlackBoxPanelComponent implements OnInit {
   
   // 滑动手势状态
   private swipeState: SwipeGestureState = { startX: 0, startY: 0, startTime: 0, isActive: false };
+
+  // visibilitychange 监听器引用（用于 cleanup）
+  private visibilityHandler: (() => void) | null = null;
   
   /**
    * 组件初始化时先补本地快照，再走轻量远端刷新。
@@ -122,6 +126,28 @@ export class BlackBoxPanelComponent implements OnInit {
    */
   ngOnInit(): void {
     void this.blackBoxService.refreshForView();
+    this.setupVisibilityRefresh();
+  }
+
+  ngOnDestroy(): void {
+    if (this.visibilityHandler) {
+      document.removeEventListener('visibilitychange', this.visibilityHandler);
+      this.visibilityHandler = null;
+    }
+  }
+
+  /**
+   * 【修复 2026-05-24】页面重新可见时触发远端刷新，
+   * 确保切回前台时能获取其他设备的最新修改。
+   * freshness window 对 panel-open 已绕过，因此不会与定时轮询产生冗余请求。
+   */
+  private setupVisibilityRefresh(): void {
+    this.visibilityHandler = () => {
+      if (document.visibilityState === 'visible') {
+        void this.blackBoxService.refreshForView();
+      }
+    };
+    document.addEventListener('visibilitychange', this.visibilityHandler);
   }
   
   /**
