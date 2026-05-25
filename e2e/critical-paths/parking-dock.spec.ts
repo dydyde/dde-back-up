@@ -1,14 +1,27 @@
 import { expect, Page, test } from '@playwright/test';
 import { testHelpers } from './helpers';
 
+const LOCAL_MODE_KEY = 'nanoflow.local-mode';
+const AUTH_CACHE_KEY = 'nanoflow.auth-cache';
+
+async function ensureLocalModeFlag(page: Page): Promise<void> {
+  await page.evaluate(({ localModeKey, authCacheKey }) => {
+    localStorage.setItem(localModeKey, 'true');
+    localStorage.removeItem(authCacheKey);
+    window.dispatchEvent(new Event('nanoflow:local-mode-changed'));
+  }, { localModeKey: LOCAL_MODE_KEY, authCacheKey: AUTH_CACHE_KEY });
+}
+
 async function bootstrapLocalWorkspace(page: Page): Promise<void> {
   await page.goto('/');
-  await testHelpers.waitForAppReady(page);
 
   const localModeBtn = page.locator('[data-testid="local-mode-btn"]').first();
-  if (await testHelpers.isElementVisible(localModeBtn, 2000)) {
+  if (await testHelpers.isElementVisible(localModeBtn, 8000)) {
     await localModeBtn.click();
+  } else {
+    await testHelpers.waitForAppReady(page);
   }
+  await ensureLocalModeFlag(page);
 
   await expect(page.locator('[data-testid="project-selector"]')).toBeVisible({ timeout: 15000 });
 }
@@ -23,7 +36,9 @@ async function enterProjectWorkspace(page: Page): Promise<void> {
 }
 
 async function createAndActivateProject(page: Page, projectName: string): Promise<void> {
-  await page.click('[data-testid="create-project-btn"]', { force: true });
+  const createProjectButton = page.locator('[data-testid="create-project-btn"]:visible').first();
+  await expect(createProjectButton).toBeVisible({ timeout: 8000 });
+  await createProjectButton.evaluate((element: HTMLElement) => element.click());
   await expect(page.locator('[data-testid="new-project-modal"]')).toBeVisible({ timeout: 8000 });
 
   const nameInput = page.locator('[data-testid="project-name-input"]').first();
@@ -64,7 +79,11 @@ async function ensureDockPanelVisible(page: Page): Promise<void> {
     return;
   }
 
-  await page.locator('[data-testid="dock-v3-semicircle"]').first().click({ force: true });
+  const visibleTrigger = page.locator('[data-testid="dock-v3-semicircle"]:visible').first();
+  const trigger = await testHelpers.isElementVisible(visibleTrigger, 800)
+    ? visibleTrigger
+    : page.locator('[data-testid="dock-v3-semicircle"]').first();
+  await trigger.click({ force: true });
   await expect(panel).toBeVisible({ timeout: 8000 });
 }
 
@@ -173,7 +192,11 @@ async function measureDockTargets(page: Page): Promise<Record<string, { width: n
 
     return Object.fromEntries(
       Object.entries(selectors).map(([key, selector]) => {
-        const element = document.querySelector<HTMLElement>(selector);
+        const element = Array.from(document.querySelectorAll<HTMLElement>(selector)).find(candidate => {
+          const rect = candidate.getBoundingClientRect();
+          const style = window.getComputedStyle(candidate);
+          return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+        }) ?? null;
         if (!element) return [key, null];
         const rect = element.getBoundingClientRect();
         return [key, { width: rect.width, height: rect.height }];
@@ -221,7 +244,15 @@ async function createInlineTaskInFocus(page: Page, times = 1): Promise<void> {
 }
 
 async function seedDockSnapshot(page: Page, snapshot: Record<string, unknown>): Promise<void> {
-  await page.evaluate(async (payload: Record<string, unknown>) => {
+  await page.evaluate(async ({ payload, localModeKey, authCacheKey }) => {
+    localStorage.setItem(localModeKey, 'true');
+    localStorage.removeItem(authCacheKey);
+    window.dispatchEvent(new Event('nanoflow:local-mode-changed'));
+
+    const serialized = JSON.stringify(payload);
+    localStorage.setItem('nanoflow.dock-snapshot.v3.local-user', serialized);
+    localStorage.setItem('nanoflow.dock-snapshot.v3.anonymous', serialized);
+
     const db = await new Promise<IDBDatabase>((resolve, reject) => {
       const req = indexedDB.open('keyval-store');
       req.onerror = () => reject(req.error);
@@ -239,7 +270,7 @@ async function seedDockSnapshot(page: Page, snapshot: Record<string, unknown>): 
     });
 
     db.close();
-  }, snapshot);
+  }, { payload: snapshot, localModeKey: LOCAL_MODE_KEY, authCacheKey: AUTH_CACHE_KEY });
 }
 
 async function createTextTask(page: Page, title: string) {
@@ -308,14 +339,27 @@ async function reachFragmentCountdownFromShortWait(page: Page, prefix: string): 
   await expect(pendingChoice).toBeVisible({ timeout: 10000 });
   await pendingChoice.click({ force: true });
 
-  const completeBtn = page.locator('[data-testid="dock-v3-complete-btn"]').first();
-  await expect(completeBtn).toBeVisible({ timeout: 10000 });
-  await completeBtn.click({ force: true });
+  await completeFocusedTaskUntilFragmentCountdown(page);
+}
 
-  await expect(page.locator('[data-testid="fragment-countdown-number"]')).toBeVisible({ timeout: 10000 });
+async function completeFocusedTaskUntilFragmentCountdown(page: Page): Promise<void> {
+  const countdown = page.locator('[data-testid="fragment-countdown-number"]');
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    await confirmFocusedTaskCompletion(page);
+    if (await testHelpers.isElementVisible(countdown, 2500)) {
+      return;
+    }
+  }
+  await expect(countdown).toBeVisible({ timeout: 10000 });
 }
 
 async function confirmFocusedTaskCompletion(page: Page): Promise<void> {
+  await expect
+    .poll(async () => page.locator('[data-testid="dock-v3-console-card"].is-animating').count(), {
+      timeout: 10000,
+      intervals: [100, 150, 250],
+    })
+    .toBe(0);
   const completeBtn = page.locator('[data-testid="dock-v3-complete-btn"]').first();
   await expect(completeBtn).toBeVisible({ timeout: 10000 });
   await completeBtn.evaluate((el: HTMLElement) => el.click());
@@ -676,8 +720,12 @@ test.describe('ParkingDock V3 critical paths', () => {
       page.locator('[data-testid="local-mode-btn"]').first(),
       { timeout: 1200, force: true },
     );
+    const seededProject = page.locator('[data-testid="project-item"]').filter({ hasText: 'DockHudOverflow' }).first();
+    if (await testHelpers.isElementVisible(seededProject, 3000)) {
+      await seededProject.click({ force: true });
+    }
     if (!(await testHelpers.isElementVisible(page.locator('[data-testid="project-shell-main-content"]').first(), 1500))) {
-      await page.locator('[data-testid="project-item"]').first().click({ force: true });
+      await page.locator('[data-testid="project-item"]').filter({ hasText: 'DockHudOverflow' }).first().click({ force: true });
       await enterProjectWorkspace(page);
     }
 
@@ -745,11 +793,11 @@ test.describe('ParkingDock V3 critical paths', () => {
     await createDockTaskByForm(page, `Offline-${testHelpers.uniqueId()}`);
     await enterFocusMode(page);
 
-    await context.setOffline(true);
+    await testHelpers.setOffline(page, context, true);
     await createInlineTaskInFocus(page, 1);
     await expect(page.locator('[data-testid="dock-v3-item"]').first()).toBeVisible({ timeout: 10000 });
 
-    await context.setOffline(false);
+    await testHelpers.setOffline(page, context, false);
     // 等待同步防抖完成后 focus-stage 重新可见，替代盲等 3.5s
     await expect(page.locator('[data-testid="dock-v3-focus-stage"]')).toBeVisible({ timeout: 15000 });
   });
@@ -811,6 +859,7 @@ test.describe('ParkingDock V3 critical paths', () => {
   test('shared black-box entries should persist sourceBlackBoxEntryId and focus_meta in local stores', async ({ page }) => {
     await bootstrapLocalWorkspace(page);
     await createAndActivateProject(page, `DockShared-${testHelpers.uniqueId()}`);
+    await ensureLocalModeFlag(page);
 
     const taskTitle = `Shared-${testHelpers.uniqueId()}`;
     await createDockTaskByForm(page, taskTitle);
@@ -921,10 +970,12 @@ test.describe('ParkingDock V3 critical paths', () => {
     const panel = page.locator('[data-testid="dock-v3-panel"]').first();
     const createToggle = panel.locator('[data-testid="dock-v3-create-toggle"]').first();
     await expect(createToggle).toBeVisible({ timeout: 10000 });
-    await createToggle.click({ force: true });
+    await expect(createToggle).toBeDisabled();
     await expect(panel.locator('[data-testid="dock-v3-new-task-form"]').first()).toBeHidden({ timeout: 2000 });
 
-    await triggerFocusToggle(page);
+    const dockFocusToggle = page.locator('[data-testid="dock-v3-focus-toggle"]').first();
+    await expect(dockFocusToggle).toBeVisible({ timeout: 10000 });
+    await expect(dockFocusToggle).toBeDisabled();
     await expect(page.locator('[data-testid="dock-v3-focus-stage"]')).toBeHidden({ timeout: 2000 });
   });
 
@@ -937,12 +988,12 @@ test.describe('ParkingDock V3 critical paths', () => {
     await expect(page.locator('[data-testid="fragment-countdown-number"]')).toBeHidden({ timeout: 10000 });
     await expect(page.locator('[data-testid="dock-v3-focus-stage"]')).toBeVisible({ timeout: 10000 });
 
-    await openExitConfirm(page);
+    await openDestructiveExitChoices(page);
     await page.locator('[data-testid="dock-v3-exit-clear"]').click({ force: true });
     await expect(page.locator('[data-testid="dock-v3-focus-stage"]')).toBeHidden({ timeout: 10000 });
+    await waitForFocusTransitionStable(page);
     await expect(page.locator('[data-testid="dock-v3-item"]')).toHaveCount(0, { timeout: 10000 });
 
-    await createAndActivateProject(page, `DockFragmentAccept-${testHelpers.uniqueId()}`);
     await reachFragmentCountdownFromShortWait(page, `Accept-${testHelpers.uniqueId()}`);
     await page.locator('[data-testid="fragment-countdown-accept"]').click({ force: true });
     await expect(page.locator('[data-testid="fragment-countdown-number"]')).toBeHidden({ timeout: 10000 });
@@ -953,18 +1004,24 @@ test.describe('ParkingDock V3 critical paths', () => {
     await bootstrapLocalWorkspace(page);
     await createAndActivateProject(page, `DockMobile-${testHelpers.uniqueId()}`);
     await page.setViewportSize({ width: 390, height: 844 });
-    await expect(page.locator('[data-testid="dock-v3-semicircle"]').first()).toBeVisible({ timeout: 5000 });
+    await expect(page.locator('[data-testid="dock-v3-semicircle"]:visible').first()).toBeVisible({ timeout: 5000 });
 
     const viewport = page.viewportSize();
-    const semiCircle = page.locator('[data-testid="dock-v3-semicircle"]').first();
-    const semiBox = await semiCircle.boundingBox();
+    const semiCircle = page.locator('[data-testid="dock-v3-semicircle"]:visible').first();
+    let semiBox = await semiCircle.boundingBox();
+    await expect
+      .poll(async () => {
+        semiBox = await semiCircle.boundingBox();
+        return semiBox === null ? 'missing' : 'ready';
+      }, { timeout: 5000, intervals: [100, 150, 250] })
+      .toBe('ready');
     expect(semiBox).toBeTruthy();
     expect(viewport).toBeTruthy();
     expect((semiBox?.y ?? 0) + (semiBox?.height ?? 0)).toBeLessThanOrEqual((viewport?.height ?? 0));
 
     await createDockTaskByForm(page, `Mobile-${testHelpers.uniqueId()}`);
     const dockItem = page.locator('[data-testid="dock-v3-item"]').first();
-    await dockItem.locator('[data-testid="dock-v3-planner-toggle"]').click({ force: true });
+    await dockItem.locator('[data-testid="dock-v3-planner-toggle"]').evaluate((el: HTMLElement) => el.click());
 
     const panel = page.locator('[data-testid="dock-v3-planner-panel"]').first();
     await expect(panel).toBeVisible({ timeout: 5000 });
@@ -992,15 +1049,29 @@ test.describe('ParkingDock V3 critical paths', () => {
     await expect(page.locator('[data-testid="dock-v3-help-overlay"]')).toBeHidden({ timeout: 5000 });
 
     await page.setViewportSize({ width: 390, height: 844 });
-    await expect(page.locator('[data-testid="dock-v3-console-card"]').first()).toBeVisible({ timeout: 5000 });
+    await waitForFocusTransitionStable(page);
+    await ensureDockPanelVisible(page);
+    await expect(page.locator('[data-testid="dock-v3-console-card"]:visible').first()).toBeVisible({ timeout: 5000 });
 
     const mobileTargets = await measureDockTargets(page);
     expect(mobileTargets.waitButton?.height ?? 0).toBeGreaterThanOrEqual(44);
 
-    const focusCard = page.locator('[data-testid="dock-v3-console-card"]').first();
-    const dockPanel = page.locator('[data-testid="dock-v3-panel"]').first();
-    const focusCardBox = await focusCard.boundingBox();
-    const dockPanelBox = await dockPanel.boundingBox();
+    const focusCard = page.locator('[data-testid="dock-v3-console-card"]:visible').first();
+    const dockPanel = page.locator('[data-testid="dock-v3-panel"]:visible').first();
+    let focusCardBox = await focusCard.boundingBox();
+    await expect
+      .poll(async () => {
+        focusCardBox = await focusCard.boundingBox();
+        return focusCardBox === null ? 'missing' : 'ready';
+      }, { timeout: 5000, intervals: [100, 150, 250] })
+      .toBe('ready');
+    let dockPanelBox = await dockPanel.boundingBox();
+    await expect
+      .poll(async () => {
+        dockPanelBox = await dockPanel.boundingBox();
+        return dockPanelBox === null ? 'missing' : 'ready';
+      }, { timeout: 5000, intervals: [100, 150, 250] })
+      .toBe('ready');
     expect(focusCardBox).toBeTruthy();
     expect(dockPanelBox).toBeTruthy();
     expect(((focusCardBox?.y ?? 0) + (focusCardBox?.height ?? 0))).toBeLessThanOrEqual((dockPanelBox?.y ?? 0) + 8);

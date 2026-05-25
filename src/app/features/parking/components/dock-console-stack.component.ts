@@ -315,7 +315,7 @@ const consoleMotion = PARKING_CONFIG.MOTION.console;
                     type="button"
                     (click)="toggleWaitPresets(card.taskId)"
                     class="px-3 py-2 rounded-xl bg-stone-800 hover:bg-stone-700 text-stone-400 hover:text-stone-300 transition-colors text-sm"
-                    style="min-height: 44px; min-width: 44px;"
+                    style="min-height: 46px; min-width: 46px;"
                     data-testid="dock-v3-wait-trigger">
                     ⏱ 等待
                   </button>

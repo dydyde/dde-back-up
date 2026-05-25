@@ -5,6 +5,7 @@ import { ToastService } from '../../../services/toast.service';
 import { ActionQueueService } from '../../../services/action-queue.service';
 import { UiStateService } from '../../../services/ui-state.service';
 import { AuthService } from '../../../services/auth.service';
+import { NetworkAwarenessService } from '../../../services/network-awareness.service';
 import { AUTH_CONFIG, FEATURE_FLAGS } from '../../../config';
 import { isLocalModeEnabled } from '../../../services/guards/auth.guard';
 
@@ -63,6 +64,7 @@ export class OfflineBannerComponent {
   private uiState = inject(UiStateService);
   private destroyRef = inject(DestroyRef);
   private auth = inject(AuthService);
+  private networkAwareness = inject(NetworkAwarenessService);
   
   /** 上一次的网络连接状态（用于检测状态变化） */
   private previousOnlineState: boolean | null = null;
@@ -78,7 +80,9 @@ export class OfflineBannerComponent {
 
   /** 离线状态 */
   readonly isOffline = computed(() => 
-    !this.syncService.syncState().isOnline || this.syncService.syncState().offlineMode
+    !this.networkAwareness.isOnline()
+    || !this.syncService.syncState().isOnline
+    || this.syncService.syncState().offlineMode
   );
 
   /** 存储冻结状态 */
@@ -92,7 +96,7 @@ export class OfflineBannerComponent {
 
   constructor() {
     // 【NEW-7】首次加载时检测离线状态 — 使用平和的语气
-    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+    if ((typeof navigator !== 'undefined' && !navigator.onLine) || !this.networkAwareness.isOnline()) {
       this.toast.info('离线模式已启用', '您可以继续编辑，所有更改都安全地保存在本地，联网后自动同步');
       this.showIndicator.set(true);
     }
@@ -102,7 +106,7 @@ export class OfflineBannerComponent {
 
     // 使用 effect 监听网络状态变化
     effect(() => {
-      const isOnline = this.syncService.syncState().isOnline;
+      const isOnline = this.networkAwareness.isOnline() && this.syncService.syncState().isOnline;
       const offlineMode = this.syncService.syncState().offlineMode;
       const queueFrozen = this.actionQueue.queueFrozen();
       

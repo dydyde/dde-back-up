@@ -65,14 +65,14 @@ test.describe('关键路径 5: 离线同步和数据保护', () => {
 
     await testHelpers.createTask(page, taskTitle);
 
-    await context.setOffline(true);
+    await testHelpers.setOffline(page, context, true);
     await testHelpers.waitForOfflineIndicator(page);
 
     const editInput = await testHelpers.openTaskTitleEditor(page, taskTitle);
     await editInput.fill(offlineUpdate);
     await editInput.blur();
 
-    await context.setOffline(false);
+    await testHelpers.setOffline(page, context, false);
     await testHelpers.waitForSyncSettled(page, { timeout: 20_000 });
 
     await page.reload();
@@ -102,9 +102,9 @@ test.describe('关键路径 5: 离线同步和数据保护', () => {
     await testHelpers.createTask(page, taskTitle);
 
     for (let i = 0; i < 3; i++) {
-      await context.setOffline(true);
+      await testHelpers.setOffline(page, context, true);
       await testHelpers.waitForOfflineIndicator(page);
-      await context.setOffline(false);
+      await testHelpers.setOffline(page, context, false);
       await testHelpers.waitForSyncSettled(page, { timeout: 10_000 });
     }
 
@@ -118,13 +118,13 @@ test.describe('关键路径 5: 离线同步和数据保护', () => {
 
     await testHelpers.createTask(page, taskTitle);
 
-    await context.setOffline(true);
+    await testHelpers.setOffline(page, context, true);
     await testHelpers.waitForOfflineIndicator(page);
 
     const titleInput = await testHelpers.openTaskTitleEditor(page, taskTitle);
     await expect(titleInput).toHaveValue(taskTitle);
 
-    await context.setOffline(false);
+    await testHelpers.setOffline(page, context, false);
     await testHelpers.waitForSyncSettled(page);
   });
 });

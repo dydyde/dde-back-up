@@ -1,6 +1,18 @@
 import { test, expect, Locator, Page } from '@playwright/test';
 import { testHelpers } from './helpers';
 
+async function isStageExpanded(stage: Locator): Promise<boolean> {
+  const taskList = stage.locator('[data-stage-task-list]').first();
+  return taskList.evaluate((element: HTMLElement) => {
+    const style = window.getComputedStyle(element);
+    const rect = element.getBoundingClientRect();
+    return element.getAttribute('aria-hidden') !== 'true'
+      && style.pointerEvents !== 'none'
+      && style.opacity !== '0'
+      && rect.height > 4;
+  }).catch(() => false);
+}
+
 async function expandStageWithTasks(page: Page): Promise<Locator> {
   const stages = page.locator('[data-stage-number]');
   const count = await stages.count();
@@ -8,11 +20,15 @@ async function expandStageWithTasks(page: Page): Promise<Locator> {
   for (let index = 0; index < count; index += 1) {
     const stage = stages.nth(index);
     const taskCard = stage.locator('[data-testid="task-card"]').first();
-    if (await taskCard.isVisible().catch(() => false)) {
+    if ((await taskCard.isVisible().catch(() => false)) && await isStageExpanded(stage)) {
       return stage;
     }
 
     await stage.locator('header').first().click();
+    await expect.poll(async () => await isStageExpanded(stage), {
+      timeout: 2_000,
+      intervals: [100, 200, 300],
+    }).toBe(true);
     if (await taskCard.isVisible().catch(() => false)) {
       return stage;
     }

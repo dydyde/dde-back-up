@@ -152,6 +152,20 @@ describe('TextUnassignedComponent', () => {
     expect(parkButton?.disabled).toBe(true);
   });
 
+  it('should reopen unassigned tasks when they return after becoming empty', () => {
+    mockUiState.isTextUnassignedOpen.set(true);
+    tasks.set([]);
+    fixture.detectChanges();
+
+    expect(mockUiState.isTextUnassignedOpen()).toBe(false);
+
+    tasks.set([createTask({ id: 'restored-task' })]);
+    fixture.detectChanges();
+
+    expect(mockUiState.isTextUnassignedOpen()).toBe(true);
+    expect(fixture.nativeElement.querySelector('[data-unassigned-task="restored-task"]')).not.toBeNull();
+  });
+
   it('should block parking while hint-only startup placeholder is read-only', () => {
     mockUserSession.isHintOnlyStartupPlaceholderVisible.mockReturnValue(true);
 

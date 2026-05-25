@@ -1515,7 +1515,12 @@ describe('UserSessionService', () => {
 
     it('activeProject 不可访问时应清理并跳过项目同步', async () => {
       const deniedProject = createProject({ id: 'proj-denied', name: 'Denied', syncSource: 'synced' });
-      const keepProject = createProject({ id: 'proj-ok', name: 'Keep', syncSource: 'synced' });
+      const keepProject = createProject({
+        id: 'proj-ok',
+        name: 'Keep',
+        syncSource: 'synced',
+        tasks: [createTask({ id: 'task-keep' })],
+      });
       (mockProjectState['projects'] as ReturnType<typeof vi.fn>).mockReturnValue([deniedProject, keepProject]);
       (mockProjectState['activeProjectId'] as ReturnType<typeof vi.fn>).mockReturnValue('proj-denied');
       (mockSyncCoordinator['core'] as { saveOfflineSnapshot: ReturnType<typeof vi.fn> }).saveOfflineSnapshot.mockClear();
@@ -1548,7 +1553,12 @@ describe('UserSessionService', () => {
 
     it('activeProject probe 不可访问时应提前清理，避免后续 full-project 路径', async () => {
       const deniedProject = createProject({ id: 'proj-denied', name: 'Denied', syncSource: 'synced' });
-      const keepProject = createProject({ id: 'proj-ok', name: 'Keep', syncSource: 'synced' });
+      const keepProject = createProject({
+        id: 'proj-ok',
+        name: 'Keep',
+        syncSource: 'synced',
+        tasks: [createTask({ id: 'task-keep' })],
+      });
       (mockProjectState['projects'] as ReturnType<typeof vi.fn>).mockReturnValue([deniedProject, keepProject]);
       (mockProjectState['activeProjectId'] as ReturnType<typeof vi.fn>).mockReturnValue('proj-denied');
       (mockSyncCoordinator['core'] as { saveOfflineSnapshot: ReturnType<typeof vi.fn> }).saveOfflineSnapshot.mockClear();
@@ -1624,6 +1634,9 @@ describe('UserSessionService', () => {
     });
 
     it('项目清单快路命中时仍应执行黑匣子快路，并仅保留当前项目的 Delta Sync', async () => {
+      (mockProjectState['setProjects'] as (...args: unknown[]) => void)([
+        createProject({ id: 'proj-1', syncSource: 'synced', tasks: [createTask({ id: 'task-1' })] }),
+      ]);
       (mockProjectState['activeProjectId'] as ReturnType<typeof vi.fn>).mockReturnValue('proj-1');
       (
         (mockSyncCoordinator['core'] as Record<string, unknown>)['getResumeRecoveryProbe'] as ReturnType<typeof vi.fn>
@@ -1693,6 +1706,7 @@ describe('UserSessionService', () => {
             ...localOnlyProject,
             syncSource: 'synced',
             pendingSync: false,
+            tasks: [createTask({ id: 'task-restored' })],
           },
         ]);
         return new Set(['proj-legacy-local-only']);

@@ -1,4 +1,6 @@
-const NETWORK_RESUME_GRACE_MS = 1500;
+const NETWORK_VISIBLE_RESUME_GRACE_MS = 1500;
+const NETWORK_ONLINE_RESUME_GRACE_MS = 5000;
+const NETWORK_ERROR_RESUME_GRACE_MS = 5000;
 const BROWSER_NETWORK_SUSPENDED_ERROR_NAME = 'BrowserNetworkSuspendedError';
 const BROWSER_NETWORK_SUSPENDED_ERROR_MESSAGE = 'Browser network IO suspended';
 
@@ -8,8 +10,8 @@ let visibilityChangeHandler: (() => void) | null = null;
 let pageShowHandler: ((event: PageTransitionEvent) => void) | null = null;
 let onlineHandler: (() => void) | null = null;
 
-function armNetworkResumeGrace(): void {
-  networkBlockedUntil = Math.max(networkBlockedUntil, Date.now() + NETWORK_RESUME_GRACE_MS);
+function armNetworkResumeGrace(graceMs = NETWORK_VISIBLE_RESUME_GRACE_MS): void {
+  networkBlockedUntil = Math.max(networkBlockedUntil, Date.now() + graceMs);
 }
 
 export function ensureBrowserNetworkSuspensionTracking(): void {
@@ -25,12 +27,12 @@ export function ensureBrowserNetworkSuspensionTracking(): void {
 
   pageShowHandler = (event: PageTransitionEvent) => {
     if (event.persisted) {
-      armNetworkResumeGrace();
+      armNetworkResumeGrace(NETWORK_ONLINE_RESUME_GRACE_MS);
     }
   };
 
   onlineHandler = () => {
-    armNetworkResumeGrace();
+    armNetworkResumeGrace(NETWORK_ONLINE_RESUME_GRACE_MS);
   };
 
   document.addEventListener('visibilitychange', visibilityChangeHandler);
@@ -82,14 +84,14 @@ export function resetBrowserNetworkSuspensionTrackingForTests(): void {
 
 export function isBrowserNetworkSuspendedError(error: unknown): boolean {
   if ((error as { name?: string } | null)?.name === BROWSER_NETWORK_SUSPENDED_ERROR_NAME) {
-    armNetworkResumeGrace();
+    armNetworkResumeGrace(NETWORK_ERROR_RESUME_GRACE_MS);
     return true;
   }
 
   const message = String((error as { message?: string })?.message ?? error ?? '').toLowerCase();
   const suspended = message.includes('network_io_suspended') || message.includes('network io suspended');
   if (suspended) {
-    armNetworkResumeGrace();
+    armNetworkResumeGrace(NETWORK_ERROR_RESUME_GRACE_MS);
   }
   return suspended;
 }

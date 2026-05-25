@@ -554,7 +554,7 @@ test.describe('同步数据完整性：边界情况', () => {
     await helpers.waitForSync(page);
     
     // 2. 模拟离线
-    await context.setOffline(true);
+    await criticalPathHelpers.setOffline(page, context, true);
     
     // 3. 离线编辑
     await helpers.openTaskDetail(page, testTitle);
@@ -566,7 +566,7 @@ test.describe('同步数据完整性：边界情况', () => {
     await createContentStripperInterceptor(page);
     
     // 5. 恢复在线
-    await context.setOffline(false);
+    await criticalPathHelpers.setOffline(page, context, false);
     await helpers.waitForSync(page);
     
     // 6. 验证内容

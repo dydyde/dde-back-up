@@ -38,6 +38,7 @@ const CLOUD_PUSH_DEBOUNCE_MS = SYNC_CONFIG.DEBOUNCE_DELAY;
 const CLOUD_PULL_DEBOUNCE_MS = PARKING_CONFIG.CLOUD_PULL_DEBOUNCE_MS;
 const CLOUD_PULL_MIN_INTERVAL_MS = PARKING_CONFIG.CLOUD_PULL_MIN_INTERVAL_MS;
 const LOAD_FOCUS_SESSION_TIMEOUT_MESSAGE = 'loadFocusSession 超时';
+const DIRECT_WIDGET_NOTIFY_TIMEOUT_MS = TIMEOUT_CONFIG.QUICK;
 
 /**
  * Callbacks provided by DockEngineService for engine state mutations
@@ -86,6 +87,33 @@ export class DockCloudSyncService implements OnDestroy {
 
   private isBrowserSuspendedResult(error: { details?: Record<string, unknown> } | null | undefined): boolean {
     return error?.details?.['reason'] === 'browser-network-suspended';
+  }
+
+  private getDirectFocusSessionId(snapshot: DockSnapshot): string | null {
+    const candidates = [
+      snapshot.session?.focusSessionId,
+      snapshot.focusSessionState?.sessionId,
+    ];
+
+    for (const candidate of candidates) {
+      if (typeof candidate === 'string' && candidate.trim().length > 0) {
+        return candidate.trim();
+      }
+    }
+
+    return null;
+  }
+
+  private shouldSkipDirectWidgetNotify(context: Record<string, unknown>): boolean {
+    if (!isBrowserNetworkSuspendedWindow()) {
+      return false;
+    }
+
+    this.logger.debug('direct widget-notify skipped during browser network suspension', {
+      ...context,
+      resumeDelayMs: getRemainingBrowserNetworkResumeDelayMs(),
+    });
+    return true;
   }
 
   /**
@@ -173,20 +201,27 @@ export class DockCloudSyncService implements OnDestroy {
     snapshot: DockSnapshot,
     focusActive: boolean,
   ): Promise<void> {
+    if (this.shouldSkipDirectWidgetNotify({ userId, focusActive, source: 'focus' })) {
+      return;
+    }
+
+    const focusSessionId = this.getDirectFocusSessionId(snapshot);
+    if (!focusSessionId) {
+      this.logger.debug('direct widget-notify skipped without focus session id', { userId, focusActive });
+      return;
+    }
+
     try {
       const client = await this.supabase.clientAsync();
       if (!client) {
         return;
       }
       // 幂等键 = focus session id + 状态 hash，让同一次翻转在 trigger fallback 到达时命中去重。
-      const focusSessionId = snapshot.session?.focusSessionId
-        ?? snapshot.focusSessionState?.sessionId
-        ?? snapshot.session?.mainTaskId
-        ?? crypto.randomUUID();
       const webhookId = `pwa-direct-${focusSessionId}-${focusActive ? 'on' : 'off'}-${Math.floor(Date.now() / 1000)}`;
       const updatedAt = snapshot.savedAt ?? new Date().toISOString();
 
       const { error } = await client.functions.invoke('widget-notify', {
+        timeout: DIRECT_WIDGET_NOTIFY_TIMEOUT_MS,
         body: {
           directNotify: true,
           webhookId,

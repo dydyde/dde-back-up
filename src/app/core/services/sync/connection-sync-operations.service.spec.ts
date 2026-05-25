@@ -1321,7 +1321,7 @@ describe('ConnectionSyncOperationsService', () => {
           message: 'duplicate key value violates unique constraint "uq_connections_project_source_target_active"',
         },
       })
-      .mockResolvedValueOnce({ error: null });
+      .mockResolvedValueOnce({ data: { updated_at: '2036-04-11T00:00:00.000Z' }, error: null });
     mockProjects = [{
       id: 'project-1',
       tasks: [],
@@ -1372,7 +1372,7 @@ describe('ConnectionSyncOperationsService', () => {
           message: 'duplicate key value violates unique constraint "uq_connections_project_source_target_active"',
         },
       })
-      .mockResolvedValueOnce({ error: null });
+      .mockResolvedValueOnce({ data: { updated_at: '2026-04-11T00:01:00.000Z' }, error: null });
     mockProjects = [{
       id: 'project-1',
       tasks: [],
@@ -1427,7 +1427,7 @@ describe('ConnectionSyncOperationsService', () => {
           message: 'duplicate key value violates unique constraint "uq_connections_project_source_target_active"',
         },
       })
-      .mockResolvedValueOnce({ error: null });
+      .mockResolvedValueOnce({ data: { updated_at: '2026-04-11T00:03:00.000Z' }, error: null });
     mockProjects = [{
       id: 'project-1',
       tasks: [],

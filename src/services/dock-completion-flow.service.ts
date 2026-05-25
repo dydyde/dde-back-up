@@ -358,7 +358,7 @@ export class DockCompletionFlowService {
       this.promoteCandidate(commandCenterSuccessor.taskId);
       this.setLastDecision({
         type: 'completion_followup',
-        reason: '主任务完成后由当前 C 位最高序副任务继承主任务属性',
+        reason: '主任务完成后恢复主控台后续任务',
         rootTaskId: rootTaskId ?? undefined,
         recommendedTaskIds: [commandCenterSuccessor.taskId],
         remainingMinutes: rootRemainingSeconds !== null ? rootRemainingSeconds / 60 : undefined,
@@ -401,6 +401,11 @@ export class DockCompletionFlowService {
     if (focusedSuccessor && focusedSuccessor.status !== 'completed' && !focusedSuccessor.isMain) {
       return focusedSuccessor;
     }
+
+    const stalledSuccessor = this.ctx.entries()
+      .filter(entry => entry.status === 'stalled')
+      .sort((a, b) => entryOrder(a) - entryOrder(b))[0];
+    if (stalledSuccessor) return stalledSuccessor;
 
     const commandCenterCandidates = this.ctx.consoleVisibleEntries().filter(entry =>
       entry.status !== 'completed'

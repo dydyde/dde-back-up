@@ -276,6 +276,9 @@ export class ParkingDockComponent implements OnDestroy {
   );
   private readonly plannerPanel = viewChild<ElementRef<HTMLElement>>('plannerPanel');
   private readonly consoleStack = viewChild(DockConsoleStackComponent);
+  private plannerPanelOriginalParent: Node | null = null;
+  private plannerPanelOriginalNextSibling: ChildNode | null = null;
+  private portaledPlannerPanel: HTMLElement | null = null;
   private hudDragPointerId: number | null = null;
   private hudDragOffset: { x: number; y: number } | null = null;
   /** planner 面板自动聚焦定时器 */
@@ -286,9 +289,14 @@ export class ParkingDockComponent implements OnDestroy {
   constructor() {
     effect(() => {
       const activeEntry = this.planner.activeEntry();
-      if (!activeEntry) return;
+      const presentation = this.planner.presentation();
+      if (!activeEntry) {
+        this.restorePlannerPanel();
+        return;
+      }
 
       this.plannerAutoFocus.schedule(() => {
+        this.syncPlannerPanelPortal(presentation);
         this.focusPlannerPanel();
         this.scrollPlannerPanelIntoView();
       }, 0);
@@ -423,6 +431,7 @@ export class ParkingDockComponent implements OnDestroy {
   }
 
   ngOnDestroy(): void {
+    this.restorePlannerPanel();
     this.plannerAutoFocus.cancel();
     this.exitFocusTimer.cancel();
     persistHudPositionUtil(this.hudPosition());
@@ -681,14 +690,20 @@ export class ParkingDockComponent implements OnDestroy {
 
   togglePlannerQuickEdit(taskId: string): void {
     if (!this.canUsePlannerQuickEdit()) return;
+    if (this.planner.isPlannerQuickEditOpen(taskId)) {
+      this.closePlannerQuickEdit(false);
+      return;
+    }
     this.planner.togglePlannerQuickEdit(taskId);
     this.plannerAutoFocus.schedule(() => {
+      this.syncPlannerPanelPortal(this.planner.presentation());
       this.focusPlannerPanel();
       this.scrollPlannerPanelIntoView();
     }, 50);
   }
 
   closePlannerQuickEdit(restoreFocus = true): void {
+    this.restorePlannerPanel();
     const taskId = this.planner.closePlannerQuickEdit();
     if (restoreFocus && taskId) {
       const trigger = this.hostElement.nativeElement.querySelector(
@@ -839,13 +854,54 @@ export class ParkingDockComponent implements OnDestroy {
     }, 0);
   }
 
+  private syncPlannerPanelPortal(presentation: 'popover' | 'sheet'): void {
+    if (typeof document === 'undefined') return;
+
+    const panel = this.plannerPanel()?.nativeElement ?? null;
+    if (!panel) {
+      this.restorePlannerPanel();
+      return;
+    }
+
+    if (presentation !== 'sheet') {
+      this.restorePlannerPanel();
+      return;
+    }
+
+    if (panel.parentElement === document.body) return;
+
+    this.plannerPanelOriginalParent = panel.parentNode;
+    this.plannerPanelOriginalNextSibling = panel.nextSibling;
+    this.portaledPlannerPanel = panel;
+    document.body.appendChild(panel);
+  }
+
+  private restorePlannerPanel(): void {
+    const panel = this.portaledPlannerPanel;
+    if (!panel) return;
+
+    const parent = this.plannerPanelOriginalParent;
+    if (parent instanceof HTMLElement && parent.isConnected) {
+      const nextSibling = this.plannerPanelOriginalNextSibling?.parentNode === parent
+        ? this.plannerPanelOriginalNextSibling
+        : null;
+      parent.insertBefore(panel, nextSibling);
+    } else if (panel.isConnected) {
+      panel.remove();
+    }
+
+    this.portaledPlannerPanel = null;
+    this.plannerPanelOriginalParent = null;
+    this.plannerPanelOriginalNextSibling = null;
+  }
+
   private focusPlannerPanel(): void {
     this.plannerPanel()?.nativeElement.focus();
   }
 
-  /** 内联面板打开后自动滚动到可见区域 */
+  /** 桌面内联面板打开后自动滚动到可见区域 */
   private scrollPlannerPanelIntoView(): void {
-    if (this.planner.presentation() === 'popover') return;
+    if (this.planner.presentation() !== 'popover') return;
     this.plannerPanel()?.nativeElement.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   }
 

@@ -59,7 +59,7 @@ test.describe('数据隔离：RetryQueue 机制', () => {
     await testHelpers.waitForAppReady(page);
     await testHelpers.ensureEditorReady(page, { mode: 'local' });
 
-    await context.setOffline(true);
+    await testHelpers.setOffline(page, context, true);
     await testHelpers.waitForOfflineIndicator(page);
 
     const taskTitle = `重试队列-${testHelpers.uniqueId()}`;
@@ -70,7 +70,7 @@ test.describe('数据隔离：RetryQueue 机制', () => {
       page.locator(`[data-testid="task-card"]:has-text("${taskTitle}")`)
     ).toBeVisible({ timeout: 5000 });
 
-    await context.setOffline(false);
+    await testHelpers.setOffline(page, context, false);
     await testHelpers.waitForSyncSettled(page, { timeout: 15_000 });
 
     // 等待同步完成（观测同步指示器或轮询 RetryQueue 清空）
@@ -98,7 +98,7 @@ test.describe('数据隔离：RetryQueue 机制', () => {
       await pageA.goto('/');
       await testHelpers.waitForAppReady(pageA);
       await testHelpers.ensureEditorReady(pageA, { mode: 'local' });
-      await contextA.setOffline(true);
+      await testHelpers.setOffline(pageA, contextA, true);
       await testHelpers.waitForOfflineIndicator(pageA);
 
       const offlineTitle = `隔离离线-${testHelpers.uniqueId()}`;

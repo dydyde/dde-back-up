@@ -82,9 +82,10 @@ describe('startup launch contract', () => {
     const manifest = fs.readFileSync(manifestPath, 'utf8');
     const activityMatch = manifest.match(/<activity\s+[^>]*android:name="app\.nanoflow\.host\.NanoflowTwaLauncherActivity"[\s\S]*?<intent-filter>/);
 
-    expect(activityMatch?.[0]).toContain('android:launchMode="singleTask"');
+    expect(activityMatch?.[0]).toContain('android:alwaysRetainTaskState="true"');
     expect(manifest).toContain('android.support.customtabs.trusted.LAUNCH_HANDLER_CLIENT_MODE');
     expect(manifest).toContain('android:value="focus-existing"');
+    expect(activityMatch?.[0]).not.toContain('android:launchMode="singleTask"');
     expect(activityMatch?.[0]).not.toContain('android:taskAffinity=""');
     expect(activityMatch?.[0]).not.toContain('android:finishOnTaskLaunch="true"');
     expect(activityMatch?.[0]).not.toContain('android:excludeFromRecents="true"');

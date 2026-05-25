@@ -234,7 +234,7 @@ test.describe('关键路径 3: 拖拽 + 同步', () => {
     await testHelpers.ensureEditorReady(page, { mode: 'cloud' });
     
     // 模拟离线
-    await context.setOffline(true);
+    await testHelpers.setOffline(page, context, true);
     await expect(page.locator('[data-testid="offline-indicator"]')).toBeVisible({ timeout: 5000 });
     
     // 创建离线任务
@@ -253,7 +253,7 @@ test.describe('关键路径 3: 拖拽 + 同步', () => {
     await expect(page.locator(`[data-testid="task-card"]:has-text("${offlineTaskTitle}")`)).toBeVisible({ timeout: 10000 });
     
     // 恢复在线
-    await context.setOffline(false);
+    await testHelpers.setOffline(page, context, false);
     await testHelpers.waitForCloudSyncSettled(page, {
       timeout: 15_000,
       observeActivity: true,
@@ -490,7 +490,7 @@ test.describe('撤销功能压力测试', () => {
     for (let cycle = 0; cycle < 5; cycle++) {
       await page.keyboard.press(`${modifier}+z`);
       await expect(taskCard).toBeHidden({ timeout: 5000 });
-      await page.keyboard.press(`${modifier}+Shift+z`);
+      await page.keyboard.press(`${modifier}+y`);
       await expect(taskCard).toBeVisible({ timeout: 5000 });
     }
     

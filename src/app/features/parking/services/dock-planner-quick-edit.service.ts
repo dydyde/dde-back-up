@@ -85,6 +85,7 @@ export class DockPlannerQuickEditService implements OnDestroy {
 
   /** CSS class string for the planner panel（内联展开，从 banner 原位延伸） */
   readonly panelClasses = computed(() => {
+    const presentation = this.presentation();
     return [
       'pointer-events-auto',
       'overflow-y-auto',
@@ -96,12 +97,10 @@ export class DockPlannerQuickEditService implements OnDestroy {
       'p-3.5',
       'shadow-[0_8px_32px_rgba(2,6,23,0.36)]',
       'backdrop-blur-md',
-      'mx-2',
-      'mt-1',
       'animate-[plannerInlineExpand_300ms_cubic-bezier(0.22,0.61,0.36,1)]',
-      this.presentation() === 'popover'
-        ? 'max-h-[min(340px,calc(100dvh-180px))]'
-        : 'max-h-[min(46dvh,320px)]',
+      presentation === 'popover'
+        ? 'mx-2 mt-1 max-h-[min(340px,calc(100dvh-180px))]'
+        : 'fixed inset-x-3 bottom-3 z-[70] max-h-[min(72dvh,560px)]',
     ].join(' ');
   });
 

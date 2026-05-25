@@ -104,7 +104,7 @@ test.describe('关键路径 2: 创建任务 + 保存', () => {
     }).toPass({ timeout: 5000 });
     
     // 执行重做
-    await page.keyboard.press(`${modifier}+Shift+z`);
+    await page.keyboard.press(`${modifier}+y`);
     
     // 验证重做效果
     await expect(async () => {

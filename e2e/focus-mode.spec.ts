@@ -7,6 +7,15 @@
 import { expect, Page, test } from '@playwright/test';
 import { testHelpers } from './critical-paths/helpers';
 
+const LOCAL_MODE_KEY = 'nanoflow.local-mode';
+
+async function ensureLocalModeFlag(page: Page): Promise<void> {
+  await page.evaluate((localModeKey) => {
+    localStorage.setItem(localModeKey, 'true');
+    window.dispatchEvent(new Event('nanoflow:local-mode-changed'));
+  }, LOCAL_MODE_KEY);
+}
+
 async function bootstrapLocalWorkspace(page: Page): Promise<void> {
   await page.goto('/');
   await testHelpers.waitForAppReady(page);
@@ -15,6 +24,7 @@ async function bootstrapLocalWorkspace(page: Page): Promise<void> {
   if (await testHelpers.isElementVisible(localModeBtn, 2000)) {
     await localModeBtn.click();
   }
+  await ensureLocalModeFlag(page);
 
   await expect(page.locator('[data-testid="project-selector"]').first()).toBeVisible({ timeout: 15000 });
 }
@@ -26,20 +36,6 @@ async function enterProjectWorkspace(page: Page): Promise<void> {
   }
 
   await expect(page.locator('[data-testid="project-shell-main-content"]').first()).toBeVisible({ timeout: 10000 });
-}
-
-async function createAndOpenProject(page: Page, projectName: string): Promise<void> {
-  await page.click('[data-testid="create-project-btn"]', { force: true });
-  await expect(page.locator('[data-testid="new-project-modal"]').first()).toBeVisible({ timeout: 8000 });
-
-  await page.fill('[data-testid="project-name-input"]', projectName);
-  await page.click('[data-testid="create-project-confirm"]', { force: true });
-  await expect(page.locator('[data-testid="new-project-modal"]').first()).toBeHidden({ timeout: 8000 });
-
-  const projectItem = page.locator(`[data-testid="project-item"]:has-text("${projectName}")`).first();
-  await expect(projectItem).toBeVisible({ timeout: 10000 });
-  await projectItem.click({ force: true });
-  await enterProjectWorkspace(page);
 }
 
 async function openSettings(page: Page): Promise<void> {
@@ -72,6 +68,19 @@ async function ensureFlowReady(page: Page): Promise<void> {
   await expect(page.locator('[data-testid="flow-diagram"]').first()).toBeVisible({ timeout: 15000 });
 }
 
+async function forceSpeechUnsupported(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    Object.defineProperty(Navigator.prototype, 'mediaDevices', {
+      configurable: true,
+      get: () => undefined,
+    });
+    Object.defineProperty(window, 'MediaRecorder', {
+      configurable: true,
+      value: undefined,
+    });
+  });
+}
+
 test.describe('Focus Mode Current UI Smoke', () => {
   test('设置面板应暴露当前专注功能开关', async ({ page }) => {
     await bootstrapLocalWorkspace(page);
@@ -102,6 +111,7 @@ test.describe('Focus Mode Current UI Smoke', () => {
   });
 
   test('Gate 快速录入面板应能补录内容', async ({ page }) => {
+    await forceSpeechUnsupported(page);
     await bootstrapLocalWorkspace(page);
     await triggerDevGate(page);
 
@@ -109,25 +119,26 @@ test.describe('Focus Mode Current UI Smoke', () => {
     const panel = page.locator('[data-testid="gate-quick-capture-panel"]').first();
     await expect(panel).toBeVisible({ timeout: 5000 });
 
-    const input = panel.getByPlaceholder('记录一个待处理想法...').first();
+    const input = panel.locator('[data-testid="gate-quick-input-editor"]').first();
     await input.fill('Gate quick capture smoke');
     await panel.getByRole('button', { name: '保存' }).click({ force: true });
 
-    await expect(input).toHaveValue('');
+    await expect(panel).toBeHidden({ timeout: 5000 });
   });
 
   test('Flow 黑匣子面板应能创建条目', async ({ page }) => {
     await bootstrapLocalWorkspace(page);
-    await createAndOpenProject(page, `focus-blackbox-${testHelpers.uniqueId()}`);
+    await enterProjectWorkspace(page);
     await ensureFlowReady(page);
 
     await page.locator('[data-testid="flow-palette-tab-blackbox"]').first().click({ force: true });
-    await expect(page.locator('[data-testid="black-box-panel"]').first()).toBeVisible({ timeout: 10000 });
+    const panel = page.locator('[data-testid="black-box-panel"]').first();
+    await expect(panel).toBeVisible({ timeout: 10000 });
 
     const entryText = `BlackBox Smoke ${testHelpers.uniqueId()}`;
-    await page.locator('[data-testid="black-box-text-input"]').first().fill(entryText);
-    await page.locator('[data-testid="black-box-submit"]').first().click({ force: true });
+    await panel.locator('[data-testid="black-box-text-input"]').first().fill(entryText);
+    await panel.locator('[data-testid="black-box-submit"]').first().click({ force: true });
 
-    await expect(page.locator('[data-testid="black-box-entry"]').filter({ hasText: entryText }).first()).toBeVisible({ timeout: 10000 });
+    await expect(panel.locator('[data-testid="black-box-entry"]').filter({ hasText: entryText }).first()).toBeVisible({ timeout: 10000 });
   });
 });

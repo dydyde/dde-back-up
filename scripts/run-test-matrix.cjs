@@ -46,7 +46,9 @@ const laneConfig = {
   [LANE_NAMES.testbedService]: {
     config: 'vitest.config.mts',
     defaultIsolate: false,
-    forceIsolateFiles: [],
+    forceIsolateFiles: [
+      'src/app/features/flow/services/flow-overview.service.spec.ts',
+    ],
   },
   [LANE_NAMES.testbedComponent]: {
     config: 'vitest.config.mts',

@@ -156,7 +156,7 @@ export class KnowledgeAnchorComponent implements OnDestroy {
   private readonly envInjector = inject(EnvironmentInjector);
   private readonly host = inject(ElementRef<HTMLElement>);
 
-  readonly taskId = input.required<string>();
+  readonly taskId = input<string | null>(null);
   readonly isMobile = input(false);
   readonly editable = input(false);
   readonly compact = input(false);
@@ -164,7 +164,8 @@ export class KnowledgeAnchorComponent implements OnDestroy {
   readonly linksVersion = this.linkService.links;
   readonly links = computed(() => {
     this.linksVersion();
-    return this.linkService.activeLinksForTask(this.taskId());
+    const taskId = this.taskId();
+    return taskId ? this.linkService.activeLinksForTask(taskId) : [];
   });
   readonly firstLink = computed(() => this.links()[0] ?? null);
   readonly sheetOpen = signal(false);
@@ -211,8 +212,9 @@ export class KnowledgeAnchorComponent implements OnDestroy {
   async bind(event: Event): Promise<void> {
     event.preventDefault();
     const input = this.pendingInput.trim();
-    if (!input) return;
-    const link = await this.linkService.bindSiyuanBlock(this.taskId(), input);
+    const taskId = this.taskId();
+    if (!input || !taskId) return;
+    const link = await this.linkService.bindSiyuanBlock(taskId, input);
     if (link) this.pendingInput = '';
   }
 

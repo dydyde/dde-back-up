@@ -20,11 +20,13 @@ import { PermanentFailureError } from '../utils/permanent-failure-error';
 
 type QueuedAction = Omit<Partial<QueuedActionModel>, 'payload'> & { payload: unknown };
 type RegisteredProcessor = (action: QueuedActionModel) => Promise<ActionQueueProcessorResult>;
-type MockRetryQueueProjectItem = {
-  type: 'project';
-  data: { id: string; syncSource?: string; name?: string };
+type MockRetryQueueItem = {
+  type: 'project' | 'task';
+  operation?: 'upsert' | 'delete';
+  data: { id: string; syncSource?: string; name?: string; title?: string };
   sourceUserId: string;
-  taskIdsToDelete: string[];
+  projectId?: string;
+  taskIdsToDelete?: string[];
 };
 
 // ── Mock factories ───────────────────────────────────────────
@@ -51,7 +53,7 @@ const mockActionQueueService = {
 const mockRetryQueueService = {
   removeByProjectId: vi.fn(),
   getItems: vi.fn(() => []),
-  findItemForOwner: vi.fn<(...args: unknown[]) => MockRetryQueueProjectItem | undefined>(() => undefined),
+  findItemForOwner: vi.fn<(...args: unknown[]) => MockRetryQueueItem | undefined>(() => undefined),
 };
 
 const mockSyncService = {
@@ -109,6 +111,7 @@ describe('ActionQueueProcessorsService', () => {
     mockSyncService.hasPendingRetryRecovery.mockReset();
     mockSyncService.hasPendingRetryRecovery.mockReturnValue(false);
     mockSyncService.markSyncRecoveredIfIdle.mockReset();
+    mockRetryQueueService.findItemForOwner.mockReturnValue(undefined);
     mockConflictStorageService.saveConflict.mockResolvedValue(true);
     mockActionQueueService.getCurrentQueueViewGeneration.mockReturnValue(1);
     mockActionQueueService.getProjectMutationViewGeneration.mockReset();
@@ -1304,6 +1307,81 @@ describe('ActionQueueProcessorsService', () => {
     expect(mockActionQueueService.markActionResolvedWithoutRemote).toHaveBeenCalledOnce();
   });
 
+  it('task:update should discard stale upserts when remote version is newer', async () => {
+    const remoteNewerError = Object.assign(new Error('remote newer'), {
+      name: 'VersionConflictError',
+      code: 'TASK_REMOTE_NEWER',
+    });
+    mockSyncService.pushTask.mockRejectedValueOnce(
+      new PermanentFailureError(
+        'Version conflict',
+        remoteNewerError,
+        { operation: 'pushTask', taskId: 'task-remote-newer', projectId: 'project-1' },
+      ),
+    );
+    const handler = getProcessor('task:update');
+
+    const result = await handler({
+      id: 'action-remote-newer',
+      payload: {
+        task: { id: 'task-remote-newer' },
+        projectId: 'project-1',
+        sourceUserId: 'test-user',
+      },
+    } as QueuedAction);
+
+    expect(result).toBe(true);
+    expect(mockActionQueueService.markActionResolvedWithoutRemote).toHaveBeenCalledWith('action-remote-newer');
+    expect(mockActionQueueService.failRetry).not.toHaveBeenCalled();
+  });
+
+  it('task:update should complete ActionQueue item after matching RetryQueue handoff', async () => {
+    const task = { id: 'task-handoff', title: 'Task update' };
+    mockSyncService.pushTask.mockResolvedValueOnce(false);
+    mockRetryQueueService.findItemForOwner.mockReturnValueOnce({
+      type: 'task',
+      operation: 'upsert',
+      data: task,
+      projectId: 'project-1',
+      sourceUserId: 'test-user',
+    });
+    const handler = getProcessor('task:update');
+
+    const result = await handler({
+      payload: { task, projectId: 'project-1', sourceUserId: 'test-user' },
+    } as QueuedAction);
+
+    expect(result).toBe(true);
+    expect(mockRetryQueueService.findItemForOwner).toHaveBeenCalledWith('task', 'task-handoff', 'test-user');
+    expect(mockActionQueueService.failRetry).not.toHaveBeenCalled();
+  });
+
+  it('task:update should return structured failure when no RetryQueue handoff exists', async () => {
+    mockSyncService.pushTask.mockResolvedValueOnce(false);
+    const handler = getProcessor('task:update');
+
+    const result = await handler({
+      payload: {
+        task: { id: 'task-no-handoff' },
+        projectId: 'project-1',
+        sourceUserId: 'test-user',
+      },
+    } as QueuedAction);
+
+    expect(result).toEqual({
+      outcome: 'failed',
+      error: expect.objectContaining({
+        code: 'SYNC_TASK_WRITE_FAILED',
+        details: expect.objectContaining({
+          reason: 'task-sync-failed',
+          actionType: 'task:update',
+          taskId: 'task-no-handoff',
+          projectId: 'project-1',
+        }),
+      }),
+    });
+  });
+
   it('task:delete should call deleteTask with sourceUserId', async () => {
     const handler = getProcessor('task:delete');
 
@@ -1313,6 +1391,26 @@ describe('ActionQueueProcessorsService', () => {
 
     expect(mockSyncService.deleteTask).toHaveBeenCalledWith('t-1', 'p-1', 'test-user');
     expect(result).toBe(true);
+  });
+
+  it('task:delete should complete ActionQueue item after matching RetryQueue handoff', async () => {
+    mockSyncService.deleteTask.mockResolvedValueOnce(false);
+    mockRetryQueueService.findItemForOwner.mockReturnValueOnce({
+      type: 'task',
+      operation: 'delete',
+      data: { id: 'task-delete-handoff' },
+      projectId: 'project-1',
+      sourceUserId: 'test-user',
+    });
+    const handler = getProcessor('task:delete');
+
+    const result = await handler({
+      payload: { taskId: 'task-delete-handoff', projectId: 'project-1', sourceUserId: 'test-user' },
+    } as QueuedAction);
+
+    expect(result).toBe(true);
+    expect(mockRetryQueueService.findItemForOwner).toHaveBeenCalledWith('task', 'task-delete-handoff', 'test-user');
+    expect(mockActionQueueService.failRetry).not.toHaveBeenCalled();
   });
 
   it('task:create should move queue items from another user to dead letter', async () => {
@@ -1465,15 +1563,26 @@ describe('ActionQueueProcessorsService', () => {
 
   // ── Error handling ─────────────────────────────────────────
 
-  it('processor should catch exceptions and return false', async () => {
+  it('processor should catch exceptions and return structured failure', async () => {
     mockSyncService.pushTask.mockRejectedValueOnce(new Error('network error'));
     const handler = getProcessor('task:create');
 
-      const result = await handler({
-        payload: { task: { id: 't-1' }, projectId: 'p-1', sourceUserId: 'test-user' },
-      });
+    const result = await handler({
+      payload: { task: { id: 't-1' }, projectId: 'p-1', sourceUserId: 'test-user' },
+    });
 
-    expect(result).toBe(false);
+    expect(result).toEqual({
+      outcome: 'failed',
+      error: expect.objectContaining({
+        message: 'network error',
+        details: expect.objectContaining({
+          reason: 'task-processor-failed',
+          actionType: 'task:create',
+          taskId: 't-1',
+          projectId: 'p-1',
+        }),
+      }),
+    });
     expect(mockLoggerCategory.error).toHaveBeenCalled();
   });
 });

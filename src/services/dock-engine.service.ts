@@ -57,7 +57,7 @@ import {
   providedIn: 'root',
 })
 export class DockEngineService {
-  private static readonly DEFAULT_DOCK_EXPANDED_PREFERENCE = true;
+  private static readonly DEFAULT_DOCK_EXPANDED_PREFERENCE = false;
 
   private readonly taskStore = inject(TaskStore);
   private readonly logger = inject(LoggerService).category('DockEngine');
@@ -98,7 +98,7 @@ export class DockEngineService {
   readonly focusMode = signal(false);
   readonly focusTransition = signal<DockFocusTransitionState | null>(null);
   private readonly focusChromeRestoring = signal(false);
-  readonly dockExpanded = signal(true);
+  readonly dockExpanded = signal(DockEngineService.DEFAULT_DOCK_EXPANDED_PREFERENCE);
   readonly muteWaitTone = signal(false);
   readonly focusScrimOn = signal(true);
   readonly dailySlots = signal<DailySlotEntry[]>([]);
@@ -328,15 +328,23 @@ export class DockEngineService {
   );
   readonly statusMachineEntries = computed<StatusMachineEntry[]>(() => {
     this.tick();
-    return this.consoleVisibleEntries()
+    const pendingEvictionTaskId = this.pendingRadarEviction();
+    const visibleStatusCandidates = this.entries()
       .filter(
         entry =>
-          entry.isMain ||
-          entry.status === 'focusing' ||
-          entry.status === 'suspended_waiting' ||
-          entry.status === 'wait_finished' ||
-          entry.status === 'stalled',
-      )
+          entry.taskId !== pendingEvictionTaskId &&
+          entry.status !== 'completed' &&
+          (
+            entry.isMain ||
+            entry.status === 'focusing' ||
+            entry.status === 'suspended_waiting' ||
+            entry.status === 'wait_finished' ||
+            entry.status === 'stalled'
+          ),
+      );
+    return this.completionFlow
+      .sortConsoleEntriesForDisplay(visibleStatusCandidates)
+      .slice(0, PARKING_CONFIG.STATUS_MACHINE_VISIBLE_LIMIT)
       .map(entry => toStatusMachineEntry(entry));
   });
   readonly pendingDecisionEntries = computed<DockPendingDecisionEntry[]>(() => {

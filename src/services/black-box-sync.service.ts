@@ -19,11 +19,13 @@ import { BlackBoxEntry } from '../models/focus';
 import { FOCUS_CONFIG } from '../config/focus.config';
 import { SYNC_CONFIG } from '../config/sync.config';
 import { APP_LIFECYCLE_CONFIG } from '../config/app-lifecycle.config';
+import { TIMEOUT_CONFIG } from '../config/timeout.config';
 import { FEATURE_FLAGS } from '../config/feature-flags.config';
 import { isValidUUID } from '../utils/validation';
 import { supabaseErrorToError } from '../utils/supabase-error';
 import { openIndexedDBAdaptive } from '../utils/indexeddb-open';
 import {
+  getRemainingBrowserNetworkResumeDelayMs,
   isBrowserNetworkSuspendedError,
   isBrowserNetworkSuspendedWindow,
 } from '../utils/browser-network-suspension';
@@ -77,6 +79,8 @@ export interface PullChangesOptions {
 }
 
 export type BlackBoxWidgetNotifyAction = 'read' | 'complete';
+
+const DIRECT_WIDGET_NOTIFY_TIMEOUT_MS = TIMEOUT_CONFIG.QUICK;
 
 export interface ScheduleBlackBoxSyncOptions {
   immediate?: boolean;
@@ -807,6 +811,20 @@ export class BlackBoxSyncService {
   ): Promise<void> {
     if (!action) return;
 
+    if (!entry.id.trim()) {
+      this.logger.debug('direct black-box widget-notify skipped without entry id', { action });
+      return;
+    }
+
+    if (isBrowserNetworkSuspendedWindow()) {
+      this.logger.debug('direct black-box widget-notify skipped during browser network suspension', {
+        entryId: entry.id,
+        action,
+        resumeDelayMs: getRemainingBrowserNetworkResumeDelayMs(),
+      });
+      return;
+    }
+
     try {
       const client = await this.supabase.clientAsync();
       if (!client) return;
@@ -815,6 +833,7 @@ export class BlackBoxSyncService {
       const updatedAt = latestEntry.updatedAt || new Date().toISOString();
       const webhookId = `pwa-blackbox-${entry.id}-${action}-${Math.floor(Date.now() / 1000)}`;
       const { error } = await client.functions.invoke('widget-notify', {
+        timeout: DIRECT_WIDGET_NOTIFY_TIMEOUT_MS,
         body: {
           directNotify: true,
           table: 'black_box_entries',
@@ -1745,6 +1764,17 @@ export class BlackBoxSyncService {
             localModeCacheKey: this.readLocalModeCacheKey(),
           });
           resolve(Array.from(blackBoxEntriesMap().values()));
+          return;
+        }
+
+        const inMemoryVisibleEntries = Array.from(blackBoxEntriesMap().values())
+          .filter(entry => entry.userId === visibleUserId);
+        if (visibleEntries.length === 0 && inMemoryVisibleEntries.length > 0) {
+          this.logger.info('黑匣子本地水合遇到空 IDB，保留当前用户内存快照以避免覆盖乐观写入', {
+            visibleUserId,
+            inMemoryEntryCount: inMemoryVisibleEntries.length,
+          });
+          resolve(inMemoryVisibleEntries);
           return;
         }
 

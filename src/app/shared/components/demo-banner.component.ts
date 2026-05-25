@@ -63,7 +63,7 @@ import { AUTH_CONFIG, FEATURE_FLAGS } from '../../../config';
       top: 0;
       left: 0;
       right: 0;
-      z-index: 900;
+      z-index: 40;
       pointer-events: none;
       padding-top: env(safe-area-inset-top, 0px);
     }

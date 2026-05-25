@@ -273,6 +273,7 @@ export class TextUnassignedComponent implements OnDestroy {
   protected localTitle = signal('');
   protected localContent = signal('');
   protected reminderMenuTaskId = signal<string | null>(null);
+  private previousUnassignedTaskCount: number | null = null;
   protected readonly reminderPresets = [
     { label: '5m', minutes: 5 },
     { label: '30m', minutes: 30 },
@@ -294,8 +295,14 @@ export class TextUnassignedComponent implements OnDestroy {
 
     // 没有待分配任务时自动折叠，减少移动端空白区域
     effect(() => {
-      if (this.projectState.unassignedTasks().length === 0) {
+      const taskCount = this.projectState.unassignedTasks().length;
+      const previousTaskCount = this.previousUnassignedTaskCount;
+      this.previousUnassignedTaskCount = taskCount;
+
+      if (taskCount === 0) {
         this.uiState.isTextUnassignedOpen.set(false);
+      } else if (previousTaskCount === 0) {
+        this.uiState.isTextUnassignedOpen.set(true);
       }
     });
   }
@@ -505,6 +512,7 @@ export class TextUnassignedComponent implements OnDestroy {
 
   protected onCreateClick(event: Event): void {
     event.stopPropagation();
+    this.uiState.isTextUnassignedOpen.set(true);
     this.createUnassigned.emit();
   }
 

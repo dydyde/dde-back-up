@@ -29,6 +29,7 @@ describe('SessionManagerService', () => {
   };
 
   beforeEach(() => {
+    resetBrowserNetworkSuspensionTrackingForTests();
     sessionExpired = false;
     sessionRestored$ = new Subject();
     sessionInvalidated$ = new Subject();

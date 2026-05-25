@@ -370,6 +370,93 @@ describe('DockCloudSyncService', () => {
       expect(mockActionQueue.enqueueForOwner).toHaveBeenCalledTimes(2);
     });
 
+    it('后台或恢复保护窗口内专注翻转不应直推 widget', async () => {
+      const baseSession = makeSnapshot().session;
+      service.init(makeCallbacks());
+
+      service.scheduleCloudPush('user-1', makeSnapshot({ focusMode: false }));
+      vi.advanceTimersByTime(3000);
+      mockSupabaseClient.clientAsync.mockClear();
+      mockFunctionsInvoke.mockClear();
+
+      setVisibilityState('hidden');
+      service.scheduleCloudPush('user-1', makeSnapshot({
+        focusMode: true,
+        session: {
+          ...baseSession,
+          focusSessionId: 'focus-session-hidden',
+          focusSessionStartedAt: Date.now(),
+          mainTaskId: 'task-main',
+        },
+      }));
+
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(mockSupabaseClient.clientAsync).not.toHaveBeenCalled();
+      expect(mockFunctionsInvoke).not.toHaveBeenCalled();
+
+      vi.advanceTimersByTime(0);
+      expect(mockActionQueue.enqueueForOwner).toHaveBeenCalledTimes(2);
+    });
+
+    it('online 刚恢复的保护窗口内专注翻转不应直推 widget', async () => {
+      const baseSession = makeSnapshot().session;
+      service.init(makeCallbacks());
+
+      service.scheduleCloudPush('user-1', makeSnapshot({ focusMode: false }));
+      vi.advanceTimersByTime(3000);
+      mockSupabaseClient.clientAsync.mockClear();
+      mockFunctionsInvoke.mockClear();
+
+      window.dispatchEvent(new Event('online'));
+      service.scheduleCloudPush('user-1', makeSnapshot({
+        focusMode: true,
+        session: {
+          ...baseSession,
+          focusSessionId: 'focus-session-online',
+          focusSessionStartedAt: Date.now(),
+          mainTaskId: 'task-main',
+        },
+      }));
+
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(mockSupabaseClient.clientAsync).not.toHaveBeenCalled();
+      expect(mockFunctionsInvoke).not.toHaveBeenCalled();
+
+      vi.advanceTimersByTime(0);
+      expect(mockActionQueue.enqueueForOwner).toHaveBeenCalledTimes(2);
+    });
+
+    it('缺少真实 focusSessionId 时不应生成临时 id 直推 widget', async () => {
+      const baseSession = makeSnapshot().session;
+      service.init(makeCallbacks());
+
+      service.scheduleCloudPush('user-1', makeSnapshot({ focusMode: false }));
+      vi.advanceTimersByTime(3000);
+      mockSupabaseClient.clientAsync.mockClear();
+      mockFunctionsInvoke.mockClear();
+
+      service.scheduleCloudPush('user-1', makeSnapshot({
+        focusMode: true,
+        session: {
+          ...baseSession,
+          mainTaskId: 'task-main',
+        },
+      }));
+
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(mockSupabaseClient.clientAsync).not.toHaveBeenCalled();
+      expect(mockFunctionsInvoke).not.toHaveBeenCalled();
+
+      vi.advanceTimersByTime(0);
+      expect(mockActionQueue.enqueueForOwner).toHaveBeenCalledTimes(2);
+    });
+
     it('恢复出已开启专注态后，首次关闭专注也应立即写云并直推 widget', async () => {
       const baseSession = makeSnapshot().session;
       service.init(makeCallbacks());

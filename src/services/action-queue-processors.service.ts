@@ -14,7 +14,7 @@
  */
 import { Injectable, inject } from '@angular/core';
 import { RetryQueueService, SimpleSyncService } from '../core-bridge';
-import { ActionQueueService } from './action-queue.service';
+import { ActionQueueService, type ActionQueueProcessorResult } from './action-queue.service';
 import { ProjectStateService } from './project-state.service';
 import { AuthService } from './auth.service';
 import { LoggerService } from './logger.service';
@@ -175,13 +175,61 @@ export class ActionQueueProcessorsService {
     };
   }
 
-  private buildAuthPendingRetryError(actionType: 'project:create' | 'project:update', projectId: string): QueueRetryError {
+  private buildAuthPendingRetryError(actionType: string, entityId: string): QueueRetryError {
     return {
       code: 'SYNC_AUTH_PENDING',
       message: '认证状态尚未就绪，请稍后重试',
       details: {
         reason: 'auth-pending',
         actionType,
+        entityId,
+        ...(actionType.startsWith('project:') ? { projectId: entityId } : { taskId: entityId }),
+      },
+    };
+  }
+
+  private buildTaskSyncRetryError(
+    actionType: 'task:create' | 'task:update' | 'task:delete',
+    taskId: string,
+    projectId: string,
+  ): QueueRetryError {
+    return {
+      code: 'SYNC_TASK_WRITE_FAILED',
+      message: `${actionType} 未完成，且未发现 RetryQueue 接管项`,
+      details: {
+        reason: 'task-sync-failed',
+        actionType,
+        taskId,
+        projectId,
+      },
+    };
+  }
+
+  private buildTaskProcessorRetryError(
+    error: unknown,
+    actionType: 'task:create' | 'task:update' | 'task:delete',
+    taskId: string,
+    projectId: string,
+  ): QueueRetryError {
+    const maybeError = error && typeof error === 'object'
+      ? error as { code?: unknown; message?: unknown; details?: unknown }
+      : null;
+    const details = maybeError?.details && typeof maybeError.details === 'object'
+      ? maybeError.details as Record<string, unknown>
+      : {};
+
+    return {
+      code: typeof maybeError?.code === 'string' ? maybeError.code : undefined,
+      message: error instanceof Error
+        ? error.message
+        : typeof maybeError?.message === 'string'
+          ? maybeError.message
+          : String(error ?? `${actionType} 未提供失败原因`),
+      details: {
+        ...details,
+        reason: details['reason'] ?? 'task-processor-failed',
+        actionType,
+        taskId,
         projectId,
       },
     };
@@ -271,6 +319,75 @@ export class ActionQueueProcessorsService {
   private isTaskTombstoneNoOp(error: unknown): boolean {
     return isPermanentFailureError(error)
       && error.context?.['operation'] === 'pushTaskTombstone';
+  }
+
+  private isTaskRemoteConflictNoOp(error: unknown): boolean {
+    if (!isPermanentFailureError(error) || error.context?.['operation'] !== 'pushTask') {
+      return false;
+    }
+
+    const originalError = error.originalError as (Error & {
+      code?: unknown;
+      errorType?: unknown;
+    }) | undefined;
+    return originalError?.name === 'VersionConflictError'
+      || originalError?.errorType === 'VersionConflictError'
+      || originalError?.code === 'TASK_REMOTE_NEWER'
+      || originalError?.code === 'TASK_REMOTE_TOMBSTONE_NEWER';
+  }
+
+  private isStaleTaskUpsertNoOp(error: unknown): boolean {
+    return this.isTaskTombstoneNoOp(error) || this.isTaskRemoteConflictNoOp(error);
+  }
+
+  private resolveQueueOwnerUserId(sourceUserId?: string | null): string {
+    return this.resolveActionSourceUserId(sourceUserId, this.authService.currentUserId())
+      ?? AUTH_CONFIG.LOCAL_MODE_USER_ID;
+  }
+
+  private getTaskRetryItem(taskId: string, sourceUserId?: string | null): {
+    operation?: unknown;
+    projectId?: unknown;
+    data?: unknown;
+    sourceUserId?: unknown;
+  } | undefined {
+    return this.retryQueue.findItemForOwner(
+      'task',
+      taskId,
+      this.resolveQueueOwnerUserId(sourceUserId),
+    ) as {
+      operation?: unknown;
+      projectId?: unknown;
+      data?: unknown;
+      sourceUserId?: unknown;
+    } | undefined;
+  }
+
+  private buildTaskRetryPayloadSignature(
+    task: unknown,
+    projectId: unknown,
+    sourceUserId: unknown,
+  ): string {
+    return JSON.stringify({
+      task,
+      projectId: typeof projectId === 'string' ? projectId : null,
+      sourceUserId: typeof sourceUserId === 'string' ? sourceUserId : null,
+    });
+  }
+
+  private wasTaskUpsertTransferredToRetryQueue(payload: TaskPayload): boolean {
+    const retryItem = this.getTaskRetryItem(payload.task.id, payload.sourceUserId);
+    if (!retryItem || retryItem.operation !== 'upsert' || retryItem.projectId !== payload.projectId) {
+      return false;
+    }
+
+    return this.buildTaskRetryPayloadSignature(retryItem.data, retryItem.projectId, retryItem.sourceUserId)
+      === this.buildTaskRetryPayloadSignature(payload.task, payload.projectId, payload.sourceUserId);
+  }
+
+  private wasTaskDeleteTransferredToRetryQueue(payload: TaskDeletePayload): boolean {
+    const retryItem = this.getTaskRetryItem(payload.taskId, payload.sourceUserId);
+    return retryItem?.operation === 'delete' && retryItem.projectId === payload.projectId;
   }
 
   private hasConflictingOwnerHints(
@@ -940,87 +1057,120 @@ export class ActionQueueProcessorsService {
   private setupTaskProcessors(): void {
     // 任务创建
     this.actionQueue.registerProcessor('task:create', async (action) => {
-      const userId = this.authService.currentUserId();
-      if (!userId) { this.logger.warn('task:create 失败：用户未登录'); return false; }
-      const payload = action.payload as TaskPayload;
-      if (this.shouldStopTaskMutation(action, userId, payload, 'create')) {
-        return true;
-      }
-      try {
-        const success = await this.syncService.pushTask(
-          payload.task,
-          payload.projectId,
-          false,
-          false,
-          payload.sourceUserId,
-          true,
-        );
-        if (success) {
-          this.actionQueue.markActionSyncedRemotely(action.id);
-        }
-        return success;
-      } catch (error) {
-        if (this.isTaskTombstoneNoOp(error)) {
-          this.actionQueue.markActionResolvedWithoutRemote(action.id);
-          this.logger.info('task:create 命中远端 tombstone，丢弃过期 upsert', { taskId: payload.task.id });
-          return true;
-        }
-        this.logger.error('task:create 异常', { error, taskId: payload.task.id });
-        return false;
-      }
+      return this.processTaskUpsert(action, 'task:create');
     });
 
     // 任务更新
     this.actionQueue.registerProcessor('task:update', async (action) => {
-      const userId = this.authService.currentUserId();
-      if (!userId) { this.logger.warn('task:update 失败：用户未登录'); return false; }
-      const payload = action.payload as TaskPayload;
-      if (this.shouldStopTaskMutation(action, userId, payload, 'update')) {
-        return true;
-      }
-      try {
-        const success = await this.syncService.pushTask(
-          payload.task,
-          payload.projectId,
-          false,
-          false,
-          payload.sourceUserId,
-          true,
-        );
-        if (success) {
-          this.actionQueue.markActionSyncedRemotely(action.id);
-        }
-        return success;
-      } catch (error) {
-        if (this.isTaskTombstoneNoOp(error)) {
-          this.actionQueue.markActionResolvedWithoutRemote(action.id);
-          this.logger.info('task:update 命中远端 tombstone，丢弃过期 upsert', { taskId: payload.task.id });
-          return true;
-        }
-        this.logger.error('task:update 异常', { error, taskId: payload.task.id });
-        return false;
-      }
+      return this.processTaskUpsert(action, 'task:update');
     });
 
     // 任务删除
     this.actionQueue.registerProcessor('task:delete', async (action) => {
-      const userId = this.authService.currentUserId();
-      if (!userId) { this.logger.warn('task:delete 失败：用户未登录'); return false; }
-      const payload = action.payload as TaskDeletePayload;
-      if (this.shouldStopTaskDelete(action, userId, payload)) {
+      return this.processTaskDelete(action);
+    });
+  }
+
+  private async processTaskUpsert(
+    action: QueuedAction,
+    actionType: 'task:create' | 'task:update',
+  ): Promise<ActionQueueProcessorResult> {
+    const payload = action.payload as TaskPayload;
+    const userId = this.authService.currentUserId();
+    if (!userId) {
+      this.logger.warn(`${actionType} 延后：用户认证状态尚未就绪`);
+      return this.actionQueue.deferRetry(this.buildAuthPendingRetryError(actionType, payload.task.id));
+    }
+
+    const mutationType = actionType === 'task:create' ? 'create' : 'update';
+    if (this.shouldStopTaskMutation(action, userId, payload, mutationType)) {
+      return true;
+    }
+
+    try {
+      return await this.flushTaskUpsert(action, payload, actionType);
+    } catch (error) {
+      return this.handleTaskUpsertError(action, payload, actionType, error);
+    }
+  }
+
+  private async flushTaskUpsert(
+    action: QueuedAction,
+    payload: TaskPayload,
+    actionType: 'task:create' | 'task:update',
+  ): Promise<ActionQueueProcessorResult> {
+    const success = await this.syncService.pushTask(
+      payload.task,
+      payload.projectId,
+      false,
+      false,
+      payload.sourceUserId,
+      true,
+    );
+    if (success) {
+      return this.markRemoteActionSuccess(action.id);
+    }
+    if (this.wasTaskUpsertTransferredToRetryQueue(payload)) {
+      this.logger.info(`${actionType} 已转交 RetryQueue，当前 ActionQueue 项视为完成`, {
+        taskId: payload.task.id,
+        projectId: payload.projectId,
+      });
+      return true;
+    }
+    return this.actionQueue.failRetry(
+      this.buildTaskSyncRetryError(actionType, payload.task.id, payload.projectId),
+    );
+  }
+
+  private handleTaskUpsertError(
+    action: QueuedAction,
+    payload: TaskPayload,
+    actionType: 'task:create' | 'task:update',
+    error: unknown,
+  ): ActionQueueProcessorResult {
+    if (this.isStaleTaskUpsertNoOp(error)) {
+      this.actionQueue.markActionResolvedWithoutRemote(action.id);
+      this.logger.info(`${actionType} 命中远端较新状态，丢弃过期 upsert`, { taskId: payload.task.id });
+      return true;
+    }
+    this.logProcessorFailure(actionType, error, { taskId: payload.task.id, projectId: payload.projectId });
+    return this.actionQueue.failRetry(
+      this.buildTaskProcessorRetryError(error, actionType, payload.task.id, payload.projectId),
+    );
+  }
+
+  private async processTaskDelete(action: QueuedAction): Promise<ActionQueueProcessorResult> {
+    const payload = action.payload as TaskDeletePayload;
+    const userId = this.authService.currentUserId();
+    if (!userId) {
+      this.logger.warn('task:delete 延后：用户认证状态尚未就绪');
+      return this.actionQueue.deferRetry(this.buildAuthPendingRetryError('task:delete', payload.taskId));
+    }
+    if (this.shouldStopTaskDelete(action, userId, payload)) {
+      return true;
+    }
+
+    try {
+      const success = await this.syncService.deleteTask(payload.taskId, payload.projectId, payload.sourceUserId);
+      if (success) {
+        return this.markRemoteActionSuccess(action.id);
+      }
+      if (this.wasTaskDeleteTransferredToRetryQueue(payload)) {
+        this.logger.info('task:delete 已转交 RetryQueue，当前 ActionQueue 项视为完成', {
+          taskId: payload.taskId,
+          projectId: payload.projectId,
+        });
         return true;
       }
-      try {
-        const success = await this.syncService.deleteTask(payload.taskId, payload.projectId, payload.sourceUserId);
-        if (success) {
-          this.actionQueue.markActionSyncedRemotely(action.id);
-        }
-        return success;
-      } catch (error) {
-        this.logger.error('task:delete 异常', { error, taskId: payload.taskId });
-        return false;
-      }
-    });
+      return this.actionQueue.failRetry(
+        this.buildTaskSyncRetryError('task:delete', payload.taskId, payload.projectId),
+      );
+    } catch (error) {
+      this.logProcessorFailure('task:delete', error, { taskId: payload.taskId, projectId: payload.projectId });
+      return this.actionQueue.failRetry(
+        this.buildTaskProcessorRetryError(error, 'task:delete', payload.taskId, payload.projectId),
+      );
+    }
   }
 
   private shouldStopTaskMutation(

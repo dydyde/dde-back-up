@@ -216,7 +216,7 @@ test.describe('Realtime / local-first consistency', () => {
         testHelpers.trackProjectId(projectId);
       }
 
-      await contextA.setOffline(true);
+      await testHelpers.setOffline(pageA, contextA, true);
       await testHelpers.waitForOfflineIndicator(pageA, { timeout: 10_000 });
 
       const offlineTitle = `离线本地写入-${testHelpers.uniqueId()}`;
@@ -224,7 +224,7 @@ test.describe('Realtime / local-first consistency', () => {
       await testHelpers.createTask(pageA, offlineTitle);
       await testHelpers.waitForTaskCard(pageA, offlineTitle, { timeout: 10_000 });
 
-      await contextA.setOffline(false);
+      await testHelpers.setOffline(pageA, contextA, false);
       await testHelpers.waitForCloudSyncSettled(pageA, { timeout: 25_000, observeActivity: true });
       await pageA.reload();
       await testHelpers.waitForAppReady(pageA);
@@ -236,7 +236,7 @@ test.describe('Realtime / local-first consistency', () => {
       await triggerProjectRefresh(pageB);
       await testHelpers.waitForTaskCard(pageB, offlineTitle, { timeout: 25_000 });
     } finally {
-      await contextA.setOffline(false).catch(() => undefined);
+      await testHelpers.setOffline(pageA, contextA, false).catch(() => undefined);
       await pageA.close().catch(() => undefined);
       await contextA.close().catch(() => undefined);
       await pageB.close().catch(() => undefined);

@@ -125,6 +125,54 @@ describe('TaskSyncOperationsService', () => {
     error: vi.fn(),
   };
 
+  function defaultMockClientFrom(table: string) {
+    if (table === 'task_tombstones') {
+      return {
+        select: vi.fn(() => ({
+          eq: vi.fn(() => ({
+            maybeSingle: vi.fn(async () => ({ data: null, error: null })),
+          })),
+        })),
+      };
+    }
+
+    if (table === 'tasks') {
+      return {
+        select: vi.fn(() => ({
+          eq: vi.fn(() => ({
+            eq: vi.fn(() => ({
+              maybeSingle: vi.fn(async () => taskFreshnessResult),
+            })),
+          })),
+        })),
+        update: vi.fn((payload: Record<string, unknown>) => {
+          upsertPayload = payload;
+          return {
+            eq: vi.fn(() => ({
+              eq: vi.fn(() => ({
+                eq: vi.fn(() => ({
+                  select: vi.fn(() => ({
+                    maybeSingle: vi.fn(async () => taskUpdateResult),
+                  })),
+                })),
+              })),
+            })),
+          } as unknown as Record<string, unknown>;
+        }),
+        insert: vi.fn((payload: Record<string, unknown>) => {
+          upsertPayload = payload;
+          return {
+            select: vi.fn(() => ({
+              maybeSingle: vi.fn(async () => taskInsertResult),
+            })),
+          };
+        }),
+      };
+    }
+
+    throw new Error(`Unexpected table: ${table}`);
+  }
+
   const mockClient = {
     auth: {
       getSession: vi.fn(async () => ({ data: { session: { user: { id: 'user-1' } } } })),
@@ -144,53 +192,7 @@ describe('TaskSyncOperationsService', () => {
 
       throw new Error(`Unexpected rpc: ${fn}`);
     }),
-    from: vi.fn((table: string) => {
-      if (table === 'task_tombstones') {
-        return {
-          select: vi.fn(() => ({
-            eq: vi.fn(() => ({
-              maybeSingle: vi.fn(async () => ({ data: null, error: null })),
-            })),
-          })),
-        };
-      }
-
-      if (table === 'tasks') {
-        return {
-          select: vi.fn(() => ({
-            eq: vi.fn(() => ({
-              eq: vi.fn(() => ({
-                maybeSingle: vi.fn(async () => taskFreshnessResult),
-              })),
-            })),
-          })),
-          update: vi.fn((payload: Record<string, unknown>) => {
-            upsertPayload = payload;
-            return {
-              eq: vi.fn(() => ({
-                eq: vi.fn(() => ({
-                  eq: vi.fn(() => ({
-                    select: vi.fn(() => ({
-                      maybeSingle: vi.fn(async () => taskUpdateResult),
-                    })),
-                  })),
-                })),
-              })),
-            } as unknown as Record<string, unknown>;
-          }),
-          insert: vi.fn((payload: Record<string, unknown>) => {
-            upsertPayload = payload;
-            return {
-              select: vi.fn(() => ({
-                maybeSingle: vi.fn(async () => taskInsertResult),
-              })),
-            };
-          }),
-        };
-      }
-
-      throw new Error(`Unexpected table: ${table}`);
-    }) as any,
+    from: vi.fn(defaultMockClientFrom) as any,
   };
 
   beforeEach(() => {
@@ -198,6 +200,7 @@ describe('TaskSyncOperationsService', () => {
     vi.clearAllMocks();
     resetBrowserNetworkSuspensionTrackingForTests();
     setVisibilityState('visible');
+    mockClient.from.mockImplementation(defaultMockClientFrom);
     mockSyncRpcClient.isFeatureEnabled.mockReturnValue(false);
     mockSyncRpcClient.isClientRejected.mockReturnValue(false);
     mockSyncRpcClient.checkProtocol.mockImplementation(async () => null);

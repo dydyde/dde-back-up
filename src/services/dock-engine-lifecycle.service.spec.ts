@@ -19,6 +19,7 @@ import { DockFragmentRestService } from './dock-fragment-rest.service';
 import { DockZoneService } from './dock-zone.service';
 import { TaskStore } from '../core-bridge';
 import { AUTH_CONFIG } from '../config/auth.config';
+import type { DockEntry } from '../models/parking-dock';
 
 const mockLoggerCategory = {
   info: vi.fn(),
@@ -57,6 +58,28 @@ function createDeferred<T>(): { promise: Promise<T>; resolve: (value: T) => void
   return { promise, resolve };
 }
 
+function createDockEntry(overrides: Partial<DockEntry> = {}): DockEntry {
+  return {
+    taskId: 'task-a',
+    title: 'Task A',
+    sourceProjectId: null,
+    status: 'focusing',
+    load: 'low',
+    expectedMinutes: null,
+    waitMinutes: null,
+    waitStartedAt: null,
+    lane: 'backup',
+    zoneSource: 'manual',
+    isMain: true,
+    dockedOrder: 0,
+    detail: '',
+    sourceKind: 'dock-created',
+    systemSelected: false,
+    recommendedScore: null,
+    ...overrides,
+  };
+}
+
 async function flushEffects(): Promise<void> {
   await Promise.resolve();
   TestBed.flushEffects();
@@ -67,11 +90,13 @@ function createContext(currentSnapshotUserId: string | null): DockEngineLifecycl
   __setPersistenceDeps: (deps: unknown[]) => void;
 } {
   let currentUserId = currentSnapshotUserId;
+  const entries = signal<DockEntry[]>([]);
+  const focusMode = signal(false);
   const persistenceDeps = signal<unknown[]>([]);
 
   return {
-    entries: signal([]),
-    focusMode: signal(false),
+    entries,
+    focusMode,
     muteWaitTone: signal(false),
     pendingDecision: signal(null),
     highlightedIds: signal(new Set<string>()),
@@ -96,8 +121,8 @@ function createContext(currentSnapshotUserId: string | null): DockEngineLifecycl
     },
     exportSnapshot: () => ({
       version: 1,
-      entries: [],
-      focusMode: false,
+      entries: entries(),
+      focusMode: focusMode(),
       isDockExpanded: false,
       muteWaitTone: false,
       session: {
@@ -219,6 +244,63 @@ describe('DockEngineLifecycleService', () => {
 
     expect(mockCloudSync.seedFocusModeBaseline).toHaveBeenCalledWith('user-b', restoredSnapshot);
     expect(context.restoreSnapshot).toHaveBeenCalledWith(restoredSnapshot);
+  });
+
+  it('空快照晚到时不应覆盖恢复窗口内新增的内存 Dock 状态', async () => {
+    const context = createContext(null);
+    const restore = createDeferred<null>();
+    mockSnapshotPersistence.restoreLocalSnapshot.mockReturnValueOnce(restore.promise);
+    service.init(context);
+
+    service.restoreInitialSnapshot();
+    await flushEffects();
+
+    context.entries.set([createDockEntry()]);
+    context.focusMode.set(true);
+    context.__setPersistenceDeps(['dock-created-after-restore-start']);
+
+    restore.resolve(null);
+    await flushEffects();
+
+    expect(context.reset).not.toHaveBeenCalled();
+    expect(context.scheduleLocalPersist).toHaveBeenCalledWith(
+      expect.objectContaining({ entries: [expect.objectContaining({ taskId: 'task-a' })], focusMode: true }),
+      'user-a',
+    );
+    expect(mockCloudSync.scheduleCloudPush).toHaveBeenCalledWith(
+      'user-a',
+      expect.objectContaining({ entries: [expect.objectContaining({ taskId: 'task-a' })], focusMode: true }),
+    );
+  });
+
+  it('owner 短暂未确认时不应清空活跃内存 Dock 状态，并在 owner 恢复后落盘', async () => {
+    const context = createContext(null);
+    currentUserId.set(null);
+    context.entries.set([createDockEntry()]);
+    context.focusMode.set(true);
+    context.__setPersistenceDeps(['active-before-owner-confirmed']);
+    service.init(context);
+
+    TestBed.runInInjectionContext(() => {
+      service.registerEffects();
+    });
+    await flushEffects();
+
+    expect(context.reset).not.toHaveBeenCalled();
+    expect(context.getCurrentSnapshotUserId()).toBeNull();
+
+    currentUserId.set(AUTH_CONFIG.LOCAL_MODE_USER_ID);
+    await flushEffects();
+
+    expect(context.reset).not.toHaveBeenCalled();
+    expect(context.scheduleLocalPersist).toHaveBeenCalledWith(
+      expect.objectContaining({ entries: [expect.objectContaining({ taskId: 'task-a' })], focusMode: true }),
+      AUTH_CONFIG.LOCAL_MODE_USER_ID,
+    );
+    expect(mockCloudSync.scheduleCloudPush).toHaveBeenCalledWith(
+      AUTH_CONFIG.LOCAL_MODE_USER_ID,
+      expect.objectContaining({ entries: [expect.objectContaining({ taskId: 'task-a' })], focusMode: true }),
+    );
   });
 
   it('乱序完成的旧 restore 不应提前解锁 restoringSnapshot 或调度过期 cloud pull', async () => {

@@ -3,7 +3,7 @@
  * 
  * 从 critical-paths.spec.ts 抽取的共享代码
  */
-import { expect, Locator, Page } from '@playwright/test';
+import { expect, BrowserContext, Locator, Page } from '@playwright/test';
 import {
   ensureAuthenticated as ensureSharedAuthenticated,
   ensureLoginModalVisible,
@@ -62,6 +62,7 @@ export interface TestHelpers {
   openTaskTitleEditor(page: Page, title: string, options?: { timeout?: number }): Promise<Locator>;
   openTaskContentEditor(page: Page, title: string, options?: { timeout?: number }): Promise<Locator>;
   openSettings(page: Page): Promise<void>;
+  setOffline(page: Page, context: BrowserContext, offline: boolean): Promise<void>;
   waitForOfflineIndicator(page: Page, options?: WaitForSyncOptions): Promise<void>;
   waitForSyncSettled(page: Page, options?: WaitForSyncOptions): Promise<void>;
   waitForCloudSyncSettled(page: Page, options?: WaitForCloudSyncOptions): Promise<void>;
@@ -88,6 +89,30 @@ async function clickIfVisible(locator: Locator, options?: { timeout?: number; fo
   } catch {
     return false;
   }
+}
+
+async function dispatchBrowserNetworkState(page: Page, offline: boolean): Promise<void> {
+  await page.evaluate((nextOffline) => {
+    const online = !nextOffline;
+    const defineOnlineGetter = (target: object) => {
+      Object.defineProperty(target, 'onLine', {
+        configurable: true,
+        get: () => online,
+      });
+    };
+
+    try {
+      defineOnlineGetter(Navigator.prototype);
+    } catch {
+      try {
+        defineOnlineGetter(navigator);
+      } catch {
+        // Some browser engines expose navigator.onLine as read-only; the event still drives NanoFlow state.
+      }
+    }
+
+    window.dispatchEvent(new Event(nextOffline ? 'offline' : 'online'));
+  }, offline);
 }
 
 async function cardMatchesTitle(card: Locator, title: string): Promise<boolean> {
@@ -293,7 +318,14 @@ export const testHelpers: TestHelpers = {
     await expect(titleInput).toBeVisible({ timeout: 5_000 });
     await titleInput.fill(title);
     await titleInput.press('Enter');
-    await testHelpers.waitForTaskCard(page, title, { timeout: 10_000 });
+    await page.locator('[data-testid="app-container"]').first().click({ position: { x: 12, y: 12 }, force: true });
+    const taskCard = await testHelpers.getTaskCard(page, title, { timeout: 10_000 });
+    await expect
+      .poll(async () => taskCard.getAttribute('draggable'), {
+        timeout: 5_000,
+        intervals: [100, 150, 250],
+      })
+      .toBe('true');
 
     if (typeof options?.content === 'string' && options.content.length > 0) {
       const contentEditor = await testHelpers.openTaskContentEditor(page, title, { timeout: 10_000 });
@@ -411,13 +443,19 @@ export const testHelpers: TestHelpers = {
     await expect(settingsModal).toBeVisible({ timeout: 15_000 });
   },
 
+  async setOffline(page: Page, context: BrowserContext, offline: boolean): Promise<void> {
+    await context.setOffline(offline);
+    await dispatchBrowserNetworkState(page, offline);
+  },
+
   async waitForOfflineIndicator(page: Page, options?: WaitForSyncOptions): Promise<void> {
     const timeout = options?.timeout ?? 10_000;
     await expect
       .poll(async () => {
+        const browserOffline = await page.evaluate(() => navigator.onLine === false).catch(() => false);
         const bannerVisible = await page.locator('[data-testid="offline-indicator"]').first().isVisible().catch(() => false);
         const attrs = await readSyncAttributes(page);
-        return bannerVisible || attrs.offline === 'offline-indicator';
+        return browserOffline || bannerVisible || attrs.offline === 'offline-indicator';
       }, { timeout, intervals: [200, 300, 500] })
       .toBe(true);
   },

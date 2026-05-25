@@ -13,6 +13,11 @@ import { SessionManagerService } from '../app/core/services/sync/session-manager
 import { blackBoxEntriesMap, setBlackBoxEntries } from '../state/focus-stores';
 import type { BlackBoxEntry } from '../models/focus';
 import { AUTH_CONFIG } from '../config/auth.config';
+import { TIMEOUT_CONFIG } from '../config/timeout.config';
+import {
+  ensureBrowserNetworkSuspensionTracking,
+  resetBrowserNetworkSuspensionTrackingForTests,
+} from '../utils/browser-network-suspension';
 
 function createEntry(overrides: Partial<BlackBoxEntry> & Pick<BlackBoxEntry, 'id'>): BlackBoxEntry {
   return {
@@ -28,6 +33,13 @@ function createEntry(overrides: Partial<BlackBoxEntry> & Pick<BlackBoxEntry, 'id
     deletedAt: null,
     ...overrides,
   };
+}
+
+function setVisibilityState(state: DocumentVisibilityState): void {
+  Object.defineProperty(document, 'visibilityState', {
+    configurable: true,
+    value: state,
+  });
 }
 
 function createLegacyEntryWithUndefinedDeletedAt(entry: BlackBoxEntry): BlackBoxEntry {
@@ -79,6 +91,10 @@ describe('BlackBoxSyncService', () => {
   };
 
   beforeEach(() => {
+    resetBrowserNetworkSuspensionTrackingForTests();
+    ensureBrowserNetworkSuspensionTracking();
+    setVisibilityState('visible');
+
     initDbSpy = vi.spyOn(
       BlackBoxSyncService.prototype as unknown as { initIndexedDB: () => Promise<void> },
       'initIndexedDB'
@@ -189,8 +205,49 @@ describe('BlackBoxSyncService', () => {
   afterEach(() => {
     initDbSpy.mockRestore();
     setupNetworkSpy.mockRestore();
+    resetBrowserNetworkSuspensionTrackingForTests();
+    setVisibilityState('visible');
     setBlackBoxEntries([]);
     localStorage.removeItem(AUTH_CONFIG.LOCAL_MODE_CACHE_KEY);
+  });
+
+  it('direct black-box widget notify should skip while browser network is suspended', async () => {
+    const supabase = TestBed.inject(SupabaseClientService) as unknown as {
+      clientAsync: ReturnType<typeof vi.fn>;
+    };
+    supabase.clientAsync.mockClear();
+    setVisibilityState('hidden');
+
+    await (service as unknown as {
+      sendDirectWidgetBlackBoxNotify: (entry: BlackBoxEntry, action: 'read') => Promise<void>;
+    }).sendDirectWidgetBlackBoxNotify(createEntry({ id: 'entry-1' }), 'read');
+
+    expect(supabase.clientAsync).not.toHaveBeenCalled();
+  });
+
+  it('direct black-box widget notify should include a short timeout for foreground calls', async () => {
+    const invoke = vi.fn().mockResolvedValue({ data: null, error: null });
+    const supabase = TestBed.inject(SupabaseClientService) as unknown as {
+      clientAsync: ReturnType<typeof vi.fn>;
+    };
+    supabase.clientAsync.mockResolvedValue({ functions: { invoke } });
+
+    await (service as unknown as {
+      sendDirectWidgetBlackBoxNotify: (entry: BlackBoxEntry, action: 'complete') => Promise<void>;
+    }).sendDirectWidgetBlackBoxNotify(createEntry({ id: 'entry-2' }), 'complete');
+
+    expect(invoke).toHaveBeenCalledWith(
+      'widget-notify',
+      expect.objectContaining({
+        timeout: TIMEOUT_CONFIG.QUICK,
+        body: expect.objectContaining({
+          directNotify: true,
+          table: 'black_box_entries',
+          entryId: 'entry-2',
+          blackBoxAction: 'complete',
+        }),
+      }),
+    );
   });
 
   it('should apply resume pull cooldown by default', async () => {
@@ -1735,6 +1792,36 @@ describe('BlackBoxSyncService', () => {
 
     expect(getAll).toHaveBeenCalledTimes(1);
     expect(entries).toEqual([expect.objectContaining({ id: 'entry-own', userId: 'user-1' })]);
+  });
+
+  it('loadFromLocal 不应让空 IDB 覆盖当前用户刚写入的内存条目', async () => {
+    const optimisticEntry = createEntry({
+      id: 'entry-optimistic',
+      content: '刚创建的黑匣子条目',
+    });
+    setBlackBoxEntries([optimisticEntry]);
+
+    const transaction = vi.fn(() => ({
+      objectStore: vi.fn(() => ({
+        getAll: () => {
+          const request = {
+            result: [],
+            onsuccess: null as ((this: IDBRequest<unknown[]>, ev: Event) => unknown) | null,
+            onerror: null as ((this: IDBRequest<unknown[]>, ev: Event) => unknown) | null,
+          };
+          queueMicrotask(() => request.onsuccess?.call(request as unknown as IDBRequest<unknown[]>, new Event('success')));
+          return request;
+        },
+      })),
+    }));
+    (service as unknown as { db: unknown }).db = { transaction };
+
+    const entries = await service.loadFromLocal();
+
+    expect(entries).toEqual([expect.objectContaining({ id: 'entry-optimistic', userId: 'user-1' })]);
+    expect(blackBoxEntriesMap().get('entry-optimistic')).toEqual(expect.objectContaining({
+      content: '刚创建的黑匣子条目',
+    }));
   });
 
   it('loadFromLocal 应把历史本地模式 pending 条目归一为本地已保存', async () => {

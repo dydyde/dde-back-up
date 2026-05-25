@@ -484,7 +484,7 @@ describe('SupabaseClientService', () => {
 
       expect(authClientMock.auth.startAutoRefresh).not.toHaveBeenCalled();
 
-      await vi.advanceTimersByTimeAsync(1499);
+      await vi.advanceTimersByTimeAsync(4999);
       expect(authClientMock.auth.startAutoRefresh).not.toHaveBeenCalled();
 
       await vi.advanceTimersByTimeAsync(2);

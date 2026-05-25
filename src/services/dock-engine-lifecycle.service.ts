@@ -6,7 +6,7 @@
  *
  * 使用与其他 Dock 子服务一致的 init(ctx) 上下文注入模式。
  */
-import { DestroyRef, Injectable, WritableSignal, effect, inject } from '@angular/core';
+import { DestroyRef, Injectable, WritableSignal, effect, inject, untracked } from '@angular/core';
 import { PARKING_CONFIG } from '../config/parking.config';
 import { DOCK_NOTIFICATION } from '../config/dock-i18n.config';
 import { IDLE_SCHEDULE_CONFIG } from '../config/timeout.config';
@@ -127,6 +127,7 @@ export class DockEngineLifecycleService {
   private nonCriticalWorkHoldUntil = 0;
   private visibilityListener: (() => void) | null = null;
   private lastPersistenceFingerprint: string | null = null;
+  private preserveNextEmptyRestoreForUnconfirmedInMemoryState = false;
 
   // ---------------------------------------------------------------------------
   //  Init
@@ -542,7 +543,11 @@ export class DockEngineLifecycleService {
   //  Local snapshot persistence delegation
   // ---------------------------------------------------------------------------
 
-  async restoreLocalSnapshot(userId: string | null): Promise<void> {
+  async restoreLocalSnapshot(
+    userId: string | null,
+    emptyRestoreBaselineFingerprint: string | null = null,
+    preserveCurrentOnEmptyRestore = false,
+  ): Promise<void> {
     // 中文注释：切账号或恢复本地快照前先废弃旧的云同步防抖任务，防止旧 owner 定时器回写新快照。
     this.snapshotPersistence.cancelPendingPersist();
     this.cloudSync.cancelTimers();
@@ -555,6 +560,16 @@ export class DockEngineLifecycleService {
       this.ctx.restoreSnapshot(normalized);
       return;
     }
+    if (this.shouldPreserveInMemoryStateOnEmptyRestore(emptyRestoreBaselineFingerprint)
+      || (preserveCurrentOnEmptyRestore && this.hasActiveInMemorySnapshot())) {
+      const currentSnapshot = this.ctx.exportSnapshot();
+      this.cloudSync.seedFocusModeBaseline(userId, currentSnapshot);
+      this.ctx.scheduleLocalPersist(currentSnapshot, userId);
+      if (userId) {
+        this.cloudSync.scheduleCloudPush(userId, currentSnapshot);
+      }
+      return;
+    }
     this.ctx.reset();
     this.ctx.setSnapshotSavedAt(EMPTY_LOCAL_SNAPSHOT_SAVED_AT);
     this.cloudSync.seedFocusModeBaseline(userId, this.ctx.exportSnapshot());
@@ -565,8 +580,11 @@ export class DockEngineLifecycleService {
     options: { cloudPullMode: 'none' | 'immediate' | 'idle' },
   ): void {
     const restoreToken = ++this.snapshotRestoreToken;
+    const emptyRestoreBaselineFingerprint = this.buildPersistenceFingerprint(this.ctx.persistenceDeps());
+    const preserveCurrentOnEmptyRestore = this.preserveNextEmptyRestoreForUnconfirmedInMemoryState;
+    this.preserveNextEmptyRestoreForUnconfirmedInMemoryState = false;
     this.ctx.restoringSnapshot.set(true);
-    void this.restoreLocalSnapshot(userId).finally(() => {
+    void this.restoreLocalSnapshot(userId, emptyRestoreBaselineFingerprint, preserveCurrentOnEmptyRestore).finally(() => {
       if (restoreToken !== this.snapshotRestoreToken) {
         return;
       }
@@ -586,11 +604,34 @@ export class DockEngineLifecycleService {
     });
   }
 
+  private shouldPreserveInMemoryStateOnEmptyRestore(baselineFingerprint: string | null): boolean {
+    if (!baselineFingerprint) {
+      return false;
+    }
+
+    const currentFingerprint = this.buildPersistenceFingerprint(this.ctx.persistenceDeps());
+    if (currentFingerprint === baselineFingerprint) {
+      return false;
+    }
+
+    return this.hasActiveInMemorySnapshot();
+  }
+
+  private hasActiveInMemorySnapshot(): boolean {
+    const snapshot = this.ctx.exportSnapshot();
+    return snapshot.entries.some(entry => entry.status !== 'completed') || snapshot.focusMode;
+  }
+
   private clearSnapshotStateForUnconfirmedOwner(): void {
     ++this.snapshotRestoreToken;
     this.cancelSnapshotPersistenceWork();
     this.ctx.restoringSnapshot.set(false);
-    if (this.ctx.getCurrentSnapshotUserId() !== null) {
+    const currentSnapshotUserId = this.ctx.getCurrentSnapshotUserId();
+    if (currentSnapshotUserId === null && untracked(() => this.hasActiveInMemorySnapshot())) {
+      this.preserveNextEmptyRestoreForUnconfirmedInMemoryState = true;
+      return;
+    }
+    if (currentSnapshotUserId !== null) {
       this.ctx.setCurrentSnapshotUserId(null);
     }
     this.ctx.reset();

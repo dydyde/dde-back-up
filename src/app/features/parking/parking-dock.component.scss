@@ -74,6 +74,16 @@
       transform: translateX(-50%) translateY(0);
       opacity: 1;
     }
+    [data-testid="dock-v3-planner-panel"][data-presentation="sheet"] {
+      position: fixed !important;
+      top: auto !important;
+      right: 12px !important;
+      bottom: calc(12px + env(safe-area-inset-bottom, 0px)) !important;
+      left: 12px !important;
+      width: auto !important;
+      max-height: min(72dvh, calc(100dvh - 24px)) !important;
+      overflow-y: auto;
+    }
     /* 专注模式下的背景操作轨：保持可读且显式表明“这是次级操作层”。 */
     .dock-bar.focus-secondary {
       transform: translateX(-50%) translateY(0) scale(1);
