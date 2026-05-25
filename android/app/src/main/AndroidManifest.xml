@@ -28,14 +28,18 @@
           PWA 图标 warm tap 必须优先复用已有 TWA task。
           之前为了规避短暂启动白屏，曾用空 taskAffinity + finishOnTaskLaunch 强制每次点击都走
           cold path；这会在用户已经看到文本栏后再次向 Chrome 发送默认启动 URL，表现为不到一秒
-          又回到 Web initial-loader 转圈。singleTask 让 HOME 后再次点击图标走 task-to-front，已有
+          又回到 Web initial-loader 转圈。HOME 后再次点击图标应走系统 launcher task restore，已有
           文本栏保持交互态；真正需要深链/小组件跳转时，专用 widget intent 仍会显式带 NEW_TASK /
           CLEAR_TASK 进入独立流程。
+          2026-05-23：补 alwaysRetainTaskState，阻止 LAUNCHER intent 自带的
+          RESET_TASK_IF_NEEDED 在静置后的 warm tap 时清掉根 Activity 上方的 Chrome CustomTab。
+          这里不能使用 singleTask：真实桌面图标点击会把 intent 送回根 LauncherActivity，ABH
+          回到前台后会按 mBrowserWasLaunched 自行 finish，表现为点图标闪一下回桌面。
         -->
         <activity
             android:name="app.nanoflow.host.NanoflowTwaLauncherActivity"
+            android:alwaysRetainTaskState="true"
             android:exported="true"
-            android:launchMode="singleTask"
             android:theme="@style/Theme.NanoFlow.Twa.Launcher">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

@@ -1495,14 +1495,19 @@ export class WorkspaceShellComponent implements OnInit, OnDestroy, AfterViewInit
   private primeWidgetWorkspaceGateSync(startupEntryIntent: StartupEntryIntent): void {
     const isAndroidWidgetBootstrapOpen = startupEntryIntent.entry === 'twa'
       && startupEntryIntent.androidWidgetBootstrap === true;
+    const isTwaWorkspaceOpen = startupEntryIntent.entry === 'twa';
     if (
       startupEntryIntent.intent !== 'open-workspace'
-      || (startupEntryIntent.entry !== 'widget' && !isAndroidWidgetBootstrapOpen)
+      || (startupEntryIntent.entry !== 'widget' && !isAndroidWidgetBootstrapOpen && !isTwaWorkspaceOpen)
     ) {
       return;
     }
 
-    const primeSource = isAndroidWidgetBootstrapOpen ? 'android-widget-bootstrap' : startupEntryIntent.entry;
+    const primeSource = isAndroidWidgetBootstrapOpen
+      ? 'android-widget-bootstrap'
+      : startupEntryIntent.entry === 'twa'
+        ? 'twa-open-workspace'
+        : startupEntryIntent.entry;
     const primeKey = `${primeSource}:${startupEntryIntent.rawIntent ?? ''}:${this.routeUrl()}`;
     if (this.primedWidgetWorkspaceGateSyncKey === primeKey) {
       return;
@@ -1512,10 +1517,7 @@ export class WorkspaceShellComponent implements OnInit, OnDestroy, AfterViewInit
     this.focusStartupProbe.primeWidgetWorkspaceGateSync();
     this.dockEngine.refreshFocusSessionFromCloud(this.currentUserId());
 
-    const currentUserId = this.currentUserId();
-    if (currentUserId && this.focusProbeInitializedForUser === currentUserId) {
-      this.pendingWidgetWorkspaceGateRecheckKey = primeKey;
-    }
+    this.pendingWidgetWorkspaceGateRecheckKey = primeKey;
 
     this.flushWidgetWorkspaceGateRecheck();
   }
@@ -1530,7 +1532,7 @@ export class WorkspaceShellComponent implements OnInit, OnDestroy, AfterViewInit
     }
 
     const currentUserId = this.currentUserId();
-    if (!currentUserId || this.focusProbeInitializedForUser !== currentUserId) {
+    if (!currentUserId) {
       return;
     }
 
@@ -1576,6 +1578,14 @@ export class WorkspaceShellComponent implements OnInit, OnDestroy, AfterViewInit
     const routeIntent = resolveStartupEntryRouteIntent(typeof routeUrl === 'string' ? routeUrl : null);
 
     if (!routeIntent?.projectId) {
+      const mobileRootProjectId = this.resolveMobileRootStartupProjectId();
+      if (mobileRootProjectId) {
+        void this.router.navigate(['/projects', mobileRootProjectId, 'text'], {
+          replaceUrl: true,
+        });
+        return;
+      }
+
       void this.router.navigate(['/projects'], {
         replaceUrl: true,
       });
@@ -1857,13 +1867,21 @@ export class WorkspaceShellComponent implements OnInit, OnDestroy, AfterViewInit
     return projects[0]?.id ?? null;
   }
 
-  private shouldNavigateRootStartupToTextProject(): boolean {
-    if (this.rootStartupTextNavigationApplied || !this.uiState.isMobile()) {
-      return false;
+  private resolveMobileRootStartupProjectId(): string | null {
+    if (!this.uiState.isMobile()) {
+      return null;
     }
 
-    if (typeof window !== 'undefined'
-      && (window as Window & { __NANOFLOW_LAUNCH_ROUTE_APPLIED__?: boolean }).__NANOFLOW_LAUNCH_ROUTE_APPLIED__) {
+    const activeProjectId = this.projectState.activeProjectId();
+    if (activeProjectId) {
+      return activeProjectId;
+    }
+
+    return this.resolveStartupProjectFallbackId(this.projectState.projects());
+  }
+
+  private shouldNavigateRootStartupToTextProject(): boolean {
+    if (this.rootStartupTextNavigationApplied || !this.uiState.isMobile()) {
       return false;
     }
 
@@ -1972,6 +1990,8 @@ export class WorkspaceShellComponent implements OnInit, OnDestroy, AfterViewInit
         this.focusProbeInitializedForUser = null;
         return;
       }
+
+      this.flushWidgetWorkspaceGateRecheck();
 
       if (!this.coreDataLoaded()) return;
       if (this.focusProbeInitializedForUser === userId) return;

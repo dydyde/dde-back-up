@@ -1697,6 +1697,18 @@ export class UserSessionService {
   private hasLocalOnlyProjectsAwaitingPromotion(): boolean {
     return this.projectState.projects().some(project => project.syncSource === 'local-only');
   }
+
+  private isSyncedProjectShellNeedingHydration(projectId: string | null | undefined): boolean {
+    if (!projectId || this.hydratedProjectIds.has(projectId) || this.isLocalOnlyProject(projectId)) {
+      return false;
+    }
+
+    const currentProject = this.projectState.getProjectsWithCurrentData()
+      .find(project => project.id === projectId)
+      ?? this.projectState.getProject(projectId);
+
+    return !!currentProject && (!Array.isArray(currentProject.tasks) || currentProject.tasks.length === 0);
+  }
   
   /** 后台静默同步云端数据（不阻塞 UI，Delta Sync 优先） */
   private async startBackgroundSync(
@@ -1843,6 +1855,11 @@ export class UserSessionService {
       }
     }
 
+    if (skipProjectSyncSlowPath && this.projectState.projects().length === 0) {
+      skipProjectSyncSlowPath = false;
+      this.logger.debug('项目清单快路命中但本地项目为空，降级同步项目元数据');
+    }
+
     // 【性能优化】项目列表元数据同步与当前项目 delta sync 并行执行
     // - 如果 access preflight 已确认 activeProjectId 可访问，可安全并行
     // - syncProjectListMetadata 仅更新项目列表壳数据，不影响当前项目内容
@@ -1951,7 +1968,13 @@ export class UserSessionService {
       }
     }
 
-    if (!skipProjectSyncSlowPath && !currentProjectSynced && activeProjectId && !this.isLocalOnlyProject(activeProjectId)) {
+    const activeProjectNeedsHydration = this.isSyncedProjectShellNeedingHydration(activeProjectId);
+    if (
+      !currentProjectSynced
+      && activeProjectId
+      && !this.isLocalOnlyProject(activeProjectId)
+      && (!skipProjectSyncSlowPath || activeProjectNeedsHydration)
+    ) {
       try {
         this.logger.debug('按需加载当前项目', { projectId: activeProjectId });
         const currentProject = await this.syncCoordinator.loadSingleProjectFromCloud(activeProjectId);
