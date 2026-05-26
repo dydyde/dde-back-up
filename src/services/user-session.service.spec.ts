@@ -2691,6 +2691,40 @@ describe('UserSessionService', () => {
       expect(lastCallProjects.length).toBe(0);
     });
 
+    it('认证恢复前若已存在 persisted session user，不应提前注入种子数据', async () => {
+      userIdSignal.set(null);
+      (mockAuthService['peekPersistedSessionIdentity'] as ReturnType<typeof vi.fn>).mockReturnValue({
+        userId: 'real-user-123',
+        email: 'real@example.com',
+      });
+
+      const loadFromCacheOrSeed = (
+        service as unknown as {
+          loadFromCacheOrSeed: (override?: {
+            source: string;
+            projectCount: number;
+            bytes: number;
+            migratedLegacy: boolean;
+            projects: Project[];
+            ownerUserId?: string | null;
+          }) => Promise<void>;
+        }
+      ).loadFromCacheOrSeed.bind(service);
+
+      await loadFromCacheOrSeed({
+        source: 'none',
+        projectCount: 0,
+        bytes: 0,
+        migratedLegacy: false,
+        projects: [],
+      });
+
+      const setProjectsCalls = (mockProjectState['setProjects'] as ReturnType<typeof vi.fn>).mock.calls;
+      const lastCallProjects = setProjectsCalls[setProjectsCalls.length - 1][0] as Project[];
+      expect(lastCallProjects.length).toBe(0);
+      expect(service.startupProjectCatalogStage()).toBe('partial');
+    });
+
     it('未登录用户无缓存时应创建种子数据', async () => {
       // 未登录状态
       userIdSignal.set(null);

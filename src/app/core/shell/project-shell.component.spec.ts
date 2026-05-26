@@ -125,6 +125,64 @@ describe('ProjectShellComponent startup entry fallback', () => {
   });
 });
 
+describe('ProjectShellComponent route project selection', () => {
+  it('handleRouteChange 应通过 UserSession 切换项目以触发空壳补水', () => {
+    const switchActiveProject = vi.fn();
+    const notifyProjectOpen = vi.fn();
+    const applyStateAwareFlowRestore = vi.fn();
+    const setActiveView = vi.fn();
+    const context = {
+      route: {
+        snapshot: {
+          params: { projectId: 'project-1' },
+          firstChild: {
+            params: {},
+          },
+        },
+      },
+      router: {
+        url: '/projects/project-1/text',
+      },
+      handoffCoordinator: {
+        result: () => ({ kind: 'full' }),
+      },
+      startupLaunchSnapshot: null,
+      startupRouteDecisionResolved: false,
+      uiState: {
+        isMobile: () => true,
+      },
+      projectState: {
+        activeProjectId: () => null,
+        getProject: () => ({ id: 'project-1', name: 'Real Project' }),
+        projects: () => [{ id: 'project-1', name: 'Real Project' }],
+      },
+      userSession: {
+        switchActiveProject,
+      },
+      tabSync: {
+        notifyProjectOpen,
+      },
+      handleTaskDeepLink: vi.fn(),
+      cancelFlowStateAwareTimers: vi.fn(),
+      activateFlowIntent: vi.fn(),
+      setActiveView,
+      applyStateAwareFlowRestore,
+      toast: {
+        info: vi.fn(),
+      },
+    } as unknown as ProjectShellComponent;
+
+    (ProjectShellComponent.prototype as unknown as {
+      handleRouteChange: (this: ProjectShellComponent) => void;
+    }).handleRouteChange.call(context);
+
+    expect(switchActiveProject).toHaveBeenCalledWith('project-1');
+    expect(notifyProjectOpen).toHaveBeenCalledWith('project-1', 'Real Project');
+    expect(setActiveView).toHaveBeenCalledWith('text');
+    expect(applyStateAwareFlowRestore).not.toHaveBeenCalled();
+  });
+});
+
 describe('ProjectShellComponent flow view loading contract', () => {
   it('桌面端应直接渲染 FlowView，只有移动端保留 @defer 懒加载', () => {
     const source = readFileSync(

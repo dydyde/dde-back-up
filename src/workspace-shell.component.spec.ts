@@ -2320,7 +2320,7 @@ describe('WorkspaceShellComponent 输入事件处理', () => {
   });
 
   it('syncStateFromRoute 应在 /projects 根路由回填启动项目，避免主内容空壳', () => {
-    const setActiveProjectId = vi.fn();
+    const switchActiveProject = vi.fn();
     const navigate = vi.fn();
     const context = {
       getCurrentStartupEntryIntent: () => null,
@@ -2334,9 +2334,9 @@ describe('WorkspaceShellComponent 输入事件处理', () => {
       projectState: {
         activeProjectId: () => null,
         projects: () => [{ id: 'project-1' }, { id: 'project-2' }],
-        setActiveProjectId,
       },
       userSession: {
+        switchActiveProject,
         canAuthoritativelyRejectProjectRoute: () => true,
         isProjectAuthoritativelyAccessible: () => true,
         startupProjectCatalogStage: () => 'resolved',
@@ -2369,7 +2369,7 @@ describe('WorkspaceShellComponent 输入事件处理', () => {
       syncStateFromRoute: (this: WorkspaceShellComponent) => void;
     }).syncStateFromRoute.call(context);
 
-    expect(setActiveProjectId).toHaveBeenCalledWith('project-2');
+    expect(switchActiveProject).toHaveBeenCalledWith('project-2');
     expect(navigate).toHaveBeenCalledWith(['/projects', 'project-2', 'text'], {
       replaceUrl: true,
       queryParamsHandling: 'preserve',
@@ -2390,9 +2390,9 @@ describe('WorkspaceShellComponent 输入事件处理', () => {
       projectState: {
         activeProjectId: () => 'project-2',
         projects: () => [{ id: 'project-1' }, { id: 'project-2' }],
-        setActiveProjectId: vi.fn(),
       },
       userSession: {
+        switchActiveProject: vi.fn(),
         canAuthoritativelyRejectProjectRoute: () => true,
         isProjectAuthoritativelyAccessible: () => true,
       },
@@ -2420,7 +2420,7 @@ describe('WorkspaceShellComponent 输入事件处理', () => {
   });
 
   it('syncStateFromRoute 不应把桌面端 /projects 根路由强制改成 text 深链', () => {
-    const setActiveProjectId = vi.fn();
+    const switchActiveProject = vi.fn();
     const navigate = vi.fn();
     const context = {
       getCurrentStartupEntryIntent: () => null,
@@ -2434,9 +2434,9 @@ describe('WorkspaceShellComponent 输入事件处理', () => {
       projectState: {
         activeProjectId: () => null,
         projects: () => [{ id: 'project-1' }],
-        setActiveProjectId,
       },
       userSession: {
+        switchActiveProject,
         canAuthoritativelyRejectProjectRoute: () => true,
         isProjectAuthoritativelyAccessible: () => true,
       },
@@ -2457,7 +2457,7 @@ describe('WorkspaceShellComponent 输入事件处理', () => {
       syncStateFromRoute: (this: WorkspaceShellComponent) => void;
     }).syncStateFromRoute.call(context);
 
-    expect(setActiveProjectId).toHaveBeenCalledWith('project-1');
+    expect(switchActiveProject).toHaveBeenCalledWith('project-1');
     expect(navigate).not.toHaveBeenCalled();
   });
 
@@ -2857,7 +2857,7 @@ describe('WorkspaceShellComponent 输入事件处理', () => {
   });
 
   it('syncStateFromRoute 应在项目异步到达后补上深链接项目选择', () => {
-    const setActiveProjectId = vi.fn();
+    const switchActiveProject = vi.fn();
     const navigate = vi.fn();
     const context = {
       getCurrentStartupEntryIntent: () => null,
@@ -2871,9 +2871,9 @@ describe('WorkspaceShellComponent 输入事件处理', () => {
       projectState: {
         activeProjectId: () => null,
         projects: () => [{ id: 'project-1' }],
-        setActiveProjectId,
       },
       userSession: {
+        switchActiveProject,
         canAuthoritativelyRejectProjectRoute: () => true,
         isProjectAuthoritativelyAccessible: () => true,
         startupProjectCatalogStage: () => 'resolved',
@@ -2887,7 +2887,7 @@ describe('WorkspaceShellComponent 输入事件处理', () => {
       syncStateFromRoute: (this: WorkspaceShellComponent) => void;
     }).syncStateFromRoute.call(context);
 
-    expect(setActiveProjectId).toHaveBeenCalledWith('project-1');
+    expect(switchActiveProject).toHaveBeenCalledWith('project-1');
     expect(navigate).not.toHaveBeenCalled();
   });
 
@@ -2906,9 +2906,9 @@ describe('WorkspaceShellComponent 输入事件处理', () => {
       projectState: {
         activeProjectId: () => null,
         projects: () => [{ id: 'project-1' }],
-        setActiveProjectId,
       },
       userSession: {
+        switchActiveProject: setActiveProjectId,
         canAuthoritativelyRejectProjectRoute: () => false,
         isProjectAuthoritativelyAccessible: () => false,
         startupProjectCatalogStage: () => 'partial',
@@ -2993,7 +2993,7 @@ describe('WorkspaceShellComponent 输入事件处理', () => {
   });
 
   it('syncStateFromRoute 不应把本地保留的幽灵项目当成 authoritative 可访问项目', () => {
-    const setActiveProjectId = vi.fn();
+    const switchActiveProject = vi.fn();
     const navigate = vi.fn();
     const context = {
       getCurrentStartupEntryIntent: () => null,
@@ -3007,9 +3007,9 @@ describe('WorkspaceShellComponent 输入事件处理', () => {
       projectState: {
         activeProjectId: () => null,
         projects: () => [{ id: 'project-9' }],
-        setActiveProjectId,
       },
       userSession: {
+        switchActiveProject,
         canAuthoritativelyRejectProjectRoute: () => true,
         isProjectAuthoritativelyAccessible: () => false,
         startupProjectCatalogStage: () => 'resolved',
@@ -3023,7 +3023,7 @@ describe('WorkspaceShellComponent 输入事件处理', () => {
       syncStateFromRoute: (this: WorkspaceShellComponent) => void;
     }).syncStateFromRoute.call(context);
 
-    expect(setActiveProjectId).not.toHaveBeenCalled();
+    expect(switchActiveProject).not.toHaveBeenCalled();
     expect(navigate).toHaveBeenCalledWith(['/projects']);
   });
 

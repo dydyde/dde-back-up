@@ -19,6 +19,7 @@ import { TaskOperationAdapterService } from '../../../services/task-operation-ad
 import { SyncCoordinatorService } from '../../../services/sync-coordinator.service';
 import { ToastService } from '../../../services/toast.service';
 import { TabSyncService } from '../../../services/tab-sync.service';
+import { UserSessionService } from '../../../services/user-session.service';
 import { FlowCommandService } from '../../features/flow/services/flow-command.service';
 import { ModalLoaderService } from '../services/modal-loader.service';
 import { LoggerService } from '../../../services/logger.service';
@@ -455,6 +456,7 @@ export class ProjectShellComponent implements OnInit, OnDestroy {
   private readonly syncCoordinator = inject(SyncCoordinatorService);
   private toast = inject(ToastService);
   private tabSync = inject(TabSyncService);
+  private readonly userSession = inject(UserSessionService);
   private route = inject(ActivatedRoute);
   private router = inject(Router);
   private readonly modalLoader = inject(ModalLoaderService);
@@ -616,7 +618,7 @@ export class ProjectShellComponent implements OnInit, OnDestroy {
     
     // 处理项目切换
     if (projectId && projectId !== this.projectState.activeProjectId()) {
-      this.projectState.setActiveProjectId(projectId);
+        this.userSession.switchActiveProject(projectId);
       const project = this.projectState.getProject(projectId);
       if (project) {
         this.tabSync.notifyProjectOpen(projectId, project.name);
@@ -646,7 +648,7 @@ export class ProjectShellComponent implements OnInit, OnDestroy {
       if (handoffResult.kind === 'degraded-to-project' && !this.projectState.activeProjectId()) {
         const fallbackProjectId = this.projectState.projects()[0]?.id ?? null;
         if (fallbackProjectId) {
-          this.projectState.setActiveProjectId(fallbackProjectId);
+          this.userSession.switchActiveProject(fallbackProjectId);
         }
       }
       return;

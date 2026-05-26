@@ -299,6 +299,25 @@ export class UserSessionService {
     this.markStartupProjectCatalogResolved();
   }
 
+  private resolveStartupTargetUserId(explicitUserId?: string | null): string | null {
+    if (explicitUserId) {
+      return explicitUserId;
+    }
+
+    const currentUserId = this.authService.currentUserId();
+    if (currentUserId) {
+      return currentUserId;
+    }
+
+    return this.authService.peekPersistedSessionIdentity()?.userId
+      ?? this.authService.peekPersistedOwnerHint()
+      ?? null;
+  }
+
+  private isAuthenticatedStartupTarget(userId: string | null): boolean {
+    return !!userId && userId !== AUTH_CONFIG.LOCAL_MODE_USER_ID;
+  }
+
   private resolvePrehydrateOwnerUserId(): string {
     const currentUserId = this.currentUserId();
     if (currentUserId) {
@@ -2561,12 +2580,13 @@ export class UserSessionService {
     }
 
     const snapshot = snapshotOverride ?? await this.loadStartupSnapshotResult();
+    const startupTargetUserId = this.resolveStartupTargetUserId(sessionGuard?.userId ?? null);
     if (this.shouldAbortStaleSession(sessionGuard, 'loadFromCacheOrSeed:snapshot-loaded')) {
       return;
     }
     const snapshotProjects = this.getSnapshotProjectsForSession(
       snapshot,
-      sessionGuard?.userId ?? this.authService.currentUserId(),
+      startupTargetUserId,
       'loadFromCacheOrSeed:snapshot-loaded'
     );
     if (!snapshotProjects.ownerMatched) {
@@ -2609,8 +2629,7 @@ export class UserSessionService {
       } else {
         // 【P0 修复 2026-03-27】已登录用户不创建种子数据，等后台同步填充真实数据
         // 种子数据仅在未登录/离线模式下创建，避免覆盖用户真实数据
-        const isAuthenticatedUser = !!this.authService.currentUserId()
-          && this.authService.currentUserId() !== AUTH_CONFIG.LOCAL_MODE_USER_ID;
+        const isAuthenticatedUser = this.isAuthenticatedStartupTarget(startupTargetUserId);
         if (isAuthenticatedUser) {
           this.logger.warn('已登录用户无有效本地缓存，跳过种子数据，等待后台同步');
           projects = [];
@@ -2621,8 +2640,7 @@ export class UserSessionService {
       }
     } else {
       // 【P0 修复 2026-03-27】同上：保护已登录用户免受种子覆盖
-      const isAuthenticatedUser = !!this.authService.currentUserId()
-        && this.authService.currentUserId() !== AUTH_CONFIG.LOCAL_MODE_USER_ID;
+      const isAuthenticatedUser = this.isAuthenticatedStartupTarget(startupTargetUserId);
       if (isAuthenticatedUser) {
         this.logger.warn('已登录用户无本地缓存，跳过种子数据，等待后台同步');
         projects = [];
@@ -2638,7 +2656,7 @@ export class UserSessionService {
 
     this.projectState.setProjects(projects);
     this.projectState.setActiveProjectId(projects[0]?.id ?? null);
-    this.syncStartupProjectCatalogStageAfterLocalRestore(this.authService.currentUserId());
+    this.syncStartupProjectCatalogStageAfterLocalRestore(startupTargetUserId);
     pushStartupTrace('user_session.snapshot_applied', {
       source: snapshot.source,
       projectCount: projects.length,

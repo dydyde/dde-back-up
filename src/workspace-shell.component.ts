@@ -333,7 +333,7 @@ export class WorkspaceShellComponent implements OnInit, OnDestroy, AfterViewInit
   }
   
   setActiveProjectId(id: string | null): void {
-    this.projectState.setActiveProjectId(id);
+    this.userSession.switchActiveProject(id);
   }
   private readonly undoService = inject(UndoService);
   private readonly swUpdate = inject(SwUpdate);
@@ -1944,7 +1944,7 @@ export class WorkspaceShellComponent implements OnInit, OnDestroy, AfterViewInit
         const fallbackProjectId = projects.some((project) => project.id === snapshotProjectId)
           ? snapshotProjectId
           : projects[0].id;
-        this.projectState.setActiveProjectId(fallbackProjectId);
+        this.userSession.switchActiveProject(fallbackProjectId);
       }
     });
   }
@@ -2671,7 +2671,7 @@ export class WorkspaceShellComponent implements OnInit, OnDestroy, AfterViewInit
 
       const fallbackProjectId = this.resolveStartupProjectFallbackId(projects);
       if (fallbackProjectId) {
-        this.projectState.setActiveProjectId(fallbackProjectId);
+        this.userSession.switchActiveProject(fallbackProjectId);
         this.navigateRootStartupToTextProject(fallbackProjectId);
       }
       return;
@@ -2682,7 +2682,7 @@ export class WorkspaceShellComponent implements OnInit, OnDestroy, AfterViewInit
       || this.userSession.isProjectAuthoritativelyAccessible(projectId);
     if (projectExists && isAuthoritativelyAccessible) {
       if (projectId !== this.projectState.activeProjectId()) {
-        this.projectState.setActiveProjectId(projectId);
+        this.userSession.switchActiveProject(projectId);
       }
       return;
     }
