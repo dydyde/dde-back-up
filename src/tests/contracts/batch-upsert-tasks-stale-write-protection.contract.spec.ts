@@ -10,7 +10,7 @@ import { describe, expect, it } from 'vitest';
  * （stage / parent_id / deleted_at），从而避免"突然新增大量待分配块"的脏数据现象。
  */
 const migrationPath =
-  'supabase/migrations/20260512050000_batch_upsert_tasks_stale_write_protection.sql';
+  'supabase/migrations/20260527110000_batch_upsert_tasks_content_presence_guard.sql';
 
 function readMigration(): string {
   return fs.readFileSync(path.join(process.cwd(), migrationPath), 'utf8');
@@ -70,13 +70,25 @@ describe('batch_upsert_tasks stale-write protection migration', () => {
     );
   });
 
+  it('preserves existing content when the payload omits the content key', () => {
+    const sql = normalize(readMigration());
+    expect(sql).toContain("v_has_content := v_task ? 'content'");
+    expect(sql).toContain("CASE WHEN v_has_content THEN v_content ELSE '' END");
+    expect(sql).toContain(
+      'content = CASE WHEN v_has_content THEN EXCLUDED.content ELSE existing.content END',
+    );
+  });
+
   it('keeps server-arrival LWW behavior when payload omits updated_at (0509 compatibility)', () => {
     // 当 payload 不含 updated_at 时，v_payload_updated IS NULL → v_is_stale 为 false
     // → CASE 走 EXCLUDED 分支，与 0509 行为完全一致。这条 spec 通过上面对 v_is_stale 的
-    // 定义间接保证；这里额外断言：UPDATE 分支仍对 UI 状态字段使用 EXCLUDED（不被陈旧标记影响）。
+    // 定义间接保证；这里额外断言：UPDATE 分支仍对 UI 状态字段使用 EXCLUDED（不被陈旧标记影响），
+    // content 则仅在 payload 明确携带该键时才应用 EXCLUDED。
     const sql = normalize(readMigration());
     expect(sql).toContain('title = EXCLUDED.title');
-    expect(sql).toContain('content = EXCLUDED.content');
+    expect(sql).toContain(
+      'content = CASE WHEN v_has_content THEN EXCLUDED.content ELSE existing.content END',
+    );
     expect(sql).toContain('x = EXCLUDED.x');
     expect(sql).toContain('y = EXCLUDED.y');
     expect(sql).toContain('updated_at = now()');

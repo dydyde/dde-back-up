@@ -18,6 +18,7 @@ import { ConflictStorageService } from './conflict-storage.service';
 import { RetryQueueService } from '../app/core/services/sync/retry-queue.service';
 import { AUTH_CONFIG } from '../config/auth.config';
 import { Project, Task } from '../models';
+import { markTaskContentMissingFromSource } from '../utils/task-content-guard';
 import { StartupPlaceholderStateService } from './startup-placeholder-state.service';
 import { blackBoxEntriesMap, gateSnoozeCount, gateState, resetFocusState } from '../state/focus-stores';
 
@@ -466,9 +467,15 @@ describe('UserSessionService', () => {
 
     it('按需加载确认不可访问后应停止当前会话内重复重试', async () => {
       userIdSignal.set('user-1');
-      const shellProject = createProject({ id: 'shell-1', name: 'Shell', tasks: [] });
+      const shellProject = createProject({ id: 'shell-1', name: 'Shell', syncSource: 'synced', tasks: [] });
       const seedProjects = mockProjectState['setProjects'] as unknown as (projects: Project[]) => void;
       seedProjects([shellProject]);
+      (
+        service as unknown as { lastProjectListMetadataSyncSucceededState: WritableSignal<boolean> }
+      ).lastProjectListMetadataSyncSucceededState.set(true);
+      (
+        service as unknown as { authoritativelyAccessibleProjectIdsState: WritableSignal<ReadonlySet<string>> }
+      ).authoritativelyAccessibleProjectIdsState.set(new Set(['shell-1']));
       vi.clearAllMocks();
 
       (mockSyncCoordinator['loadSingleProjectFromCloud'] as ReturnType<typeof vi.fn>).mockResolvedValue(null);
@@ -485,6 +492,10 @@ describe('UserSessionService', () => {
       expect(mockSyncCoordinator['loadSingleProjectFromCloud']).toHaveBeenCalledTimes(1);
       expect((mockSyncCoordinator['core'] as { getAccessibleProjectProbe: ReturnType<typeof vi.fn> }).getAccessibleProjectProbe)
         .toHaveBeenCalledTimes(1);
+      expect(mockProjectState['setProjects']).toHaveBeenCalledWith([]);
+      expect((mockSyncCoordinator['core'] as { saveOfflineSnapshot: ReturnType<typeof vi.fn> }).saveOfflineSnapshot)
+        .toHaveBeenCalledWith([], 'user-1');
+      expect(service.isProjectAuthoritativelyAccessible('shell-1')).toBe(false);
     });
 
     it('切号后应清空旧补水中的 in-flight 标记，允许新会话重新补水', async () => {
@@ -1383,6 +1394,249 @@ describe('UserSessionService', () => {
     });
   });
 
+  describe('loadProjects 项目列表预同步', () => {
+    it('首屏渲染后应先补齐缺失项目壳，而不是等待 idle 后台同步', async () => {
+      vi.useFakeTimers();
+      const originalRic = (window as Window & { requestIdleCallback?: (cb: () => void) => number }).requestIdleCallback;
+
+      Object.defineProperty(window, 'requestIdleCallback', {
+        value: vi.fn(() => 1),
+        configurable: true,
+        writable: true,
+      });
+
+      userIdSignal.set('user-1');
+      const localProject = createProject({
+        id: 'proj-local',
+        name: 'Local Project',
+        syncSource: 'synced',
+        tasks: [createTask({ id: 'task-local' })],
+      });
+      const remoteShellProject = createProject({
+        id: 'proj-remote',
+        name: 'Remote Project',
+        syncSource: 'synced',
+        pendingSync: false,
+        tasks: [],
+        connections: [],
+      });
+
+      (
+        mockSyncCoordinator['core'] as {
+          loadStartupOfflineSnapshot: ReturnType<typeof vi.fn>;
+        }
+      ).loadStartupOfflineSnapshot.mockResolvedValue({
+        source: 'idb',
+        projectCount: 1,
+        bytes: 128,
+        migratedLegacy: false,
+        ownerUserId: 'user-1',
+        projects: [localProject],
+      });
+
+      const syncProjectListMetadataSpy = vi.spyOn(
+        service as unknown as {
+          syncProjectListMetadata: (userId: string, sessionGuard?: unknown) => Promise<Set<string>>;
+        },
+        'syncProjectListMetadata'
+      ).mockImplementation(async () => {
+        (mockProjectState['setProjectsMetadataOnly'] as ReturnType<typeof vi.fn>)([
+          localProject,
+          remoteShellProject,
+        ]);
+        return new Set(['proj-local', 'proj-remote']);
+      });
+
+      const startBackgroundSyncSpy = vi.spyOn(
+        service as unknown as {
+          startBackgroundSync: (userId: string, previousActive: string | null, sessionGuard?: unknown) => Promise<void>;
+        },
+        'startBackgroundSync'
+      ).mockResolvedValue(undefined);
+
+      await service.loadProjects();
+      await flushAsyncWork();
+
+      expect(syncProjectListMetadataSpy).toHaveBeenCalledTimes(1);
+      expect(startBackgroundSyncSpy).not.toHaveBeenCalled();
+
+      const metadataOnlyCall = (mockProjectState['setProjectsMetadataOnly'] as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0] as Project[] | undefined;
+      expect(metadataOnlyCall?.map((project: Project) => project.id)).toEqual(['proj-local', 'proj-remote']);
+
+      Object.defineProperty(window, 'requestIdleCallback', {
+        value: originalRic,
+        configurable: true,
+        writable: true,
+      });
+      vi.useRealTimers();
+    });
+
+    it('项目清单水位快路命中时不应提前重拉完整 metadata', async () => {
+      vi.useFakeTimers();
+      const originalRic = (window as Window & { requestIdleCallback?: (cb: () => void) => number }).requestIdleCallback;
+
+      Object.defineProperty(window, 'requestIdleCallback', {
+        value: vi.fn(() => 1),
+        configurable: true,
+        writable: true,
+      });
+
+      userIdSignal.set('user-1');
+      const localProject = createProject({
+        id: 'proj-local',
+        name: 'Local Project',
+        syncSource: 'synced',
+        tasks: [createTask({ id: 'task-local' })],
+      });
+
+      (
+        mockSyncCoordinator['core'] as {
+          loadStartupOfflineSnapshot: ReturnType<typeof vi.fn>;
+        }
+      ).loadStartupOfflineSnapshot.mockResolvedValue({
+        source: 'idb',
+        projectCount: 1,
+        bytes: 128,
+        migratedLegacy: false,
+        ownerUserId: 'user-1',
+        projects: [localProject],
+      });
+      (mockSyncCoordinator['refreshProjectManifestIfNeeded'] as ReturnType<typeof vi.fn>)
+        .mockResolvedValueOnce({ skipped: true, watermark: '2026-05-27T01:00:00.000Z' });
+
+      const syncProjectListMetadataSpy = vi.spyOn(
+        service as unknown as {
+          syncProjectListMetadata: (userId: string, sessionGuard?: unknown) => Promise<Set<string>>;
+        },
+        'syncProjectListMetadata'
+      );
+      const startBackgroundSyncSpy = vi.spyOn(
+        service as unknown as {
+          startBackgroundSync: (userId: string, previousActive: string | null, sessionGuard?: unknown) => Promise<void>;
+        },
+        'startBackgroundSync'
+      ).mockResolvedValue(undefined);
+
+      await service.loadProjects();
+      await flushAsyncWork();
+
+      expect(syncProjectListMetadataSpy).not.toHaveBeenCalled();
+      expect(startBackgroundSyncSpy).not.toHaveBeenCalled();
+      expect(service.canAuthoritativelyRejectProjectRoute()).toBe(true);
+      expect(service.isProjectAuthoritativelyAccessible('proj-local')).toBe(true);
+
+      Object.defineProperty(window, 'requestIdleCallback', {
+        value: originalRic,
+        configurable: true,
+        writable: true,
+      });
+      vi.useRealTimers();
+    });
+
+    it('项目清单水位快路命中但本地目录为空时，应降级为 metadata sync', async () => {
+      vi.useFakeTimers();
+      const originalRic = (window as Window & { requestIdleCallback?: (cb: () => void) => number }).requestIdleCallback;
+
+      Object.defineProperty(window, 'requestIdleCallback', {
+        value: vi.fn(() => 1),
+        configurable: true,
+        writable: true,
+      });
+
+      userIdSignal.set('user-1');
+      (
+        mockSyncCoordinator['core'] as {
+          loadStartupOfflineSnapshot: ReturnType<typeof vi.fn>;
+        }
+      ).loadStartupOfflineSnapshot.mockResolvedValue({
+        source: 'none',
+        projectCount: 0,
+        bytes: 0,
+        migratedLegacy: false,
+        ownerUserId: 'user-1',
+        projects: [],
+      });
+      (mockSyncCoordinator['refreshProjectManifestIfNeeded'] as ReturnType<typeof vi.fn>)
+        .mockResolvedValueOnce({ skipped: true, watermark: '2026-05-27T01:00:00.000Z' });
+
+      const syncProjectListMetadataSpy = vi.spyOn(
+        service as unknown as {
+          syncProjectListMetadata: (userId: string, sessionGuard?: unknown) => Promise<Set<string>>;
+        },
+        'syncProjectListMetadata'
+      ).mockResolvedValue(new Set(['proj-remote']));
+      const startBackgroundSyncSpy = vi.spyOn(
+        service as unknown as {
+          startBackgroundSync: (userId: string, previousActive: string | null, sessionGuard?: unknown) => Promise<void>;
+        },
+        'startBackgroundSync'
+      ).mockResolvedValue(undefined);
+
+      await service.loadProjects();
+      await flushAsyncWork();
+
+      expect(syncProjectListMetadataSpy).toHaveBeenCalledTimes(1);
+      expect(startBackgroundSyncSpy).not.toHaveBeenCalled();
+      expect(service.canAuthoritativelyRejectProjectRoute()).toBe(false);
+
+      Object.defineProperty(window, 'requestIdleCallback', {
+        value: originalRic,
+        configurable: true,
+        writable: true,
+      });
+      vi.useRealTimers();
+    });
+
+    it('Supabase session 尚未切到当前用户时，不应在 prime fast path 提前建立 authoritative 状态', async () => {
+      vi.useFakeTimers();
+      const originalRic = (window as Window & { requestIdleCallback?: (cb: () => void) => number }).requestIdleCallback;
+
+      Object.defineProperty(window, 'requestIdleCallback', {
+        value: vi.fn(() => 1),
+        configurable: true,
+        writable: true,
+      });
+
+      userIdSignal.set('user-1');
+      mockSupabaseClientService.getSession.mockResolvedValue({
+        data: { session: { user: { id: 'old-user' } } },
+        error: null,
+      });
+      (
+        mockSyncCoordinator['core'] as {
+          loadStartupOfflineSnapshot: ReturnType<typeof vi.fn>;
+        }
+      ).loadStartupOfflineSnapshot.mockResolvedValue({
+        source: 'idb',
+        projectCount: 1,
+        bytes: 128,
+        migratedLegacy: false,
+        ownerUserId: 'user-1',
+        projects: [createProject({ id: 'proj-local', syncSource: 'synced' })],
+      });
+
+      const syncProjectListMetadataSpy = vi.spyOn(
+        service as unknown as {
+          syncProjectListMetadata: (userId: string, sessionGuard?: unknown, forceSnapshotPersist?: boolean) => Promise<Set<string>>;
+        },
+        'syncProjectListMetadata'
+      );
+
+      await service.loadProjects();
+      await flushAsyncWork();
+
+      expect(syncProjectListMetadataSpy).not.toHaveBeenCalled();
+      expect(service.canAuthoritativelyRejectProjectRoute()).toBe(false);
+
+      Object.defineProperty(window, 'requestIdleCallback', {
+        value: originalRic,
+        configurable: true,
+        writable: true,
+      });
+      vi.useRealTimers();
+    });
+  });
+
   describe('Attachment 懒加载与降级', () => {
     it('项目无附件时不触发 AttachmentService 懒加载', async () => {
       userIdSignal.set('user-1');
@@ -1718,9 +1972,72 @@ describe('UserSessionService', () => {
         }
       ).startBackgroundSync('user-1', null);
 
-      expect(syncProjectListMetadataSpy).toHaveBeenCalledWith('user-1', undefined);
+      expect(syncProjectListMetadataSpy).toHaveBeenCalledWith('user-1', undefined, true);
       expect(mockSyncCoordinator['performDeltaSync']).toHaveBeenCalledWith('proj-legacy-local-only');
       expect(mockSyncCoordinator['loadSingleProjectFromCloud']).not.toHaveBeenCalled();
+    });
+
+    it('探测到更高 manifest 水位时应重新拉取 metadata，而不是复用旧缓存', async () => {
+      userIdSignal.set('user-1');
+      const localProject = createProject({
+        id: 'proj-cached',
+        name: 'Cached',
+        syncSource: 'synced',
+        tasks: [createTask({ id: 'task-cached' })],
+      });
+      (mockProjectState['projects'] as ReturnType<typeof vi.fn>).mockReturnValue([localProject]);
+      (mockProjectState['getProject'] as ReturnType<typeof vi.fn>).mockImplementation((id: string) => {
+        return id === localProject.id ? localProject : undefined;
+      });
+      (mockProjectState['getProjectsWithCurrentData'] as ReturnType<typeof vi.fn>).mockReturnValue([localProject]);
+      (mockProjectState['activeProjectId'] as ReturnType<typeof vi.fn>).mockReturnValue(null);
+      mockSupabaseClientService.getSession.mockResolvedValue({
+        data: { session: { user: { id: 'user-1' } } },
+        error: null,
+      });
+
+      const metadataSyncSucceededState = (
+        service as unknown as { lastProjectListMetadataSyncSucceededState: WritableSignal<boolean> }
+      ).lastProjectListMetadataSyncSucceededState;
+      const metadataSyncDurableState = (
+        service as unknown as { lastProjectListMetadataSyncDurableState: WritableSignal<boolean> }
+      ).lastProjectListMetadataSyncDurableState;
+      const syncProjectListMetadataSpy = vi.spyOn(
+        service as unknown as {
+          syncProjectListMetadata: (userId: string, sessionGuard?: unknown) => Promise<Set<string>>;
+        },
+        'syncProjectListMetadata'
+      ).mockImplementation(async () => {
+        metadataSyncSucceededState.set(true);
+        metadataSyncDurableState.set(true);
+        return new Set(['proj-cached']);
+      });
+
+      await (
+        service as unknown as {
+          ensureProjectListMetadataSynced: (
+            userId: string,
+            sessionGuard?: unknown,
+            manifestWatermark?: string | null,
+          ) => Promise<Set<string>>;
+        }
+      ).ensureProjectListMetadataSynced('user-1', undefined, '2026-05-27T01:00:00.000Z');
+
+      (mockSyncCoordinator['refreshProjectManifestIfNeeded'] as ReturnType<typeof vi.fn>)
+        .mockResolvedValueOnce({ skipped: false, watermark: '2026-05-27T02:00:00.000Z' });
+      (mockSyncCoordinator['commitProjectManifestWatermark'] as ReturnType<typeof vi.fn>).mockClear();
+
+      await (
+        service as unknown as {
+          startBackgroundSync: (userId: string, previousActive: string | null) => Promise<void>;
+        }
+      ).startBackgroundSync('user-1', null);
+
+      expect(syncProjectListMetadataSpy).toHaveBeenCalledTimes(2);
+      expect(mockSyncCoordinator['commitProjectManifestWatermark']).toHaveBeenCalledWith(
+        '2026-05-27T02:00:00.000Z',
+        'user-1'
+      );
     });
 
     it('远端已删的 local-only 影子项目在无真实本地改动时应被移除', async () => {
@@ -1799,6 +2116,47 @@ describe('UserSessionService', () => {
         '2026-02-17T10:05:00.000Z',
         'user-1'
       );
+    });
+
+    it('项目元数据已更新但快照落盘失败时不应提交 deferred manifest watermark', async () => {
+      const query = {
+        select: vi.fn().mockReturnThis(),
+        eq: vi.fn().mockReturnThis(),
+        is: vi.fn().mockReturnThis(),
+        order: vi.fn().mockResolvedValue({
+          data: [{
+            id: 'proj-ok',
+            title: 'Keep',
+            description: '',
+            created_date: '2026-02-17T10:00:00.000Z',
+            updated_at: '2026-02-17T10:02:00.000Z',
+            version: 1,
+            owner_id: 'user-1',
+          }],
+          error: null,
+        }),
+      };
+      mockSupabaseClientService.clientAsync.mockResolvedValue({
+        from: vi.fn().mockReturnValue(query),
+      });
+      (mockProjectState['projects'] as ReturnType<typeof vi.fn>).mockReturnValue([]);
+      (mockProjectState['activeProjectId'] as ReturnType<typeof vi.fn>).mockReturnValue(null);
+      (mockSyncCoordinator['refreshProjectManifestIfNeeded'] as ReturnType<typeof vi.fn>)
+        .mockResolvedValueOnce({ skipped: false, watermark: '2026-02-17T10:05:00.000Z' });
+      vi.spyOn(
+        service as unknown as {
+          saveProjectsToOfflineSnapshot: (projects: Project[], userId: string, options?: unknown) => Promise<void>;
+        },
+        'saveProjectsToOfflineSnapshot'
+      ).mockRejectedValue(new Error('disk full'));
+
+      await (
+        service as unknown as {
+          startBackgroundSync: (userId: string, previousActive: string | null) => Promise<void>;
+        }
+      ).startBackgroundSync('user-1', null);
+
+      expect(mockSyncCoordinator['commitProjectManifestWatermark']).not.toHaveBeenCalled();
     });
 
     it('项目元数据慢路失败时不应提交 deferred manifest watermark', async () => {
@@ -2325,6 +2683,146 @@ describe('UserSessionService', () => {
 
       // 安全守卫跳过裁剪时不会触发 toast（因为没有变更）
       // 真正触发 toast 的是 startBackgroundSync 中的 access preflight
+    });
+  });
+
+  describe('mergeSingleProject content guard', () => {
+    it('远端任务缺少 content 时应在直接覆盖分支保留本地正文', async () => {
+      vi.clearAllMocks();
+
+      const localTask = createTask({
+        id: 'task-1',
+        title: 'Keep Content',
+        content: 'local content should survive',
+        updatedAt: '2026-05-26T08:00:00.000Z',
+      });
+      const localProject = createProject({
+        id: 'proj-content-guard',
+        tasks: [localTask],
+        updatedAt: '2026-05-26T08:00:00.000Z',
+      });
+      const remoteTask = markTaskContentMissingFromSource(createTask({
+        id: 'task-1',
+        title: 'Keep Content',
+        content: '',
+        updatedAt: '2026-05-27T08:00:00.000Z',
+      }));
+      const remoteProject = createProject({
+        id: 'proj-content-guard',
+        tasks: [remoteTask],
+        updatedAt: '2026-05-27T08:00:00.000Z',
+      });
+
+      (mockProjectState['setProjects'] as ReturnType<typeof vi.fn>)([localProject]);
+      (mockSyncCoordinator['hasPendingChangesForProject'] as ReturnType<typeof vi.fn>).mockReturnValue(false);
+
+      await (
+        service as unknown as {
+          mergeSingleProject: (cloudProject: Project, userId: string) => Promise<void>;
+        }
+      ).mergeSingleProject(remoteProject, 'user-1');
+
+      const mergedProject = ((mockProjectState['projects'] as ReturnType<typeof vi.fn>)() as Project[])
+        .find((project) => project.id === 'proj-content-guard');
+
+      expect(mergedProject?.tasks[0]?.content).toBe('local content should survive');
+      expect(mergedProject?.tasks[0]?.updatedAt).toBe('2026-05-27T08:00:00.000Z');
+      expect(mockLoggerCategory.warn).toHaveBeenCalledWith(
+        'mergeSingleProject: 远端任务缺少 content，已保留本地正文',
+        expect.objectContaining({
+          projectId: 'proj-content-guard',
+          restoredTaskCount: 1,
+        }),
+      );
+    });
+
+    it('远端显式提交空 content 时不应误用本地正文覆盖', async () => {
+      vi.clearAllMocks();
+
+      const localTask = createTask({
+        id: 'task-2',
+        title: 'Allow Empty',
+        content: 'old content',
+        updatedAt: '2026-05-26T08:00:00.000Z',
+      });
+      const localProject = createProject({
+        id: 'proj-explicit-empty',
+        tasks: [localTask],
+        updatedAt: '2026-05-26T08:00:00.000Z',
+      });
+      const remoteTask = createTask({
+        id: 'task-2',
+        title: 'Allow Empty',
+        content: '',
+        updatedAt: '2026-05-27T08:00:00.000Z',
+      });
+      const remoteProject = createProject({
+        id: 'proj-explicit-empty',
+        tasks: [remoteTask],
+        updatedAt: '2026-05-27T08:00:00.000Z',
+      });
+
+      (mockProjectState['setProjects'] as ReturnType<typeof vi.fn>)([localProject]);
+      (mockSyncCoordinator['hasPendingChangesForProject'] as ReturnType<typeof vi.fn>).mockReturnValue(false);
+
+      await (
+        service as unknown as {
+          mergeSingleProject: (cloudProject: Project, userId: string) => Promise<void>;
+        }
+      ).mergeSingleProject(remoteProject, 'user-1');
+
+      const mergedProject = ((mockProjectState['projects'] as ReturnType<typeof vi.fn>)() as Project[])
+        .find((project) => project.id === 'proj-explicit-empty');
+
+      expect(mergedProject?.tasks[0]?.content).toBe('');
+      expect(mockLoggerCategory.warn).not.toHaveBeenCalledWith(
+        'mergeSingleProject: 远端任务缺少 content，已保留本地正文',
+        expect.anything(),
+      );
+    });
+
+    it('存在本地待同步修改时也应在 LWW 分支保留缺字段远端正文', async () => {
+      vi.clearAllMocks();
+
+      const localTask = createTask({
+        id: 'task-3',
+        title: 'Pending Merge',
+        content: 'pending local content',
+        updatedAt: '2026-05-26T08:00:00.000Z',
+      });
+      const localProject = createProject({
+        id: 'proj-pending-merge',
+        tasks: [localTask],
+        updatedAt: '2026-05-26T08:00:00.000Z',
+      });
+      const remoteTask = markTaskContentMissingFromSource(createTask({
+        id: 'task-3',
+        title: 'Pending Merge',
+        content: '',
+        updatedAt: '2026-05-27T08:00:00.000Z',
+        order: 9,
+      }));
+      const remoteProject = createProject({
+        id: 'proj-pending-merge',
+        tasks: [remoteTask],
+        updatedAt: '2026-05-27T08:00:00.000Z',
+      });
+
+      (mockProjectState['setProjects'] as ReturnType<typeof vi.fn>)([localProject]);
+      (mockSyncCoordinator['hasPendingChangesForProject'] as ReturnType<typeof vi.fn>).mockReturnValue(true);
+
+      await (
+        service as unknown as {
+          mergeSingleProject: (cloudProject: Project, userId: string) => Promise<void>;
+        }
+      ).mergeSingleProject(remoteProject, 'user-1');
+
+      const mergedProject = ((mockProjectState['projects'] as ReturnType<typeof vi.fn>)() as Project[])
+        .find((project) => project.id === 'proj-pending-merge');
+
+      expect(mergedProject?.tasks[0]?.content).toBe('pending local content');
+      expect(mergedProject?.tasks[0]?.order).toBe(9);
+      expect(mergedProject?.tasks[0]?.updatedAt).toBe('2026-05-27T08:00:00.000Z');
     });
   });
 

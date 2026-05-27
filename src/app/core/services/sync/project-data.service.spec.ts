@@ -13,6 +13,7 @@ import { AUTH_CONFIG } from '../../../../config/auth.config';
 import { TIMEOUT_CONFIG } from '../../../../config/timeout.config';
 import { FIELD_SELECT_CONFIG } from '../../../../config/sync.config';
 import { resetBrowserNetworkSuspensionTrackingForTests } from '../../../../utils/browser-network-suspension';
+import { hasTaskContentMissingFromSource } from '../../../../utils/task-content-guard';
 import { resetTaskSchemaCompatibilityForTests } from '../../../../utils/task-schema-compat';
 
 const OFFLINE_SNAPSHOT_DB_NAME = 'nanoflow-offline-snapshots';
@@ -2049,6 +2050,7 @@ describe('ProjectDataService', () => {
     } as never);
 
     expect(task.content).toBe('');
+    expect(hasTaskContentMissingFromSource(task)).toBe(true);
     expect(logger.warn).toHaveBeenCalledWith(
       'rowToTask: content 字段缺失，可能导致数据丢失！',
       expect.objectContaining({

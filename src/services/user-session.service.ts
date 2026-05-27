@@ -27,6 +27,7 @@ import { StartupPlaceholderStateService } from './startup-placeholder-state.serv
 import { FEATURE_FLAGS } from '../config/feature-flags.config';
 import { isFailure } from '../utils/result';
 import { mergeByLww, mergeByLwwWithTombstone } from '../utils/lww-merge';
+import { hasTaskContentMissingFromSource } from '../utils/task-content-guard';
 import { ToastService } from './toast.service';
 import { pushStartupTrace } from '../utils/startup-trace';
 import { isValidUUID } from '../utils/validation';
@@ -84,6 +85,7 @@ export class UserSessionService {
   private prehydratedSnapshotOwnerId: string | null = null;
   private sessionRequestGeneration = 0;
   private readonly lastProjectListMetadataSyncSucceededState = signal(false);
+  private readonly lastProjectListMetadataSyncDurableState = signal(false);
   private readonly authoritativelyAccessibleProjectIdsState = signal<ReadonlySet<string>>(new Set());
   private readonly startupProjectCatalogStageState = signal<StartupProjectCatalogStage>('unresolved');
   private readonly trustedPrehydratedSnapshotState = signal(false);
@@ -91,6 +93,11 @@ export class UserSessionService {
   private readonly hydratedProjectIds = new Set<string>();
   /** 正在加载中的项目 ID，防止并发重复请求 */
   private readonly hydrationInFlight = new Map<string, Promise<void>>();
+  /** 当前启动轮次中的项目列表元数据同步 Promise，避免重复查询 */
+  private projectListMetadataSyncInFlight: Promise<Set<string>> | null = null;
+  private projectListMetadataSyncScopeKey: string | null = null;
+  private projectListMetadataSyncLastCompletedScopeKey: string | null = null;
+  private projectListMetadataSyncLastResult: ReadonlySet<string> | null = null;
 
   readonly startupProjectCatalogStage = this.startupProjectCatalogStageState.asReadonly();
   readonly trustedPrehydratedSnapshotVisible = this.trustedPrehydratedSnapshotState.asReadonly();
@@ -128,6 +135,16 @@ export class UserSessionService {
     const guestDraftProjectIds = this.getPersistedGuestDraftProjectIds();
     return this.isProtectedLocalOnlyProject(localProject, guestDraftProjectIds)
       || this.hasRealLocalChanges(normalizedProjectId);
+  }
+
+  private setProjectAuthoritativeAccessibility(projectId: string, accessible: boolean): void {
+    const nextAccessibleProjectIds = new Set(this.authoritativelyAccessibleProjectIdsState());
+    if (accessible) {
+      nextAccessibleProjectIds.add(projectId);
+    } else {
+      nextAccessibleProjectIds.delete(projectId);
+    }
+    this.authoritativelyAccessibleProjectIdsState.set(nextAccessibleProjectIds);
   }
 
   isHintOnlyStartupPlaceholderVisible(): boolean {
@@ -1171,7 +1188,7 @@ export class UserSessionService {
         return;
       }
       if (loadResult.status === 'inaccessible') {
-        this.logger.info('按需加载项目已确认不可访问，停止当前会话重试', { projectId });
+        await this.reconcileInaccessibleHydrationProject(projectId, userId, sessionGuard);
         this.hydratedProjectIds.add(projectId);
         return;
       }
@@ -1603,6 +1620,9 @@ export class UserSessionService {
     if (this.shouldAbortStaleSession(sessionGuard, 'loadProjects:before-background-sync')) {
       return;
     }
+
+    // 项目列表缺失的远端项目壳不应等待 idle/background 链路后置补齐。
+    this.primeProjectListMetadataSync(userId, sessionGuard);
     
     // === 阶段 2: 后台静默同步云端数据 ===
     // 【关键改动】不阻塞，使用 .then() 而非 await
@@ -1638,6 +1658,149 @@ export class UserSessionService {
     } else {
       setTimeout(runOnce, 0);
     }
+  }
+
+  private buildProjectListMetadataSyncScopeKey(
+    userId: string,
+    sessionGuard?: SessionGuardContext,
+    manifestWatermark?: string | null,
+  ): string {
+    return `${userId}:${sessionGuard?.generation ?? this.sessionRequestGeneration}:${manifestWatermark ?? 'none'}`;
+  }
+
+  private async ensureProjectListMetadataSynced(
+    userId: string,
+    sessionGuard?: SessionGuardContext,
+    manifestWatermark?: string | null,
+  ): Promise<Set<string>> {
+    const scopeKey = this.buildProjectListMetadataSyncScopeKey(userId, sessionGuard, manifestWatermark);
+    if (
+      this.projectListMetadataSyncLastCompletedScopeKey === scopeKey
+      && this.projectListMetadataSyncLastResult
+    ) {
+      return new Set(this.projectListMetadataSyncLastResult);
+    }
+
+    if (
+      this.projectListMetadataSyncInFlight
+      && this.projectListMetadataSyncScopeKey === scopeKey
+    ) {
+      return this.projectListMetadataSyncInFlight;
+    }
+
+    const syncPromise = this.syncProjectListMetadata(
+      userId,
+      sessionGuard,
+      manifestWatermark !== null && manifestWatermark !== undefined,
+    )
+      .then((accessibleProjectIds) => {
+        if (
+          this.lastProjectListMetadataSyncSucceededState()
+          && this.lastProjectListMetadataSyncDurableState()
+        ) {
+          this.projectListMetadataSyncLastCompletedScopeKey = scopeKey;
+          this.projectListMetadataSyncLastResult = new Set(accessibleProjectIds);
+        }
+        return accessibleProjectIds;
+      })
+      .finally(() => {
+        if (this.projectListMetadataSyncInFlight === syncPromise) {
+          this.projectListMetadataSyncInFlight = null;
+          this.projectListMetadataSyncScopeKey = null;
+        }
+      });
+
+    this.projectListMetadataSyncInFlight = syncPromise;
+    this.projectListMetadataSyncScopeKey = scopeKey;
+    return syncPromise;
+  }
+
+  private seedAuthoritativeProjectCatalogFromLocalState(): Set<string> {
+    const guestDraftProjectIds = this.getPersistedGuestDraftProjectIds();
+    const accessibleProjectIds = new Set<string>();
+
+    for (const project of this.projectState.projects()) {
+      if (project.syncSource !== 'local-only') {
+        accessibleProjectIds.add(project.id);
+        continue;
+      }
+
+      if (this.isProtectedLocalOnlyProject(project, guestDraftProjectIds) || this.hasRealLocalChanges(project.id)) {
+        accessibleProjectIds.add(project.id);
+      }
+    }
+
+    this.authoritativelyAccessibleProjectIdsState.set(accessibleProjectIds);
+    this.lastProjectListMetadataSyncSucceededState.set(true);
+    this.lastProjectListMetadataSyncDurableState.set(true);
+    return accessibleProjectIds;
+  }
+
+  private primeProjectListMetadataSync(
+    userId: string,
+    sessionGuard?: SessionGuardContext,
+  ): void {
+    if (!userId || userId === AUTH_CONFIG.LOCAL_MODE_USER_ID) {
+      return;
+    }
+
+    void (async () => {
+      let pendingManifestWatermark: string | null = null;
+
+      if (!(await this.isSupabaseSessionCurrentForUser(userId, 'primeProjectListMetadataSync:session'))) {
+        return;
+      }
+      if (this.shouldAbortStaleSession(sessionGuard, 'primeProjectListMetadataSync:after-session')) {
+        return;
+      }
+
+      if (FEATURE_FLAGS.USER_PROJECTS_WATERMARK_RPC_V1) {
+        try {
+          const manifestResult = await this.syncCoordinator.refreshProjectManifestIfNeeded(
+            'session-startup-metadata-prime',
+            { deferCommit: true }
+          );
+          if (this.shouldAbortStaleSession(sessionGuard, 'primeProjectListMetadataSync:manifest')) {
+            return;
+          }
+
+          if (manifestResult.skipped && !this.hasLocalOnlyProjectsAwaitingPromotion()) {
+            if (this.projectState.projects().length === 0) {
+              this.logger.debug('启动快路命中但本地项目为空，降级为轻量元数据同步');
+            } else {
+              this.seedAuthoritativeProjectCatalogFromLocalState();
+              return;
+            }
+          }
+
+          pendingManifestWatermark = manifestResult.watermark ?? null;
+        } catch (error) {
+          if (this.shouldAbortStaleSession(sessionGuard, 'primeProjectListMetadataSync:manifest-error')) {
+            return;
+          }
+
+          this.logger.debug('启动阶段项目清单水位预探测失败，降级为轻量元数据同步', {
+            userId,
+            error,
+          });
+        }
+      }
+
+      await this.ensureProjectListMetadataSynced(userId, sessionGuard, pendingManifestWatermark);
+      if (
+        pendingManifestWatermark
+        && this.lastProjectListMetadataSyncSucceededState()
+        && this.lastProjectListMetadataSyncDurableState()
+        && !this.shouldAbortStaleSession(sessionGuard, 'primeProjectListMetadataSync:commit-manifest')
+      ) {
+        this.syncCoordinator.commitProjectManifestWatermark(pendingManifestWatermark, userId);
+      }
+    })().catch((error) => {
+      this.logger.debug('首屏项目列表元数据预同步失败，后台同步将继续重试', {
+        userId,
+        error,
+      });
+    });
   }
 
   private getPersistedGuestDraftProjectIds(): Set<string> {
@@ -1822,6 +1985,7 @@ export class UserSessionService {
               watermark: manifestResult.watermark
             });
             skipProjectSyncSlowPath = true;
+            pendingProjectManifestWatermark = manifestResult.watermark;
           } else if (manifestResult.watermark) {
             pendingProjectManifestWatermark = manifestResult.watermark;
           }
@@ -1855,7 +2019,11 @@ export class UserSessionService {
 
     if (skipProjectSyncSlowPath && this.hasLocalOnlyProjectsAwaitingPromotion()) {
       try {
-        const accessibleProjectIds = await this.syncProjectListMetadata(userId, sessionGuard);
+        const accessibleProjectIds = await this.ensureProjectListMetadataSynced(
+          userId,
+          sessionGuard,
+          pendingProjectManifestWatermark,
+        );
         if (this.shouldAbortStaleSession(sessionGuard, 'startBackgroundSync:fastpath-metadata-promotion')) {
           return;
         }
@@ -1877,6 +2045,9 @@ export class UserSessionService {
     if (skipProjectSyncSlowPath && this.projectState.projects().length === 0) {
       skipProjectSyncSlowPath = false;
       this.logger.debug('项目清单快路命中但本地项目为空，降级同步项目元数据');
+    }
+    if (skipProjectSyncSlowPath) {
+      this.seedAuthoritativeProjectCatalogFromLocalState();
     }
 
     // 【性能优化】项目列表元数据同步与当前项目 delta sync 并行执行
@@ -1900,7 +2071,7 @@ export class UserSessionService {
     } else if (accessPreflightConfirmed && activeProjectId && !this.isLocalOnlyProject(activeProjectId) && SYNC_CONFIG.DELTA_SYNC_ENABLED) {
       // access preflight 已确认项目可访问，并行执行列表同步和 delta sync
       const [metadataResult, deltaResult] = await Promise.allSettled([
-        this.syncProjectListMetadata(userId, sessionGuard),
+        this.ensureProjectListMetadataSynced(userId, sessionGuard, pendingProjectManifestWatermark),
         this.syncCoordinator.performDeltaSync(activeProjectId),
       ]);
       if (this.shouldAbortStaleSession(sessionGuard, 'startBackgroundSync:parallel-metadata-delta')) {
@@ -1909,7 +2080,11 @@ export class UserSessionService {
 
       if (metadataResult.status === 'fulfilled') {
         const accessibleProjectIds = metadataResult.value;
-        if (pendingProjectManifestWatermark && this.lastProjectListMetadataSyncSucceededState()) {
+        if (
+          pendingProjectManifestWatermark
+          && this.lastProjectListMetadataSyncSucceededState()
+          && this.lastProjectListMetadataSyncDurableState()
+        ) {
           this.syncCoordinator.commitProjectManifestWatermark(pendingProjectManifestWatermark, userId);
           pendingProjectManifestWatermark = null;
         }
@@ -1934,8 +2109,16 @@ export class UserSessionService {
       // 降级路径：串行执行
       let accessibleProjectIds = new Set<string>();
       try {
-        accessibleProjectIds = await this.syncProjectListMetadata(userId, sessionGuard);
-        if (pendingProjectManifestWatermark && this.lastProjectListMetadataSyncSucceededState()) {
+        accessibleProjectIds = await this.ensureProjectListMetadataSynced(
+          userId,
+          sessionGuard,
+          pendingProjectManifestWatermark,
+        );
+        if (
+          pendingProjectManifestWatermark
+          && this.lastProjectListMetadataSyncSucceededState()
+          && this.lastProjectListMetadataSyncDurableState()
+        ) {
           this.syncCoordinator.commitProjectManifestWatermark(pendingProjectManifestWatermark, userId);
           pendingProjectManifestWatermark = null;
         }
@@ -2087,6 +2270,7 @@ export class UserSessionService {
           this.hydratedProjectIds.add(projectId);
           loadedCount++;
         } else if (loadResult.status === 'inaccessible') {
+          await this.reconcileInaccessibleHydrationProject(projectId, userId, sessionGuard);
           // 项目明确不可访问，标记为已处理避免同会话内重复重试
           this.hydratedProjectIds.add(projectId);
         } else {
@@ -2121,8 +2305,10 @@ export class UserSessionService {
   private async syncProjectListMetadata(
     userId: string,
     sessionGuard?: SessionGuardContext,
+    forceSnapshotPersist = false,
   ): Promise<Set<string>> {
     this.lastProjectListMetadataSyncSucceededState.set(false);
+    this.lastProjectListMetadataSyncDurableState.set(false);
     const localProjects = this.projectState.projects();
     const fallbackIds = new Set(localProjects.map(p => p.id));
 
@@ -2156,12 +2342,11 @@ export class UserSessionService {
     }
 
     const accessibleProjectIds = new Set<string>((data || []).map(row => String(row.id)));
-    this.authoritativelyAccessibleProjectIdsState.set(new Set(accessibleProjectIds));
-    this.lastProjectListMetadataSyncSucceededState.set(true);
     
     // 更新本地项目列表的元数据（不覆盖 tasks/connections）
     let updatedProjects = [...localProjects];
     let hasChanges = false;
+    let metadataSnapshotDurable = true;
     const guestDraftProjectIds = this.getPersistedGuestDraftProjectIds();
     
     for (const remote of data || []) {
@@ -2239,16 +2424,91 @@ export class UserSessionService {
         this.toastService.info('当前项目不可访问，已自动切换');
       }
 
-      try {
-        await this.saveProjectsToOfflineSnapshot(this.projectState.getProjectsWithCurrentData(), userId, { allowEmpty: true });
-      } catch (snapshotError) {
-        this.logger.warn('持久化项目列表元数据快照失败', snapshotError);
-      }
-
       this.logger.debug('项目列表元数据已更新');
     }
 
+    if (hasChanges || forceSnapshotPersist) {
+      try {
+        await this.saveProjectsToOfflineSnapshot(this.projectState.getProjectsWithCurrentData(), userId, { allowEmpty: true });
+      } catch (snapshotError) {
+        metadataSnapshotDurable = false;
+        this.logger.warn('持久化项目列表元数据快照失败', snapshotError);
+      }
+    }
+
+    this.authoritativelyAccessibleProjectIdsState.set(new Set(accessibleProjectIds));
+    this.lastProjectListMetadataSyncSucceededState.set(true);
+    this.lastProjectListMetadataSyncDurableState.set(metadataSnapshotDurable);
+
     return accessibleProjectIds;
+  }
+
+  private async reconcileInaccessibleHydrationProject(
+    projectId: string,
+    userId: string,
+    sessionGuard?: SessionGuardContext,
+  ): Promise<void> {
+    if (this.shouldAbortStaleSession(sessionGuard, `project-hydration:inaccessible:${projectId}`)) {
+      return;
+    }
+
+    if (this.projectState.activeProjectId() === projectId) {
+      await this.reconcileInaccessibleActiveProject(projectId, userId);
+      return;
+    }
+
+    if (this.supabase.isOfflineMode()) {
+      this.logger.warn('Supabase 连接中断，跳过不可访问空壳项目裁剪', { projectId });
+      return;
+    }
+
+    if (!(await this.isSupabaseSessionCurrentForUser(userId, 'reconcileInaccessibleHydrationProject'))) {
+      return;
+    }
+
+    const localProject = this.projectState.getProject(projectId);
+    if (!localProject) {
+      this.setProjectAuthoritativeAccessibility(projectId, false);
+      return;
+    }
+
+    const guestDraftProjectIds = this.getPersistedGuestDraftProjectIds();
+    const hasPendingLocalChanges = this.hasRealLocalChanges(projectId)
+      || this.isProtectedLocalOnlyProject(localProject, guestDraftProjectIds);
+
+    if (hasPendingLocalChanges) {
+      const preservedProjects: Project[] = this.projectState.getProjectsWithCurrentData().map(project => (
+        project.id === projectId
+          ? {
+              ...project,
+              syncSource: 'local-only' as const,
+              pendingSync: true,
+            }
+          : project
+      ));
+      this.projectState.setProjects(preservedProjects);
+      this.setProjectAuthoritativeAccessibility(projectId, true);
+      try {
+        await this.saveProjectsToOfflineSnapshot(preservedProjects, userId, { allowEmpty: true });
+      } catch (snapshotError) {
+        this.logger.warn('持久化不可访问空壳 local-only 降级快照失败', snapshotError);
+      }
+
+      this.logger.warn('空壳项目不可访问，已降级为 local-only 草稿', { projectId });
+      return;
+    }
+
+    const remainingProjects = this.projectState.getProjectsWithCurrentData().filter(project => project.id !== projectId);
+    this.projectState.setProjects(remainingProjects);
+    this.setProjectAuthoritativeAccessibility(projectId, false);
+
+    try {
+      await this.saveProjectsToOfflineSnapshot(remainingProjects, userId, { allowEmpty: true });
+    } catch (snapshotError) {
+      this.logger.warn('持久化不可访问空壳移除后的快照失败', snapshotError);
+    }
+
+    this.logger.warn('空壳项目不可访问，已从本地项目列表移除', { projectId });
   }
 
   private async reconcileInaccessibleActiveProject(projectId: string, userId: string): Promise<string | null> {
@@ -2265,6 +2525,7 @@ export class UserSessionService {
 
     const localProject = this.projectState.getProject(projectId);
     if (!localProject) {
+      this.setProjectAuthoritativeAccessibility(projectId, false);
       this.projectState.setActiveProjectId(null);
       this.toastService.info('当前项目不可访问，已自动切换');
       return null;
@@ -2287,6 +2548,7 @@ export class UserSessionService {
       ));
 
       this.projectState.setProjects(preservedProjects);
+      this.setProjectAuthoritativeAccessibility(projectId, true);
       try {
         await this.saveProjectsToOfflineSnapshot(preservedProjects, userId, { allowEmpty: true });
       } catch (snapshotError) {
@@ -2300,6 +2562,7 @@ export class UserSessionService {
     // 使用 getProjectsWithCurrentData 确保包含 TaskStore 中最新的任务数据
     const remainingProjects = this.projectState.getProjectsWithCurrentData().filter(project => project.id !== projectId);
     this.projectState.setProjects(remainingProjects);
+    this.setProjectAuthoritativeAccessibility(projectId, false);
     this.projectState.setActiveProjectId(null);
 
     try {
@@ -2322,6 +2585,21 @@ export class UserSessionService {
       this.projectState.setProjects([...this.projectState.projects(), cloudProject]);
       return;
     }
+
+    const { tasks: contentSafeCloudTasks, restoredTaskCount } = this.restoreMissingCloudTaskContent(
+      localProject.tasks,
+      cloudProject.tasks,
+    );
+    const normalizedCloudProject = restoredTaskCount > 0
+      ? { ...cloudProject, tasks: contentSafeCloudTasks }
+      : cloudProject;
+
+    if (restoredTaskCount > 0) {
+      this.logger.warn('mergeSingleProject: 远端任务缺少 content，已保留本地正文', {
+        projectId: cloudProject.id,
+        restoredTaskCount,
+      });
+    }
     
     // 【LWW 竞态保护 2026-01-27】
     // 检查是否有本地未同步的修改（脏数据）
@@ -2330,14 +2608,14 @@ export class UserSessionService {
     if (hasPendingChanges) {
       this.logger.debug('检测到本地未同步修改，使用 LWW 合并');
       // 逐个任务比较 updatedAt，保留最新的
-      const mergedTasks = this.mergeTasksWithLWW(localProject.tasks, cloudProject.tasks);
+      const mergedTasks = this.mergeTasksWithLWW(localProject.tasks, normalizedCloudProject.tasks);
       const mergedConnections = this.mergeConnectionsWithLWW(
         localProject.connections, 
-        cloudProject.connections
+        normalizedCloudProject.connections
       );
       
       const mergedProject: Project = {
-        ...cloudProject,
+        ...normalizedCloudProject,
         tasks: mergedTasks,
         connections: mergedConnections
       };
@@ -2349,10 +2627,37 @@ export class UserSessionService {
     } else {
       // 无本地修改，直接覆盖
       const updatedProjects = this.projectState.projects().map((p: Project) =>
-        p.id === cloudProject.id ? cloudProject : p
+        p.id === normalizedCloudProject.id ? normalizedCloudProject : p
       );
       this.projectState.setProjects(updatedProjects);
     }
+  }
+
+  private restoreMissingCloudTaskContent(localTasks: Task[], cloudTasks: Task[]): {
+    tasks: Task[];
+    restoredTaskCount: number;
+  } {
+    const localTasksById = new Map(localTasks.map((task) => [task.id, task] as const));
+    let restoredTaskCount = 0;
+
+    const tasks = cloudTasks.map((cloudTask) => {
+      if (!hasTaskContentMissingFromSource(cloudTask)) {
+        return cloudTask;
+      }
+
+      const localTask = localTasksById.get(cloudTask.id);
+      if (!localTask || localTask.content === cloudTask.content) {
+        return cloudTask;
+      }
+
+      restoredTaskCount += 1;
+      return {
+        ...cloudTask,
+        content: localTask.content,
+      };
+    });
+
+    return { tasks, restoredTaskCount };
   }
   
   /** LWW 合并任务列表（委托给 `utils/lww-merge`，保持历史私有入口以免外部调用） */

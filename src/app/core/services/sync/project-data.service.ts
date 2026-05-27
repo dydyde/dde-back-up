@@ -40,6 +40,7 @@ import {
   getCompatibleTaskSelectFields,
   markTaskCompletedAtColumnUnavailable,
 } from '../../../../utils/task-schema-compat';
+import { markTaskContentMissingFromSource } from '../../../../utils/task-content-guard';
 
 interface ParkedTaskCacheRecord {
   taskId: string;
@@ -2058,8 +2059,11 @@ export class ProjectDataService {
    * 【P0 防护】检测 content 字段是否缺失
    */
   rowToTask(row: TaskRow | Partial<TaskRow>): Task {
+    const contentMissingFromSource = !Object.prototype.hasOwnProperty.call(row, 'content')
+      || row.content === undefined;
+
     // 【P0 防护】检测 content 字段是否缺失
-    if (!('content' in row)) {
+    if (contentMissingFromSource) {
       this.logger.warn('rowToTask: content 字段缺失，可能导致数据丢失！', { 
         taskId: row.id,
         hasTitle: 'title' in row,
@@ -2076,8 +2080,8 @@ export class ProjectDataService {
         });
       }
     }
-    
-    return {
+
+    const task: Task = {
       id: row.id || '',
       title: row.title || '',
       content: row.content ?? '',
@@ -2105,6 +2109,12 @@ export class ProjectDataService {
       // State Overlap 停泊元数据
       parkingMeta: (row as { parking_meta?: unknown }).parking_meta as import('../../../../models/parking').TaskParkingMeta | undefined ?? undefined,
     };
+
+    if (contentMissingFromSource) {
+      markTaskContentMissingFromSource(task);
+    }
+
+    return task;
   }
   
   /**
