@@ -42,6 +42,8 @@ export interface GoJSNodeData {
   hasSiyuanLink?: boolean;
   /** 用于流程图节点徽标 hover/click 预览的首个思源锚点 */
   siyuanLink?: ExternalSourceLink;
+  /** 当前流程图徽标对应的可见锚点序号（1-based） */
+  siyuanLinkBadgeIndex?: number;
 }
 
 /**
@@ -194,7 +196,11 @@ export class FlowDiagramConfigService {
       const isParked = task.parkingMeta?.state === 'parked';
       const isDocked = dockState.dockedTaskIds.has(task.id);
       const isDockFocused = dockState.focusedTaskId === task.id;
-      const siyuanLink = this.externalSourceLinks?.firstActiveLinkForTask(task.id) ?? undefined;
+      const siyuanLinks = this.externalSourceLinks?.activeLinksForTask(task.id) ?? [];
+      const siyuanLink = siyuanLinks[0] ?? undefined;
+      const siyuanLinkBadgeIndex = siyuanLink
+        ? Math.max(siyuanLinks.findIndex(link => link.id === siyuanLink.id), 0) + 1
+        : undefined;
 
       nodeDataArray.push({
         key: task.id,
@@ -221,6 +227,7 @@ export class FlowDiagramConfigService {
         isDockFocused,
         hasSiyuanLink: Boolean(siyuanLink),
         siyuanLink,
+        siyuanLinkBadgeIndex,
       });
 
       // 添加父子连接

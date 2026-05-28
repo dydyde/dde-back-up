@@ -10,6 +10,7 @@ import { UiStateService } from './ui-state.service';
 import { PreferenceService } from './preference.service';
 import { FocusPreferenceService } from './focus-preference.service';
 import { BlackBoxService } from './black-box.service';
+import { ConflictStorageService } from './conflict-storage.service';
 import { SupabaseClientService } from './supabase-client.service';
 import type { Project } from '../models';
 import { ExternalSourceLinkService } from '../app/core/external-sources/external-source-link.service';
@@ -85,15 +86,20 @@ async function seedStore(
 }
 
 describe('DisasterBackupService', () => {
+  let trackedConflictStorage: ConflictStorageService | null = null;
+
   beforeEach(async () => {
     localStorage.clear();
     resetBrowserNetworkSuspensionTrackingForTests();
+    trackedConflictStorage = null;
 
     for (const name of [
       'nanoflow-offline-snapshots',
       'focus_mode',
       'nanoflow-retry-queue',
       'nanoflow-queue-backup',
+      'keyval-store',
+      'nanoflow-conflicts',
     ]) {
       await new Promise<void>((resolve) => {
         const request = indexedDB.deleteDatabase(name);
@@ -104,7 +110,12 @@ describe('DisasterBackupService', () => {
     }
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    if (trackedConflictStorage) {
+      await trackedConflictStorage.closeStorageConnections();
+      trackedConflictStorage = null;
+    }
+
     resetBrowserNetworkSuspensionTrackingForTests();
   });
 
@@ -127,6 +138,25 @@ describe('DisasterBackupService', () => {
     localStorage.setItem('nanoflow.dead-letter-queue.user-2', JSON.stringify([
       { action: { id: 'dead-foreign' }, reason: 'foreign' },
     ]));
+    localStorage.setItem('nanoflow.dock-snapshot.v3.user-1', JSON.stringify({
+      savedAt: '2026-03-10T00:00:00.000Z',
+      session: { mainTaskId: 'task-1' },
+    }));
+    localStorage.setItem('nanoflow.dock-snapshot.v3.user-2', JSON.stringify({
+      savedAt: '2026-03-11T00:00:00.000Z',
+      session: { mainTaskId: 'foreign-task' },
+    }));
+    localStorage.setItem('nanoflow.launch-snapshot.v1', JSON.stringify({
+      version: 1,
+      userId: 'user-2',
+      activeProjectId: 'project-2',
+    }));
+    localStorage.setItem('nanoflow.launch-snapshot.v2', JSON.stringify({
+      version: 2,
+      userId: 'user-1',
+      activeProjectId: 'project-1',
+      savedAt: '2026-03-10T00:00:00.000Z',
+    }));
     localStorage.setItem('nanoflow.local-tombstones', JSON.stringify({
       'project-1': { 'task-deleted': 123 },
       'project-2': { 'task-deleted-foreign': 456 },
@@ -236,6 +266,31 @@ describe('DisasterBackupService', () => {
       },
     );
 
+    await seedStore(
+      'keyval-store',
+      1,
+      (db) => {
+        if (!db.objectStoreNames.contains('keyval')) {
+          db.createObjectStore('keyval');
+        }
+      },
+      async (db) => {
+        await new Promise<void>((resolve, reject) => {
+          const tx = db.transaction('keyval', 'readwrite');
+          tx.objectStore('keyval').put({
+            savedAt: '2026-03-10T00:00:00.000Z',
+            entries: [{ taskId: 'task-1', lane: 'command' }],
+          }, 'nanoflow.focus-session.v5.user-1');
+          tx.objectStore('keyval').put({
+            savedAt: '2026-03-11T00:00:00.000Z',
+            entries: [{ taskId: 'foreign-task', lane: 'backup' }],
+          }, 'nanoflow.focus-session.v5.user-2');
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => reject(tx.error);
+        });
+      },
+    );
+
     const tableData: Record<string, unknown[]> = {
       user_preferences: [
         {
@@ -308,6 +363,21 @@ describe('DisasterBackupService', () => {
       restReminderHighLoadMinutes: 120,
       restReminderLowLoadMinutes: 20,
     };
+    const conflictStorage = {
+      getAllConflicts: vi.fn().mockResolvedValue([
+        {
+          projectId: 'project-1',
+          ownerUserId: 'user-1',
+          localProject: createProject(),
+          remoteProject: undefined,
+          conflictedAt: '2026-03-10T00:00:00.000Z',
+          localVersion: 2,
+          reason: 'field_conflict',
+          conflictedFields: ['title'],
+          acknowledged: false,
+        },
+      ]),
+    };
 
     const injector = Injector.create({
       providers: [
@@ -351,6 +421,7 @@ describe('DisasterBackupService', () => {
             ])),
           },
         },
+        { provide: ConflictStorageService, useValue: conflictStorage },
         { provide: SupabaseClientService, useValue: { isConfigured: true, client: vi.fn(() => client) } },
         { provide: ExternalSourceLinkService, useValue: { ensureLoaded: vi.fn().mockResolvedValue(undefined), activeLinksForTask: vi.fn(() => []) } },
         { provide: ExternalSourceCacheService, useValue: { loadPendingLinks: vi.fn().mockResolvedValue([]) } },
@@ -397,6 +468,25 @@ describe('DisasterBackupService', () => {
           localStorage: JSON.stringify({ projects: [{ id: 'offline-project' }] }),
           indexedDb: JSON.stringify({ projects: [{ id: 'snapshot-project' }] }),
         }),
+        dockSnapshot: expect.objectContaining({
+          localStorage: JSON.stringify({
+            savedAt: '2026-03-10T00:00:00.000Z',
+            session: { mainTaskId: 'task-1' },
+          }),
+          indexedDb: expect.objectContaining({
+            savedAt: '2026-03-10T00:00:00.000Z',
+            entries: [expect.objectContaining({ taskId: 'task-1', lane: 'command' })],
+          }),
+        }),
+        launchSnapshot: expect.objectContaining({
+          v1: null,
+          v2: JSON.stringify({
+            version: 2,
+            userId: 'user-1',
+            activeProjectId: 'project-1',
+            savedAt: '2026-03-10T00:00:00.000Z',
+          }),
+        }),
         parkedTaskCache: expect.objectContaining({
           entries: [expect.objectContaining({ taskId: 'task-parked', projectId: 'project-1' })],
           syncMetadata: { parking_sync_cursor_v1: 'cursor-1' },
@@ -404,6 +494,7 @@ describe('DisasterBackupService', () => {
         retryQueue: [expect.objectContaining({ id: 'retry-1' })],
         actionQueue: [expect.objectContaining({ id: 'action-1' })],
         deadLetters: [expect.objectContaining({ reason: 'failed' })],
+        conflicts: [expect.objectContaining({ projectId: 'project-1', reason: 'field_conflict' })],
         taskTombstones: { 'project-1': { 'task-deleted': 123 } },
         connectionTombstones: [expect.objectContaining({ connectionId: 'conn-deleted' })],
       }),
@@ -411,6 +502,8 @@ describe('DisasterBackupService', () => {
     expect(payload.localState).toBeDefined();
     expect(payload.localState!.offlineSnapshot?.localStorage).not.toContain('foreign-legacy-offline-project');
     expect(payload.localState!.offlineSnapshot?.indexedDb).not.toContain('foreign-legacy-snapshot-project');
+    expect(payload.localState!.dockSnapshot?.localStorage).not.toContain('foreign-task');
+    expect(JSON.stringify(payload.localState!.dockSnapshot?.indexedDb)).not.toContain('foreign-task');
     expect(payload.localState!.retryQueue).not.toEqual(expect.arrayContaining([expect.objectContaining({ id: 'retry-foreign' })]));
     expect(payload.localState!.actionQueue).not.toEqual(expect.arrayContaining([expect.objectContaining({ id: 'action-foreign' })]));
     expect(payload.localState!.deadLetters).not.toEqual(expect.arrayContaining([expect.objectContaining({ reason: 'foreign' })]));
@@ -462,6 +555,7 @@ describe('DisasterBackupService', () => {
         { provide: PreferenceService, useValue: { autoResolveConflicts: signal(false) } },
         { provide: FocusPreferenceService, useValue: { preferences: signal({}), getPreferences: vi.fn(() => ({})) } },
         { provide: BlackBoxService, useValue: { entriesMap: signal(new Map()) } },
+        { provide: ConflictStorageService, useValue: { getAllConflicts: vi.fn().mockResolvedValue([]) } },
         { provide: SupabaseClientService, useValue: { isConfigured: true, client: vi.fn(() => client) } },
         { provide: ExternalSourceLinkService, useValue: { ensureLoaded: vi.fn().mockResolvedValue(undefined), activeLinksForTask: vi.fn(() => []) } },
         { provide: ExternalSourceCacheService, useValue: { loadPendingLinks: vi.fn().mockResolvedValue([]) } },
@@ -498,6 +592,71 @@ describe('DisasterBackupService', () => {
     );
   });
 
+  it('buildLocalPayload should include only current owner conflict records from real conflict storage', async () => {
+    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
+    let currentUserId = 'user-1';
+
+    const injector = Injector.create({
+      providers: [
+        { provide: DisasterBackupService, useClass: DisasterBackupService },
+        { provide: ConflictStorageService, useClass: ConflictStorageService },
+        { provide: LoggerService, useValue: { category: () => logger } },
+        { provide: AuthService, useValue: { currentUserId: vi.fn(() => currentUserId) } },
+        { provide: ThemeService, useValue: { theme: signal('forest'), colorMode: signal('dark') } },
+        { provide: UiStateService, useValue: { layoutDirection: signal('rtl'), floatingWindowPref: signal('fixed') } },
+        { provide: PreferenceService, useValue: { autoResolveConflicts: signal(false) } },
+        { provide: FocusPreferenceService, useValue: { preferences: signal({}), getPreferences: vi.fn(() => ({})) } },
+        { provide: BlackBoxService, useValue: { entriesMap: signal(new Map()) } },
+        { provide: SupabaseClientService, useValue: { isConfigured: false, client: vi.fn() } },
+        { provide: ExternalSourceLinkService, useValue: { ensureLoaded: vi.fn().mockResolvedValue(undefined), activeLinksForTask: vi.fn(() => []) } },
+        { provide: ExternalSourceCacheService, useValue: { loadPendingLinks: vi.fn().mockResolvedValue([]) } },
+      ],
+    });
+
+    const conflictStorage = injector.get(ConflictStorageService);
+  trackedConflictStorage = conflictStorage;
+    const service = injector.get(DisasterBackupService);
+
+    currentUserId = 'user-1';
+    await conflictStorage.saveConflict({
+      projectId: 'project-1',
+      localProject: createProject(),
+      conflictedAt: '2026-03-12T00:00:00.000Z',
+      localVersion: 3,
+      reason: 'field_conflict',
+      conflictedFields: ['title'],
+      acknowledged: false,
+    });
+
+    currentUserId = 'user-2';
+    await conflictStorage.saveConflict({
+      projectId: 'project-1',
+      localProject: {
+        ...createProject(),
+        name: 'Foreign Inbox',
+      },
+      conflictedAt: '2026-03-12T00:05:00.000Z',
+      localVersion: 4,
+      reason: 'concurrent_edit',
+      acknowledged: false,
+    });
+
+    currentUserId = 'user-1';
+    const payload = await service.buildLocalPayload([createProject()], {
+      autoBackupEnabled: true,
+      autoBackupIntervalMs: 900000,
+    });
+
+    expect(payload.localState?.conflicts).toEqual([
+      expect.objectContaining({
+        ownerUserId: 'user-1',
+        projectId: 'project-1',
+        reason: 'field_conflict',
+        localProject: expect.objectContaining({ name: 'Inbox' }),
+      }),
+    ]);
+  });
+
   it('buildLocalPayload should fail on retryable remote errors that are not browser suspension', async () => {
     const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
     const queryError = { code: 503, message: 'service unavailable' };
@@ -519,6 +678,7 @@ describe('DisasterBackupService', () => {
         { provide: PreferenceService, useValue: { autoResolveConflicts: signal(false) } },
         { provide: FocusPreferenceService, useValue: { preferences: signal({}), getPreferences: vi.fn(() => ({})) } },
         { provide: BlackBoxService, useValue: { entriesMap: signal(new Map()) } },
+        { provide: ConflictStorageService, useValue: { getAllConflicts: vi.fn().mockResolvedValue([]) } },
         { provide: SupabaseClientService, useValue: { isConfigured: true, client: vi.fn(() => client) } },
         { provide: ExternalSourceLinkService, useValue: { ensureLoaded: vi.fn().mockResolvedValue(undefined), activeLinksForTask: vi.fn(() => []) } },
         { provide: ExternalSourceCacheService, useValue: { loadPendingLinks: vi.fn().mockResolvedValue([]) } },
@@ -571,6 +731,7 @@ describe('DisasterBackupService', () => {
         { provide: PreferenceService, useValue: { autoResolveConflicts: signal(false) } },
         { provide: FocusPreferenceService, useValue: { preferences: signal({}), getPreferences: vi.fn(() => ({})) } },
         { provide: BlackBoxService, useValue: { entriesMap: signal(new Map()) } },
+        { provide: ConflictStorageService, useValue: { getAllConflicts: vi.fn().mockResolvedValue([]) } },
         { provide: SupabaseClientService, useValue: { isConfigured: false, client: vi.fn() } },
         { provide: ExternalSourceLinkService, useValue: { ensureLoaded: vi.fn().mockResolvedValue(undefined), activeLinksForTask: vi.fn(() => []) } },
         { provide: ExternalSourceCacheService, useValue: { loadPendingLinks: vi.fn().mockResolvedValue([]) } },
@@ -586,5 +747,67 @@ describe('DisasterBackupService', () => {
     expect(payload.localState!.actionQueue).toEqual([
       expect.objectContaining({ id: 'action-backed-up', entityType: 'project' }),
     ]);
+  });
+
+  it('buildLocalPayload should include the newest anonymous dock snapshot when current-user scope is empty', async () => {
+    localStorage.setItem('nanoflow.dock-snapshot.v3.anonymous', JSON.stringify({
+      savedAt: '2026-03-12T00:00:00.000Z',
+      session: { mainTaskId: 'anon-legacy-task' },
+    }));
+
+    await seedStore(
+      'keyval-store',
+      1,
+      (db) => {
+        if (!db.objectStoreNames.contains('keyval')) {
+          db.createObjectStore('keyval');
+        }
+      },
+      async (db) => {
+        await new Promise<void>((resolve, reject) => {
+          const tx = db.transaction('keyval', 'readwrite');
+          tx.objectStore('keyval').put({
+            savedAt: '2026-03-13T00:00:00.000Z',
+            entries: [{ taskId: 'anon-idb-task', lane: 'backup' }],
+          }, 'nanoflow.focus-session.v5.anonymous');
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => reject(tx.error);
+        });
+      },
+    );
+
+    const injector = Injector.create({
+      providers: [
+        { provide: DisasterBackupService, useClass: DisasterBackupService },
+        { provide: LoggerService, useValue: { category: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() }) } },
+        { provide: AuthService, useValue: { currentUserId: vi.fn(() => 'user-1') } },
+        { provide: ThemeService, useValue: { theme: signal('forest'), colorMode: signal('dark') } },
+        { provide: UiStateService, useValue: { layoutDirection: signal('rtl'), floatingWindowPref: signal('fixed') } },
+        { provide: PreferenceService, useValue: { autoResolveConflicts: signal(false) } },
+        { provide: FocusPreferenceService, useValue: { preferences: signal({}), getPreferences: vi.fn(() => ({})) } },
+        { provide: BlackBoxService, useValue: { entriesMap: signal(new Map()) } },
+        { provide: ConflictStorageService, useValue: { getAllConflicts: vi.fn().mockResolvedValue([]) } },
+        { provide: SupabaseClientService, useValue: { isConfigured: false, client: vi.fn() } },
+        { provide: ExternalSourceLinkService, useValue: { ensureLoaded: vi.fn().mockResolvedValue(undefined), activeLinksForTask: vi.fn(() => []) } },
+        { provide: ExternalSourceCacheService, useValue: { loadPendingLinks: vi.fn().mockResolvedValue([]) } },
+      ],
+    });
+
+    const service = injector.get(DisasterBackupService);
+    const payload = await service.buildLocalPayload([createProject()], {
+      autoBackupEnabled: false,
+      autoBackupIntervalMs: 900000,
+    });
+
+    expect(payload.localState?.dockSnapshot).toEqual(expect.objectContaining({
+      localStorage: JSON.stringify({
+        savedAt: '2026-03-12T00:00:00.000Z',
+        session: { mainTaskId: 'anon-legacy-task' },
+      }),
+      indexedDb: expect.objectContaining({
+        savedAt: '2026-03-13T00:00:00.000Z',
+        entries: [expect.objectContaining({ taskId: 'anon-idb-task', lane: 'backup' })],
+      }),
+    }));
   });
 });

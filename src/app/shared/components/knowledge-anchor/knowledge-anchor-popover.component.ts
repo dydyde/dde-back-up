@@ -2,7 +2,7 @@ import { ChangeDetectionStrategy, Component, inject, input, output, signal } fro
 import { CommonModule } from '@angular/common';
 import { SIYUAN_CONFIG, SIYUAN_ERROR_MESSAGES } from '../../../../config/siyuan.config';
 import { LoggerService } from '../../../../services/logger.service';
-import type { ExternalSourceLink, SiyuanPreviewResult } from '../../../core/external-sources/external-source.model';
+import type { ExternalSourceLink, LocalSiyuanPreviewCache, SiyuanPreviewResult } from '../../../core/external-sources/external-source.model';
 import { ExternalSourceLinkService } from '../../../core/external-sources/external-source-link.service';
 import { SiyuanPreviewService } from '../../../core/external-sources/siyuan/siyuan-preview.service';
 import { shortenSiyuanBlockId } from '../../../core/external-sources/siyuan/siyuan-link-parser';
@@ -21,8 +21,10 @@ import { shortenSiyuanBlockId } from '../../../core/external-sources/siyuan/siyu
       (mouseleave)="hoverOutside.emit()">
       <header class="flex items-start justify-between gap-3 border-b border-slate-100 px-3 py-2 dark:border-stone-800">
         <div class="min-w-0">
-          <div class="text-[11px] font-bold text-slate-800 dark:text-stone-100">思源块</div>
-          <div class="truncate text-[10px] text-slate-500 dark:text-stone-400">{{ titleLine() }}</div>
+          <div class="truncate text-[11px] font-bold text-slate-800 dark:text-stone-100" data-testid="knowledge-anchor-popover-title">{{ headerTitle() }}</div>
+          @if (subtitleLine(); as subtitle) {
+            <div class="truncate text-[10px] text-slate-500 dark:text-stone-400">{{ subtitle }}</div>
+          }
         </div>
         <div class="flex shrink-0 gap-1">
           <button type="button" class="anchor-popover-action" (click)="open()">打开思源</button>
@@ -54,7 +56,7 @@ import { shortenSiyuanBlockId } from '../../../core/external-sources/siyuan/siyu
             @if (preview.truncated) {
               <div class="mt-2 text-[10px] text-slate-400 dark:text-stone-500">更多内容请打开思源</div>
             }
-            <div class="mt-2 text-[10px] text-slate-400 dark:text-stone-500">缓存时间：{{ preview.fetchedAt | date:'MM/dd HH:mm' }}</div>
+            <div class="mt-2 text-[10px] text-slate-400 dark:text-stone-500" data-testid="knowledge-anchor-linked-at">关联于：{{ link().createdAt | date:'MM/dd HH:mm' }}</div>
           } @else {
             <div class="rounded-md bg-slate-50 px-2 py-2 text-[11px] text-slate-500 dark:bg-stone-800 dark:text-stone-400" data-testid="knowledge-anchor-error">
               {{ errorMessage() }}。任务仍可继续操作，也可直接打开思源原块。
@@ -90,7 +92,9 @@ export class KnowledgeAnchorPopoverComponent {
   async load(forceRefresh: boolean): Promise<void> {
     this.result.set({ status: 'loading' });
     try {
-      this.result.set(await this.previewService.preview(this.link(), { forceRefresh }));
+      const result = await this.previewService.preview(this.link(), { forceRefresh });
+      this.result.set(result);
+      this.syncResolvedMetadata(result);
     } catch (error) {
       this.logger.warn('桌面思源预览加载失败，降级为安全错误态', {
         linkId: this.link().id,
@@ -105,13 +109,62 @@ export class KnowledgeAnchorPopoverComponent {
     this.closeRequested.emit();
   }
 
-  titleLine(): string {
+  headerTitle(): string {
+    const preview = this.result().preview;
     const link = this.link();
-    return link.hpath || link.label || shortenSiyuanBlockId(link.targetId);
+    return this.normalizeText(preview?.title)
+      || this.extractHPathTitle(preview?.hpath)
+      || this.extractHPathTitle(link.hpath)
+      || this.normalizeText(link.label)
+      || shortenSiyuanBlockId(link.targetId);
+  }
+
+  subtitleLine(): string | null {
+    const hpath = this.normalizeText(this.result().preview?.hpath) || this.normalizeText(this.link().hpath);
+    if (!hpath) return null;
+    return hpath === this.headerTitle() ? null : hpath;
   }
 
   errorMessage(): string {
     const code = this.result().errorCode ?? 'extension-unavailable';
     return SIYUAN_ERROR_MESSAGES[code] ?? SIYUAN_ERROR_MESSAGES.unknown;
+  }
+
+  private syncResolvedMetadata(result: SiyuanPreviewResult): void {
+    if (result.status !== 'ready' || result.origin !== 'network') {
+      return;
+    }
+
+    const preview = result.preview;
+    if (!preview) return;
+
+    const label = this.normalizeText(preview.title);
+    const hpath = this.normalizeText(preview.hpath);
+    const currentLink = this.link();
+    const patch: Pick<Partial<ExternalSourceLink>, 'label' | 'hpath'> = {};
+
+    if (label && label !== currentLink.label) patch.label = label;
+    if (hpath && hpath !== currentLink.hpath) patch.hpath = hpath;
+    if (Object.keys(patch).length === 0) return;
+
+    void this.linkService.updateMetadata(currentLink.id, patch).catch((error: unknown) => {
+      this.logger.warn('思源预览元数据回写失败，保留当前悬浮展示', {
+        linkId: currentLink.id,
+        message: error instanceof Error ? error.message : 'unknown',
+      });
+    });
+  }
+
+  private extractHPathTitle(hpath: string | undefined): string | undefined {
+    const normalized = this.normalizeText(hpath);
+    if (!normalized) return undefined;
+    const segments = normalized.split('/').filter(Boolean);
+    return segments.at(-1) ?? normalized;
+  }
+
+  private normalizeText(value: string | undefined): string | undefined {
+    if (typeof value !== 'string') return undefined;
+    const text = value.trim();
+    return text || undefined;
   }
 }

@@ -14,6 +14,7 @@ import {
 
 interface ExtensionResponsePayload {
   blockId?: unknown;
+  title?: unknown;
   hpath?: unknown;
   plainText?: unknown;
   kramdown?: unknown;
@@ -93,6 +94,7 @@ export class SiyuanExtensionProvider implements SiyuanPreviewProvider {
     if (!data || data.blockId !== blockId) throw new SiyuanProviderError('unknown', 'Extension returned mismatched blockId');
     return normalizePreview({
       blockId,
+      title: this.readBoundedString(data.title, SIYUAN_CONFIG.MAX_LABEL_LENGTH),
       hpath: this.readBoundedString(data.hpath, SIYUAN_CONFIG.MAX_HPATH_LENGTH),
       plainText: this.readBoundedString(data.plainText, SIYUAN_CONFIG.MAX_PREVIEW_CHARS * 2),
       kramdown: this.readBoundedString(data.kramdown, SIYUAN_CONFIG.MAX_PREVIEW_CHARS * 2),

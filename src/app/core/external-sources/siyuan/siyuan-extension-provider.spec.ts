@@ -5,6 +5,7 @@ import { SiyuanProviderError } from './siyuan-provider.interface';
 type ProviderPrivateApi = {
   isTrustedWindowMessage: (event: MessageEvent<unknown>) => boolean;
   pingExtension: () => Promise<boolean>;
+  postRequest: (blockId: string, signal?: AbortSignal) => Promise<unknown>;
   postRelayRequest: (args: unknown) => Promise<unknown>;
 };
 
@@ -187,5 +188,27 @@ describe('siyuan-extension-provider', () => {
     const status = await provider.getConfigStatus();
 
     expect(status).toBeNull();
+  });
+
+  it('maps relay preview title and path into the normalized preview payload', async () => {
+    const provider = new SiyuanExtensionProvider();
+    const privateProvider = provider as unknown as ProviderPrivateApi;
+    vi.spyOn(privateProvider, 'postRequest').mockResolvedValue({
+      ok: true,
+      data: {
+        blockId: '20260426123456-abc1234',
+        title: '细菌能量来源',
+        hpath: '/生物/细菌能量来源',
+        plainText: '摘要',
+        childBlocks: [],
+        truncated: false,
+      },
+    });
+
+    const preview = await provider.getBlockPreview('20260426123456-abc1234');
+
+    expect(preview.title).toBe('细菌能量来源');
+    expect(preview.hpath).toBe('/生物/细菌能量来源');
+    expect(preview.excerpt).toBe('摘要');
   });
 });

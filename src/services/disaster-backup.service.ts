@@ -7,9 +7,11 @@ import { UiStateService } from './ui-state.service';
 import { PreferenceService } from './preference.service';
 import { FocusPreferenceService } from './focus-preference.service';
 import { BlackBoxService } from './black-box.service';
+import { ConflictStorageService } from './conflict-storage.service';
 import { SupabaseClientService } from './supabase-client.service';
 import { AUTH_CONFIG } from '../config/auth.config';
 import { FOCUS_CONFIG } from '../config/focus.config';
+import { PARKING_CONFIG } from '../config/parking.config';
 import { LOCAL_QUEUE_CONFIG } from './action-queue-storage.service';
 import {
   BACKUP_CONFIG,
@@ -40,8 +42,13 @@ import {
 
 const ACTION_QUEUE_BACKUP_DB_NAME = 'nanoflow-queue-backup';
 const ACTION_QUEUE_BACKUP_STORE_NAME = 'queue-backup';
+const DOCK_SNAPSHOT_IDB_DB_NAME = 'keyval-store';
+const DOCK_SNAPSHOT_IDB_STORE_NAME = 'keyval';
+const DOCK_SNAPSHOT_IDB_KEY_PREFIX = 'nanoflow.focus-session.v5';
 const OFFLINE_SNAPSHOT_STORAGE_KEY = 'nanoflow.offline-cache-v2';
 const OFFLINE_SNAPSHOT_RECORD_PREFIX = 'offline-snapshot:';
+const LAUNCH_SNAPSHOT_STORAGE_KEY_V1 = 'nanoflow.launch-snapshot.v1';
+const LAUNCH_SNAPSHOT_STORAGE_KEY_V2 = 'nanoflow.launch-snapshot.v2';
 
 /**
  * 允许被动态查询的备份表白名单
@@ -120,6 +127,7 @@ export class DisasterBackupService {
   private readonly preferenceService = inject(PreferenceService);
   private readonly focusPreferenceService = inject(FocusPreferenceService);
   private readonly blackBoxService = inject(BlackBoxService);
+  private readonly conflictStorage = inject(ConflictStorageService);
   private readonly supabase = inject(SupabaseClientService);
   private readonly externalSourceLinks = inject(ExternalSourceLinkService);
   private readonly externalSourceCache = inject(ExternalSourceCacheService);
@@ -480,17 +488,23 @@ export class DisasterBackupService {
     const ownerUserId = this.resolveEffectiveUserId();
     const [
       indexedSnapshot,
+      dockSnapshot,
+      launchSnapshot,
       parkedTaskCache,
       retryQueue,
       actionQueue,
       deadLetters,
+      conflicts,
       externalSourcePendingLinks,
     ] = await Promise.all([
       this.readSnapshotFromIndexedDb(ownerUserId),
+      this.readDockSnapshot(ownerUserId),
+      this.readLaunchSnapshot(ownerUserId),
       this.readParkedTaskCache(visibleProjectIds),
       this.readRetryQueue(ownerUserId),
       this.readActionQueue(ownerUserId),
       this.readDeadLetters(ownerUserId),
+      this.conflictStorage.getAllConflicts(),
       this.externalSourceCache.loadPendingLinks(),
     ]);
 
@@ -499,10 +513,13 @@ export class DisasterBackupService {
         localStorage: this.readOfflineSnapshotFromLocalStorage(ownerUserId),
         indexedDb: indexedSnapshot,
       },
+      dockSnapshot,
+      launchSnapshot,
       parkedTaskCache,
       retryQueue,
       actionQueue,
       deadLetters,
+      conflicts,
       taskTombstones: this.readTaskTombstones(visibleProjectIds),
       connectionTombstones: this.readConnectionTombstones(visibleProjectIds),
       externalSourcePendingLinks,
@@ -562,6 +579,145 @@ export class DisasterBackupService {
     }
 
     return this.safeGetLocalStorage(`${OFFLINE_SNAPSHOT_STORAGE_KEY}.${ownerUserId}`);
+  }
+
+  private async readDockSnapshot(ownerUserId: string | null): Promise<{ localStorage: string | null; indexedDb: unknown | null } | undefined> {
+    const db = await this.openExistingDb(DOCK_SNAPSHOT_IDB_DB_NAME);
+    const scope = ownerUserId ?? 'anonymous';
+    const currentIdbKey = `${DOCK_SNAPSHOT_IDB_KEY_PREFIX}.${scope}`;
+    const anonymousIdbKey = ownerUserId === null ? null : `${DOCK_SNAPSHOT_IDB_KEY_PREFIX}.anonymous`;
+    const currentLegacyKey = `${PARKING_CONFIG.DOCK_SNAPSHOT_STORAGE_KEY}.${scope}`;
+    const anonymousLegacyKey = ownerUserId === null ? null : `${PARKING_CONFIG.DOCK_SNAPSHOT_STORAGE_KEY}.anonymous`;
+
+    const [currentIdbSnapshot, anonymousIdbSnapshot] = db
+      ? await Promise.all([
+          this.getByKey<unknown>(db, DOCK_SNAPSHOT_IDB_STORE_NAME, currentIdbKey),
+          anonymousIdbKey
+            ? this.getByKey<unknown>(db, DOCK_SNAPSHOT_IDB_STORE_NAME, anonymousIdbKey)
+            : Promise.resolve(null),
+        ])
+      : [null, null];
+
+    if (db) {
+      db.close();
+    }
+
+    const newestIndexedDb = this.pickNewerDockSnapshot(
+      this.toDockSnapshotCandidate('idb-current', currentIdbSnapshot),
+      this.toDockSnapshotCandidate('idb-anonymous', anonymousIdbSnapshot),
+    );
+    const newestLegacy = this.pickNewerDockSnapshot(
+      this.toDockSnapshotCandidate('legacy-current', this.safeGetLocalStorage(currentLegacyKey)),
+      this.toDockSnapshotCandidate(
+        'legacy-anonymous',
+        anonymousLegacyKey ? this.safeGetLocalStorage(anonymousLegacyKey) : null,
+      ),
+    );
+
+    if (!newestIndexedDb && !newestLegacy) {
+      return undefined;
+    }
+
+    return {
+      localStorage: newestLegacy?.localStorageValue ?? null,
+      indexedDb: newestIndexedDb?.snapshot ?? null,
+    };
+  }
+
+  private toDockSnapshotCandidate(
+    source: 'idb-current' | 'idb-anonymous' | 'legacy-current' | 'legacy-anonymous',
+    value: unknown,
+  ): { source: typeof source; snapshot: unknown & { savedAt: string }; localStorageValue: string | null } | null {
+    if (value == null) {
+      return null;
+    }
+
+    if (source.startsWith('legacy-')) {
+      if (typeof value !== 'string') {
+        return null;
+      }
+
+      const parsed = this.safeParseJson(value);
+      const savedAt = this.readDockSnapshotSavedAt(parsed);
+      if (!savedAt) {
+        return null;
+      }
+
+      return {
+        source,
+        snapshot: { ...(parsed as Record<string, unknown>), savedAt },
+        localStorageValue: value,
+      };
+    }
+
+    const savedAt = this.readDockSnapshotSavedAt(value);
+    if (!savedAt || typeof value !== 'object') {
+      return null;
+    }
+
+    return {
+      source,
+      snapshot: { ...(value as Record<string, unknown>), savedAt },
+      localStorageValue: null,
+    };
+  }
+
+  private readDockSnapshotSavedAt(value: unknown): string | null {
+    if (!value || typeof value !== 'object' || !('savedAt' in value)) {
+      return null;
+    }
+
+    const savedAt = value.savedAt;
+    return typeof savedAt === 'string' && savedAt ? savedAt : null;
+  }
+
+  private pickNewerDockSnapshot<T extends { snapshot: { savedAt: string } }>(current: T | null, incoming: T | null): T | null {
+    if (!current) return incoming;
+    if (!incoming) return current;
+
+    const currentSavedAt = Date.parse(current.snapshot.savedAt);
+    const incomingSavedAt = Date.parse(incoming.snapshot.savedAt);
+    if (Number.isNaN(incomingSavedAt)) return current;
+    if (Number.isNaN(currentSavedAt)) return incoming;
+    return incomingSavedAt > currentSavedAt ? incoming : current;
+  }
+
+  private async readLaunchSnapshot(ownerUserId: string | null): Promise<{ v1: string | null; v2: string | null } | undefined> {
+    const v1 = this.readOwnerScopedLaunchSnapshot(LAUNCH_SNAPSHOT_STORAGE_KEY_V1, ownerUserId);
+    const v2 = this.readOwnerScopedLaunchSnapshot(LAUNCH_SNAPSHOT_STORAGE_KEY_V2, ownerUserId);
+
+    if (!v1 && !v2) {
+      return undefined;
+    }
+
+    return { v1, v2 };
+  }
+
+  private readOwnerScopedLaunchSnapshot(storageKey: string, ownerUserId: string | null): string | null {
+    const raw = this.safeGetLocalStorage(storageKey);
+    if (!raw) {
+      return null;
+    }
+
+    const parsed = this.safeParseJson(raw);
+    if (!this.isLaunchSnapshotOwnedByCurrentUser(parsed, ownerUserId)) {
+      return null;
+    }
+
+    return raw;
+  }
+
+  private isLaunchSnapshotOwnedByCurrentUser(value: unknown, ownerUserId: string | null): boolean {
+    if (!value || typeof value !== 'object') {
+      return false;
+    }
+
+    const snapshotUserId = 'userId' in value ? value.userId : undefined;
+    if (typeof snapshotUserId === 'string') {
+      return snapshotUserId === ownerUserId;
+    }
+
+    return ownerUserId === null;
   }
 
   private async readParkedTaskCache(visibleProjectIds: Set<string>): Promise<{ entries: unknown[]; syncMetadata: Record<string, unknown> }> {

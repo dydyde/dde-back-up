@@ -90,6 +90,11 @@ export class FlowTemplateService {
     return data?.siyuanLink ?? null;
   }
 
+  private getSiyuanBadgeLabel(index: number | undefined): string {
+    if (!Number.isFinite(index) || (index ?? 0) <= 0) return '';
+    return String(index);
+  }
+
   private getGraphObjectViewportOrigin(
     event: go.InputEvent,
     obj: go.GraphObject,
@@ -357,7 +362,7 @@ export class FlowTemplateService {
       $(go.Panel, "Auto",
         {
           alignment: new go.Spot(1, 1, -6, -6),
-          cursor: "help",
+          cursor: "pointer",
           isActionable: true,
           pickable: true,
           visible: false,
@@ -393,10 +398,11 @@ export class FlowTemplateService {
         }),
         $(go.Panel, "Horizontal",
           { margin: new go.Margin(2, 5, 2, 5), defaultAlignment: go.Spot.Center },
-          $(go.TextBlock, "思源", {
-            font: "700 8px \"LXGW WenKai Screen\", sans-serif",
+          $(go.TextBlock, {
+            font: "700 9px \"LXGW WenKai Screen\", sans-serif",
             stroke: "#4f46e5",
-          }),
+          },
+          new go.Binding('text', 'siyuanLinkBadgeIndex', (index?: number) => this.getSiyuanBadgeLabel(index))),
         ),
       ),
 

@@ -202,6 +202,14 @@ export interface BackupLocalState {
     localStorage?: string | null;
     indexedDb?: string | null;
   };
+  dockSnapshot?: {
+    localStorage?: string | null;
+    indexedDb?: unknown | null;
+  };
+  launchSnapshot?: {
+    v1?: string | null;
+    v2?: string | null;
+  };
   parkedTaskCache?: {
     entries: unknown[];
     syncMetadata: Record<string, unknown>;
@@ -209,6 +217,7 @@ export interface BackupLocalState {
   retryQueue?: unknown[];
   actionQueue?: unknown;
   deadLetters?: unknown[];
+  conflicts?: unknown[];
   taskTombstones?: unknown;
   connectionTombstones?: unknown;
   /**

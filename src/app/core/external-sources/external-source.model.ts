@@ -34,6 +34,7 @@ export interface SiyuanChildBlockPreview {
 
 export interface SiyuanBlockPreview {
   blockId: string;
+  title?: string;
   hpath?: string;
   plainText?: string;
   kramdown?: string;
@@ -67,6 +68,7 @@ export interface SiyuanPreviewResult {
   preview?: LocalSiyuanPreviewCache;
   errorCode?: SiyuanPreviewErrorCode;
   stale?: boolean;
+  origin?: 'network' | 'cache';
 }
 
 /**

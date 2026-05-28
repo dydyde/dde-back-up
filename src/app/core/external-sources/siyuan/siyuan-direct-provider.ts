@@ -14,7 +14,7 @@ interface SiyuanApiResponse<T> {
 
 interface KramdownData { id?: string; kramdown?: string; }
 interface HPathData { hPath?: string; }
-interface AttrData { updated?: string; updatedAt?: string; }
+interface AttrData { title?: string; updated?: string; updatedAt?: string; }
 interface ChildBlockData { id?: string; content?: string; markdown?: string; type?: string; }
 
 /**
@@ -76,6 +76,7 @@ export class SiyuanDirectProvider implements SiyuanPreviewProvider {
       if (kramdown.id && kramdown.id !== blockId) throw new SiyuanProviderError('unknown', 'SiYuan returned mismatched blockId');
       return normalizePreview({
         blockId,
+        title: this.readTitle(attrs),
         hpath: this.readHPath(hpath),
         kramdown: kramdown.kramdown ?? '',
         sourceUpdatedAt: attrs?.updatedAt ?? attrs?.updated,
@@ -107,6 +108,12 @@ export class SiyuanDirectProvider implements SiyuanPreviewProvider {
   private readHPath(value: HPathData | string | undefined): string | undefined {
     if (typeof value === 'string') return value;
     return value?.hPath;
+  }
+
+  private readTitle(value: AttrData | undefined): string | undefined {
+    if (typeof value?.title !== 'string') return undefined;
+    const title = value.title.trim();
+    return title ? title.slice(0, SIYUAN_CONFIG.MAX_LABEL_LENGTH) : undefined;
   }
 
   private mapChildren(children: ChildBlockData[]): SiyuanChildBlockPreview[] {

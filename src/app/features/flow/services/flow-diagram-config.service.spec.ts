@@ -5,6 +5,8 @@ import { getFlowStyles } from '../../../../config/flow-styles';
 import { LineageColorService } from '../../../../services/lineage-color.service';
 import { ThemeService } from '../../../../services/theme.service';
 import { Connection, Project, Task } from '../../../../models';
+import { ExternalSourceLinkService } from '../../../core/external-sources/external-source-link.service';
+import type { ExternalSourceLink } from '../../../core/external-sources/external-source.model';
 import { FlowDiagramConfigService } from './flow-diagram-config.service';
 
 function createTask(overrides: Partial<Task> & Pick<Task, 'id' | 'title'>): Task {
@@ -55,12 +57,21 @@ function expectEmbeddedCrossTreeLinks(linkDataArray: go.ObjectData[], expectedCo
 describe('FlowDiagramConfigService', () => {
   let service: FlowDiagramConfigService;
   let lineageColorService: LineageColorService;
+  let activeLinksByTask = new Map<string, ExternalSourceLink[]>();
 
   beforeEach(() => {
+    activeLinksByTask = new Map<string, ExternalSourceLink[]>();
     const injector = Injector.create({
       providers: [
         { provide: FlowDiagramConfigService, useClass: FlowDiagramConfigService },
         { provide: LineageColorService, useClass: LineageColorService },
+        {
+          provide: ExternalSourceLinkService,
+          useValue: {
+            activeLinksForTask: (taskId: string) => activeLinksByTask.get(taskId) ?? [],
+            firstActiveLinkForTask: (taskId: string) => (activeLinksByTask.get(taskId) ?? [])[0] ?? null,
+          },
+        },
         {
           provide: ThemeService,
           useValue: {
@@ -270,5 +281,33 @@ describe('FlowDiagramConfigService', () => {
     );
 
     expectEmbeddedCrossTreeLinks(result.linkDataArray, 2);
+  });
+
+  it('uses the visible active-link index for the SiYuan badge instead of raw sortOrder', () => {
+    const task = createTask({ id: 'task-with-siyuan', title: 'Knowledge Task', stage: 1, displayId: '1' });
+    activeLinksByTask.set(task.id, [
+      {
+        id: 'link-remaining',
+        taskId: task.id,
+        sourceType: 'siyuan-block',
+        targetId: '20260426123456-abc1234',
+        uri: 'siyuan://blocks/20260426123456-abc1234?focus=1',
+        label: '思源 abc1234',
+        sortOrder: 3,
+        deletedAt: null,
+        createdAt: '2026-05-28T12:00:00.000Z',
+        updatedAt: '2026-05-28T12:00:00.000Z',
+      },
+    ]);
+
+    const result = service.buildDiagramData(
+      [task],
+      createProject([task]),
+      '',
+      new Map<string, go.ObjectData>(),
+      { dockedTaskIds: new Set<string>(), focusedTaskId: null },
+    );
+
+    expect(result.nodeDataArray[0]?.siyuanLinkBadgeIndex).toBe(1);
   });
 });

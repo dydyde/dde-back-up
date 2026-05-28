@@ -88,7 +88,7 @@ export class SiyuanPreviewService {
           });
         });
       }
-      return { status: 'ready', preview: cached, stale };
+      return { status: 'ready', preview: cached, stale, origin: 'cache' };
     }
     return this.refreshDeduped(link, cached ?? undefined, options?.forceRefresh === true);
   }
@@ -124,12 +124,12 @@ export class SiyuanPreviewService {
       const provider = await this.selectProvider();
       if (!provider) {
         return fallback
-          ? { status: 'cache-only', preview: fallback, errorCode: 'extension-unavailable', stale: true }
+          ? { status: 'cache-only', preview: fallback, errorCode: 'extension-unavailable', stale: true, origin: 'cache' }
           : { status: 'error', errorCode: 'extension-unavailable' };
       }
       const preview = await provider.getBlockPreview(link.targetId, controller.signal);
       if (!this.isCurrent(link, controller, requestSeq, preview.blockId)) {
-        return fallback ? { status: 'cache-only', preview: fallback, stale: true } : { status: 'loading' };
+        return fallback ? { status: 'cache-only', preview: fallback, stale: true, origin: 'cache' } : { status: 'loading' };
       }
       const cache: LocalSiyuanPreviewCache = {
         ...preview,
@@ -138,11 +138,11 @@ export class SiyuanPreviewService {
         fetchStatus: 'ready',
       };
       await this.cache.savePreview(cache);
-      return { status: 'ready', preview: cache };
+      return { status: 'ready', preview: cache, origin: 'network' };
     } catch (error) {
       const errorCode = error instanceof SiyuanProviderError ? error.code : 'unknown';
       return fallback
-        ? { status: 'cache-only', preview: fallback, errorCode, stale: true }
+        ? { status: 'cache-only', preview: fallback, errorCode, stale: true, origin: 'cache' }
         : { status: 'error', errorCode };
     }
   }

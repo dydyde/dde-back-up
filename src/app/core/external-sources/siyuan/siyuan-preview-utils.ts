@@ -41,6 +41,7 @@ export function normalizePreview(input: Omit<SiyuanBlockPreview, 'excerpt' | 'tr
   const childBlocks = input.childBlocks ? normalizeChildBlocks(input.childBlocks) : { children: [], truncated: false };
   return {
     blockId: input.blockId,
+    title: input.title,
     hpath: input.hpath,
     plainText: excerpt.excerpt,
     excerpt: excerpt.excerpt,

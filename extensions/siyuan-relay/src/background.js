@@ -2,6 +2,7 @@ const DEFAULT_BASE_URL = 'http://127.0.0.1:6806';
 const PREVIEW_FETCH_TIMEOUT_MS = 5000;
 const MAX_PREVIEW_CHILDREN = 10;
 const MAX_PREVIEW_CHARS = 1200;
+const MAX_TITLE_LENGTH = 256;
 const MAX_TOKEN_LENGTH = 256;
 const BLOCK_ID_PATTERN = /^\d{14}-[a-z0-9]{7}$/;
 const SIYUAN_BLOCK_REF_PATTERN = /\(\((\d{14}-[a-z0-9]{7})(?:\s+"([^"]*)")?\)\)/g;
@@ -143,6 +144,7 @@ async function getPreview(message) {
       ok: true,
       data: {
         blockId,
+        title: readTitle(attrs),
         hpath: readHPath(hpath),
         plainText: truncatedText,
         kramdown: truncateString(kramdown.kramdown, maxChars * 2),
@@ -231,6 +233,12 @@ function readHPath(value) {
   if (typeof value === 'string') return truncateString(value, 1024);
   if (typeof value?.hPath === 'string') return truncateString(value.hPath, 1024);
   return undefined;
+}
+
+function readTitle(value) {
+  if (typeof value?.title !== 'string') return undefined;
+  const title = value.title.trim();
+  return title ? truncateString(title, MAX_TITLE_LENGTH) : undefined;
 }
 
 function readSourceUpdatedAt(value) {
