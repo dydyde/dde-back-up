@@ -465,6 +465,208 @@ describe('UserSessionService', () => {
       ]);
     });
 
+    it('首次补水返回空项目时应复核一次并采用非空复核结果', async () => {
+      userIdSignal.set('user-1');
+      const shellProject = createProject({
+        id: 'proj-empty-confirm',
+        name: 'Metadata Shell',
+        tasks: [],
+        connections: [],
+      });
+      const localProject = createProject({
+        id: 'proj-empty-confirm',
+        name: 'Local Snapshot',
+        tasks: [createTask({ id: 'task-local-confirm', content: 'keep me' })],
+      });
+      const seedProjects = mockProjectState['setProjects'] as unknown as (projects: Project[]) => void;
+      seedProjects([shellProject]);
+      (mockProjectState['getProjectsWithCurrentData'] as ReturnType<typeof vi.fn>).mockReturnValue([localProject]);
+      vi.clearAllMocks();
+
+      (mockSyncCoordinator['loadSingleProjectFromCloud'] as ReturnType<typeof vi.fn>)
+        .mockResolvedValueOnce(createProject({
+          id: 'proj-empty-confirm',
+          name: 'Remote Empty First',
+          tasks: [],
+          connections: [],
+        }))
+        .mockResolvedValueOnce(createProject({
+          id: 'proj-empty-confirm',
+          name: 'Remote Confirmed',
+          tasks: [createTask({ id: 'task-remote-confirm', content: 'confirmed' })],
+          connections: [],
+        }));
+
+      const loadResult = await (
+        service as unknown as {
+          loadProjectForHydration: (projectId: string) => Promise<{ status: string; project?: Project }>;
+        }
+      ).loadProjectForHydration('proj-empty-confirm');
+
+      expect(mockSyncCoordinator['loadSingleProjectFromCloud']).toHaveBeenCalledTimes(2);
+      expect(loadResult).toEqual({
+        status: 'loaded',
+        project: expect.objectContaining({
+          id: 'proj-empty-confirm',
+          name: 'Remote Confirmed',
+          tasks: [expect.objectContaining({ id: 'task-remote-confirm', content: 'confirmed' })],
+        }),
+      });
+      expect(mockLoggerCategory.warn).toHaveBeenCalledWith(
+        '按需加载首次返回空图数据，正在复核远端结果',
+        expect.objectContaining({
+          projectId: 'proj-empty-confirm',
+          localTaskCount: 1,
+        }),
+      );
+    });
+
+    it('首次补水为空且复核仍为空时，应接受权威空远端结果', async () => {
+      userIdSignal.set('user-1');
+      const shellProject = createProject({
+        id: 'proj-empty-authoritative',
+        name: 'Metadata Shell',
+        tasks: [],
+        connections: [],
+      });
+      const localProject = createProject({
+        id: 'proj-empty-authoritative',
+        name: 'Local Snapshot',
+        tasks: [createTask({ id: 'task-local-authoritative', content: 'stale local' })],
+      });
+      const seedProjects = mockProjectState['setProjects'] as unknown as (projects: Project[]) => void;
+      seedProjects([shellProject]);
+      (mockProjectState['getProjectsWithCurrentData'] as ReturnType<typeof vi.fn>).mockReturnValue([localProject]);
+      vi.clearAllMocks();
+
+      const emptyRemoteProject = createProject({
+        id: 'proj-empty-authoritative',
+        name: 'Remote Empty Confirmed',
+        tasks: [],
+        connections: [],
+      });
+
+      (mockSyncCoordinator['loadSingleProjectFromCloud'] as ReturnType<typeof vi.fn>)
+        .mockResolvedValueOnce(emptyRemoteProject)
+        .mockResolvedValueOnce(emptyRemoteProject);
+
+      const loadResult = await (
+        service as unknown as {
+          loadProjectForHydration: (projectId: string) => Promise<{ status: string; project?: Project }>;
+        }
+      ).loadProjectForHydration('proj-empty-authoritative');
+
+      expect(mockSyncCoordinator['loadSingleProjectFromCloud']).toHaveBeenCalledTimes(2);
+      expect(loadResult).toEqual({
+        status: 'loaded',
+        project: expect.objectContaining({
+          id: 'proj-empty-authoritative',
+          name: 'Remote Empty Confirmed',
+          tasks: [],
+          connections: [],
+        }),
+      });
+    });
+
+    it('首次空补水复核前若会话失效，不应发起第二次远端读取', async () => {
+      userIdSignal.set('user-1');
+      const localProject = createProject({
+        id: 'proj-empty-stale',
+        name: 'Local Snapshot',
+        tasks: [createTask({ id: 'task-local-stale', content: 'keep me' })],
+      });
+      const sessionGuard = (
+        service as unknown as {
+          captureCurrentSessionGuard: () => { userId: string | null; generation: number };
+        }
+      ).captureCurrentSessionGuard();
+
+      (mockProjectState['getProjectsWithCurrentData'] as ReturnType<typeof vi.fn>).mockImplementation(() => {
+        userIdSignal.set('user-2');
+        return [localProject];
+      });
+
+      (mockSyncCoordinator['loadSingleProjectFromCloud'] as ReturnType<typeof vi.fn>)
+        .mockResolvedValueOnce(createProject({
+          id: 'proj-empty-stale',
+          name: 'Remote Empty First',
+          tasks: [],
+          connections: [],
+        }))
+        .mockResolvedValueOnce(createProject({
+          id: 'proj-empty-stale',
+          name: 'Should Not Be Requested',
+          tasks: [createTask({ id: 'task-unexpected' })],
+        }));
+
+      const loadResult = await (
+        service as unknown as {
+          loadProjectForHydration: (
+            projectId: string,
+            sessionGuard?: { userId: string | null; generation: number },
+          ) => Promise<{ status: string; project?: Project }>;
+        }
+      ).loadProjectForHydration('proj-empty-stale', sessionGuard);
+
+      expect(mockSyncCoordinator['loadSingleProjectFromCloud']).toHaveBeenCalledTimes(1);
+      expect(loadResult).toEqual({ status: 'stale' });
+    });
+
+    it('首次补水为空且复核返回 null 时，应保留后续重试且不合并空结果', async () => {
+      userIdSignal.set('user-1');
+      const shellProject = createProject({
+        id: 'proj-empty-confirm-null',
+        name: 'Metadata Shell',
+        tasks: [],
+        connections: [],
+      });
+      const localProject = createProject({
+        id: 'proj-empty-confirm-null',
+        name: 'Local Snapshot',
+        tasks: [createTask({ id: 'task-local-confirm-null', content: 'keep me' })],
+      });
+      const seedProjects = mockProjectState['setProjects'] as unknown as (projects: Project[]) => void;
+      seedProjects([shellProject]);
+      (mockProjectState['getProjectsWithCurrentData'] as ReturnType<typeof vi.fn>).mockReturnValue([localProject]);
+      vi.clearAllMocks();
+
+      (mockSyncCoordinator['loadSingleProjectFromCloud'] as ReturnType<typeof vi.fn>)
+        .mockResolvedValueOnce(createProject({
+          id: 'proj-empty-confirm-null',
+          name: 'Remote Empty First',
+          tasks: [],
+          connections: [],
+        }))
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce(createProject({
+          id: 'proj-empty-confirm-null',
+          name: 'Loaded After Retry',
+          tasks: [createTask({ id: 'task-loaded-after-retry', content: 'remote ok' })],
+          connections: [],
+        }));
+
+      service.switchActiveProject('proj-empty-confirm-null');
+      await flushAsyncWork();
+
+      expect(mockSyncCoordinator['loadSingleProjectFromCloud']).toHaveBeenCalledTimes(2);
+      expect(mockProjectState['setProjects']).not.toHaveBeenCalled();
+      expect((mockSyncCoordinator['core'] as { saveOfflineSnapshot: ReturnType<typeof vi.fn> }).saveOfflineSnapshot)
+        .not.toHaveBeenCalled();
+
+      service.switchActiveProject(null);
+      service.switchActiveProject('proj-empty-confirm-null');
+      await flushAsyncWork();
+
+      expect(mockSyncCoordinator['loadSingleProjectFromCloud']).toHaveBeenCalledTimes(3);
+      expect(mockProjectState['setProjects']).toHaveBeenCalledWith([
+        expect.objectContaining({
+          id: 'proj-empty-confirm-null',
+          name: 'Loaded After Retry',
+          tasks: [expect.objectContaining({ id: 'task-loaded-after-retry', content: 'remote ok' })],
+        }),
+      ]);
+    });
+
     it('按需加载确认不可访问后应停止当前会话内重复重试', async () => {
       userIdSignal.set('user-1');
       const shellProject = createProject({ id: 'shell-1', name: 'Shell', syncSource: 'synced', tasks: [] });
@@ -1767,6 +1969,150 @@ describe('UserSessionService', () => {
       expect(mockToastService['info']).not.toHaveBeenCalledWith('当前项目不可访问，已自动切换');
     });
 
+    it('activeProject 首次补水返回空项目时也应复核一次，避免假空覆盖本地数据', async () => {
+      userIdSignal.set('user-1');
+      const activeShell = createProject({
+        id: 'proj-active-empty',
+        name: 'Active Shell',
+        syncSource: 'synced',
+        tasks: [],
+        connections: [],
+      });
+      const localProject = createProject({
+        id: 'proj-active-empty',
+        name: 'Local Snapshot',
+        syncSource: 'synced',
+        tasks: [createTask({ id: 'task-local-active-empty', content: 'keep me' })],
+        connections: [],
+      });
+      (mockProjectState['setProjects'] as (projects: Project[]) => void)([activeShell]);
+      (mockProjectState['setActiveProjectId'] as (projectId: string | null) => void)('proj-active-empty');
+      (mockProjectState['getProjectsWithCurrentData'] as ReturnType<typeof vi.fn>).mockReturnValue([localProject]);
+      vi.clearAllMocks();
+
+      vi.spyOn(
+        service as unknown as {
+          ensureProjectListMetadataSynced: (userId: string, sessionGuard?: unknown, pendingWatermark?: string | null) => Promise<Set<string>>;
+        },
+        'ensureProjectListMetadataSynced'
+      ).mockResolvedValue(new Set(['proj-active-empty']));
+      vi.spyOn(
+        service as unknown as {
+          hydrateShellProjectsInBackground: (userId: string, activeProjectId: string | null, sessionGuard?: unknown) => Promise<void>;
+        },
+        'hydrateShellProjectsInBackground'
+      ).mockResolvedValue(undefined);
+
+      (mockSyncCoordinator['loadSingleProjectFromCloud'] as ReturnType<typeof vi.fn>)
+        .mockResolvedValueOnce(createProject({
+          id: 'proj-active-empty',
+          name: 'Remote Empty First',
+          syncSource: 'synced',
+          tasks: [],
+          connections: [],
+        }))
+        .mockResolvedValueOnce(createProject({
+          id: 'proj-active-empty',
+          name: 'Remote Confirmed',
+          syncSource: 'synced',
+          tasks: [createTask({ id: 'task-remote-active-empty', content: 'remote ok' })],
+          connections: [],
+        }));
+
+      await (
+        service as unknown as {
+          startBackgroundSync: (userId: string, previousActive: string | null) => Promise<void>;
+        }
+      ).startBackgroundSync('user-1', null);
+
+      expect(mockSyncCoordinator['loadSingleProjectFromCloud']).toHaveBeenCalledTimes(2);
+      expect(mockProjectState['setProjects']).toHaveBeenCalledWith([
+        expect.objectContaining({
+          id: 'proj-active-empty',
+          name: 'Remote Confirmed',
+          tasks: [expect.objectContaining({ id: 'task-remote-active-empty', content: 'remote ok' })],
+        }),
+      ]);
+      expect(mockLoggerCategory.warn).toHaveBeenCalledWith(
+        '按需加载首次返回空图数据，正在复核远端结果',
+        expect.objectContaining({
+          projectId: 'proj-active-empty',
+          localTaskCount: 1,
+        }),
+      );
+    });
+
+    it('已水合的 activeProject 再次遇到空补水时仍应复核，避免会话内后续假空覆盖', async () => {
+      userIdSignal.set('user-1');
+      const activeProject = createProject({
+        id: 'proj-active-hydrated-empty',
+        name: 'Hydrated Local',
+        syncSource: 'synced',
+        tasks: [createTask({ id: 'task-local-hydrated-empty', content: 'keep me hydrated' })],
+        connections: [],
+      });
+      (mockProjectState['setProjects'] as (projects: Project[]) => void)([activeProject]);
+      (mockProjectState['setActiveProjectId'] as (projectId: string | null) => void)('proj-active-hydrated-empty');
+      (mockProjectState['getProjectsWithCurrentData'] as ReturnType<typeof vi.fn>).mockReturnValue([activeProject]);
+      (
+        service as unknown as {
+          hydratedProjectIds: Set<string>;
+        }
+      ).hydratedProjectIds.add('proj-active-hydrated-empty');
+      vi.clearAllMocks();
+
+      vi.spyOn(
+        service as unknown as {
+          ensureProjectListMetadataSynced: (userId: string, sessionGuard?: unknown, pendingWatermark?: string | null) => Promise<Set<string>>;
+        },
+        'ensureProjectListMetadataSynced'
+      ).mockResolvedValue(new Set(['proj-active-hydrated-empty']));
+      vi.spyOn(
+        service as unknown as {
+          hydrateShellProjectsInBackground: (userId: string, activeProjectId: string | null, sessionGuard?: unknown) => Promise<void>;
+        },
+        'hydrateShellProjectsInBackground'
+      ).mockResolvedValue(undefined);
+
+      (mockSyncCoordinator['loadSingleProjectFromCloud'] as ReturnType<typeof vi.fn>)
+        .mockResolvedValueOnce(createProject({
+          id: 'proj-active-hydrated-empty',
+          name: 'Remote Empty First',
+          syncSource: 'synced',
+          tasks: [],
+          connections: [],
+        }))
+        .mockResolvedValueOnce(createProject({
+          id: 'proj-active-hydrated-empty',
+          name: 'Remote Confirmed Later',
+          syncSource: 'synced',
+          tasks: [createTask({ id: 'task-remote-hydrated-empty', content: 'remote ok later' })],
+          connections: [],
+        }));
+
+      await (
+        service as unknown as {
+          startBackgroundSync: (userId: string, previousActive: string | null) => Promise<void>;
+        }
+      ).startBackgroundSync('user-1', null);
+
+      expect(mockSyncCoordinator['loadSingleProjectFromCloud']).toHaveBeenCalledTimes(2);
+      expect(mockProjectState['setProjects']).toHaveBeenCalledWith([
+        expect.objectContaining({
+          id: 'proj-active-hydrated-empty',
+          name: 'Remote Confirmed Later',
+          tasks: [expect.objectContaining({ id: 'task-remote-hydrated-empty', content: 'remote ok later' })],
+        }),
+      ]);
+      expect(mockLoggerCategory.warn).toHaveBeenCalledWith(
+        '按需加载首次返回空图数据，正在复核远端结果',
+        expect.objectContaining({
+          projectId: 'proj-active-hydrated-empty',
+          localTaskCount: 1,
+        }),
+      );
+    });
+
     it('activeProject 不可访问时应清理并跳过项目同步', async () => {
       const deniedProject = createProject({ id: 'proj-denied', name: 'Denied', syncSource: 'synced' });
       const keepProject = createProject({
@@ -2701,6 +3047,12 @@ describe('UserSessionService', () => {
         tasks: [localTask],
         updatedAt: '2026-05-26T08:00:00.000Z',
       });
+      const shellProject = createProject({
+        id: 'proj-content-guard',
+        tasks: [],
+        connections: [],
+        updatedAt: '2026-05-26T08:00:00.000Z',
+      });
       const remoteTask = markTaskContentMissingFromSource(createTask({
         id: 'task-1',
         title: 'Keep Content',
@@ -2713,7 +3065,8 @@ describe('UserSessionService', () => {
         updatedAt: '2026-05-27T08:00:00.000Z',
       });
 
-      (mockProjectState['setProjects'] as ReturnType<typeof vi.fn>)([localProject]);
+      (mockProjectState['setProjects'] as ReturnType<typeof vi.fn>)([shellProject]);
+      (mockProjectState['getProjectsWithCurrentData'] as ReturnType<typeof vi.fn>).mockReturnValue([localProject]);
       (mockSyncCoordinator['hasPendingChangesForProject'] as ReturnType<typeof vi.fn>).mockReturnValue(false);
 
       await (
@@ -2750,6 +3103,12 @@ describe('UserSessionService', () => {
         tasks: [localTask],
         updatedAt: '2026-05-26T08:00:00.000Z',
       });
+      const shellProject = createProject({
+        id: 'proj-explicit-empty',
+        tasks: [],
+        connections: [],
+        updatedAt: '2026-05-26T08:00:00.000Z',
+      });
       const remoteTask = createTask({
         id: 'task-2',
         title: 'Allow Empty',
@@ -2762,7 +3121,8 @@ describe('UserSessionService', () => {
         updatedAt: '2026-05-27T08:00:00.000Z',
       });
 
-      (mockProjectState['setProjects'] as ReturnType<typeof vi.fn>)([localProject]);
+      (mockProjectState['setProjects'] as ReturnType<typeof vi.fn>)([shellProject]);
+      (mockProjectState['getProjectsWithCurrentData'] as ReturnType<typeof vi.fn>).mockReturnValue([localProject]);
       (mockSyncCoordinator['hasPendingChangesForProject'] as ReturnType<typeof vi.fn>).mockReturnValue(false);
 
       await (
@@ -2795,6 +3155,12 @@ describe('UserSessionService', () => {
         tasks: [localTask],
         updatedAt: '2026-05-26T08:00:00.000Z',
       });
+      const shellProject = createProject({
+        id: 'proj-pending-merge',
+        tasks: [],
+        connections: [],
+        updatedAt: '2026-05-26T08:00:00.000Z',
+      });
       const remoteTask = markTaskContentMissingFromSource(createTask({
         id: 'task-3',
         title: 'Pending Merge',
@@ -2808,7 +3174,8 @@ describe('UserSessionService', () => {
         updatedAt: '2026-05-27T08:00:00.000Z',
       });
 
-      (mockProjectState['setProjects'] as ReturnType<typeof vi.fn>)([localProject]);
+      (mockProjectState['setProjects'] as ReturnType<typeof vi.fn>)([shellProject]);
+      (mockProjectState['getProjectsWithCurrentData'] as ReturnType<typeof vi.fn>).mockReturnValue([localProject]);
       (mockSyncCoordinator['hasPendingChangesForProject'] as ReturnType<typeof vi.fn>).mockReturnValue(true);
 
       await (
@@ -2824,6 +3191,7 @@ describe('UserSessionService', () => {
       expect(mergedProject?.tasks[0]?.order).toBe(9);
       expect(mergedProject?.tasks[0]?.updatedAt).toBe('2026-05-27T08:00:00.000Z');
     });
+
   });
 
   // ====== 快照预填充测试 ======

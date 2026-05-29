@@ -1158,6 +1158,37 @@ export class UserSessionService {
       return { status: 'stale' };
     }
     if (cloudProject) {
+      const localProject = this.projectState
+        .getProjectsWithCurrentData()
+        .find(project => project.id === projectId);
+      const shouldConfirmEmptyHydration = !!localProject
+        && (localProject.tasks.length > 0 || localProject.connections.length > 0)
+        && cloudProject.tasks.length === 0
+        && cloudProject.connections.length === 0;
+
+      if (shouldConfirmEmptyHydration) {
+        this.logger.warn('按需加载首次返回空图数据，正在复核远端结果', {
+          projectId,
+          localTaskCount: localProject.tasks.length,
+          localConnectionCount: localProject.connections.length,
+        });
+
+        if (this.shouldAbortStaleSession(sessionGuard, `project-hydration:before-confirm-empty:${projectId}`)) {
+          return { status: 'stale' };
+        }
+
+        const confirmedCloudProject = await this.syncCoordinator.loadSingleProjectFromCloud(projectId);
+        if (this.shouldAbortStaleSession(sessionGuard, `project-hydration:confirm-empty:${projectId}`)) {
+          return { status: 'stale' };
+        }
+        if (!confirmedCloudProject) {
+          this.logger.warn('按需加载空图数据复核失败，保留后续重试机会', { projectId });
+          return { status: 'retry' };
+        }
+
+        return { status: 'loaded', project: confirmedCloudProject };
+      }
+
       return { status: 'loaded', project: cloudProject };
     }
 
@@ -2179,17 +2210,19 @@ export class UserSessionService {
     ) {
       try {
         this.logger.debug('按需加载当前项目', { projectId: activeProjectId });
-        const currentProject = await this.syncCoordinator.loadSingleProjectFromCloud(activeProjectId);
-        if (this.shouldAbortStaleSession(sessionGuard, 'startBackgroundSync:load-single-project')) {
+        const loadResult = await this.loadProjectForHydration(activeProjectId, sessionGuard);
+        if (loadResult.status === 'stale') {
           return;
         }
-        if (currentProject) {
-          await this.mergeSingleProject(currentProject, userId);
+        if (loadResult.status === 'loaded') {
+          await this.mergeSingleProject(loadResult.project, userId);
           currentProjectSynced = true;
-        } else {
+        } else if (loadResult.status === 'inaccessible') {
           // 【性能优化 2026-02-14】RPC 返回 null 说明项目不可访问（Access Denied 或已删除）
           // 清理不可访问的 activeProjectId，避免后续重复触发无效 RPC 请求链
           activeProjectId = await this.reconcileInaccessibleActiveProject(activeProjectId, userId);
+        } else {
+          this.logger.info('当前项目按需加载暂不可用，保留后续重试机会', { projectId: activeProjectId });
         }
       } catch (e) {
         this.logger.warn('当前项目同步失败', e);
@@ -2578,11 +2611,12 @@ export class UserSessionService {
   
   /** 合并单个项目数据（LWW 竞态保护） */
   private async mergeSingleProject(cloudProject: Project, _userId: string): Promise<void> {
-    const localProject = this.projectState.getProject(cloudProject.id);
+    const currentProjects = this.projectState.getProjectsWithCurrentData();
+    const localProject = currentProjects.find(project => project.id === cloudProject.id);
     
     if (!localProject) {
       // 新项目，直接添加
-      this.projectState.setProjects([...this.projectState.projects(), cloudProject]);
+      this.projectState.setProjects([...currentProjects, cloudProject]);
       return;
     }
 
@@ -2620,13 +2654,13 @@ export class UserSessionService {
         connections: mergedConnections
       };
       
-      const updatedProjects = this.projectState.projects().map((p: Project) =>
+      const updatedProjects = currentProjects.map((p: Project) =>
         p.id === cloudProject.id ? mergedProject : p
       );
       this.projectState.setProjects(updatedProjects);
     } else {
       // 无本地修改，直接覆盖
-      const updatedProjects = this.projectState.projects().map((p: Project) =>
+      const updatedProjects = currentProjects.map((p: Project) =>
         p.id === normalizedCloudProject.id ? normalizedCloudProject : p
       );
       this.projectState.setProjects(updatedProjects);
