@@ -22,10 +22,12 @@ describe('KnowledgeAnchorPopoverComponent', () => {
   };
 
   let fixture: ComponentFixture<KnowledgeAnchorPopoverComponent>;
+  let openLink: ReturnType<typeof vi.fn>;
   let updateMetadata: ReturnType<typeof vi.fn>;
   let preview: ReturnType<typeof vi.fn>;
 
   beforeEach(async () => {
+    openLink = vi.fn();
     updateMetadata = vi.fn().mockResolvedValue(undefined);
     preview = vi.fn().mockResolvedValue({
       status: 'ready',
@@ -54,7 +56,7 @@ describe('KnowledgeAnchorPopoverComponent', () => {
         {
           provide: ExternalSourceLinkService,
           useValue: {
-            openLink: vi.fn(),
+            openLink,
             updateMetadata,
           },
         },
@@ -74,10 +76,12 @@ describe('KnowledgeAnchorPopoverComponent', () => {
   it('renders the fetched Siyuan title and linked-at time, then backfills link metadata', () => {
     const title = fixture.nativeElement.querySelector('[data-testid="knowledge-anchor-popover-title"]') as HTMLElement;
     const linkedAt = fixture.nativeElement.querySelector('[data-testid="knowledge-anchor-linked-at"]') as HTMLElement;
+    const absoluteLocation = fixture.nativeElement.querySelector('[data-testid="knowledge-anchor-absolute-location"]') as HTMLButtonElement;
 
     expect(title.textContent).toContain('细菌能量来源');
     expect(fixture.nativeElement.textContent).not.toContain('缓存时间');
     expect(linkedAt.textContent).toContain('关联于：05/18');
+    expect(absoluteLocation.textContent).toContain('/生物/细菌能量来源');
     expect(updateMetadata).toHaveBeenCalledWith(link.id, {
       label: '细菌能量来源',
       hpath: '/生物/细菌能量来源',
@@ -103,6 +107,32 @@ describe('KnowledgeAnchorPopoverComponent', () => {
     const title = fixture.nativeElement.querySelector('[data-testid="knowledge-anchor-popover-title"]') as HTMLElement;
     expect(title.textContent).toContain('无标题块');
     expect(title.textContent).not.toContain('思源 abc1234');
+  });
+
+  it('opens the SiYuan block when the absolute location is clicked', () => {
+    const absoluteLocation = fixture.nativeElement.querySelector('[data-testid="knowledge-anchor-absolute-location"]') as HTMLButtonElement;
+
+    absoluteLocation.click();
+
+    expect(openLink).toHaveBeenCalledWith(link);
+  });
+
+  it('still renders the absolute location when preview data is unavailable', () => {
+    Object.assign(fixture.componentInstance as unknown as Record<string, unknown>, {
+      link: signal({
+        ...link,
+        hpath: '/生物/细菌能量来源',
+      }),
+    });
+    fixture.componentInstance.result.set({
+      status: 'error',
+      errorCode: 'unknown',
+    });
+    fixture.detectChanges();
+
+    const absoluteLocation = fixture.nativeElement.querySelector('[data-testid="knowledge-anchor-absolute-location"]') as HTMLButtonElement;
+
+    expect(absoluteLocation.textContent).toContain('/生物/细菌能量来源');
   });
 
   it('does not backfill metadata for cache-only stale previews', async () => {

@@ -19,12 +19,9 @@ import { shortenSiyuanBlockId } from '../../../core/external-sources/siyuan/siyu
       [style.max-height.px]="maxHeight"
       (mouseenter)="hoverInside.emit()"
       (mouseleave)="hoverOutside.emit()">
-      <header class="flex items-start justify-between gap-3 border-b border-slate-100 px-3 py-2 dark:border-stone-800">
+      <header class="flex items-start justify-between gap-3 border-b border-slate-100 px-3 pt-2 pb-1.5 dark:border-stone-800">
         <div class="min-w-0">
           <div class="truncate text-[11px] font-bold text-slate-800 dark:text-stone-100" data-testid="knowledge-anchor-popover-title">{{ headerTitle() }}</div>
-          @if (subtitleLine(); as subtitle) {
-            <div class="truncate text-[10px] text-slate-500 dark:text-stone-400">{{ subtitle }}</div>
-          }
         </div>
         <div class="flex shrink-0 gap-1">
           <button type="button" class="anchor-popover-action" (click)="open()">打开思源</button>
@@ -32,7 +29,7 @@ import { shortenSiyuanBlockId } from '../../../core/external-sources/siyuan/siyu
         </div>
       </header>
 
-      <div class="max-h-[300px] overflow-y-auto px-3 py-2 text-xs leading-relaxed">
+      <div class="max-h-[300px] overflow-y-auto px-3 pt-1.5 pb-2 text-xs leading-relaxed">
         @if (result().status === 'loading') {
           <div class="animate-pulse space-y-2" data-testid="knowledge-anchor-loading">
             <div class="h-3 w-4/5 rounded bg-slate-100 dark:bg-stone-800"></div>
@@ -56,12 +53,23 @@ import { shortenSiyuanBlockId } from '../../../core/external-sources/siyuan/siyu
             @if (preview.truncated) {
               <div class="mt-2 text-[10px] text-slate-400 dark:text-stone-500">更多内容请打开思源</div>
             }
-            <div class="mt-2 text-[10px] text-slate-400 dark:text-stone-500" data-testid="knowledge-anchor-linked-at">关联于：{{ link().createdAt | date:'MM/dd HH:mm' }}</div>
           } @else {
             <div class="rounded-md bg-slate-50 px-2 py-2 text-[11px] text-slate-500 dark:bg-stone-800 dark:text-stone-400" data-testid="knowledge-anchor-error">
               {{ errorMessage() }}。任务仍可继续操作，也可直接打开思源原块。
             </div>
           }
+
+          <div class="mt-2 flex items-end justify-between gap-3 text-[10px] text-slate-400 dark:text-stone-500">
+            <div data-testid="knowledge-anchor-linked-at">关联于：{{ link().createdAt | date:'MM/dd HH:mm' }}</div>
+            @if (absoluteLocation(); as location) {
+              <button
+                type="button"
+                class="anchor-absolute-location"
+                data-testid="knowledge-anchor-absolute-location"
+                [title]="location"
+                (click)="open()">{{ location }}</button>
+            }
+          </div>
         }
       </div>
     </section>
@@ -70,6 +78,15 @@ import { shortenSiyuanBlockId } from '../../../core/external-sources/siyuan/siyu
     .knowledge-anchor-popover { width: min(420px, calc(100vw - 24px)); overflow: hidden; }
     .anchor-popover-action { border-radius: 0.375rem; padding: 0.25rem 0.4rem; font-size: 10px; font-weight: 700; color: rgb(79 70 229); }
     .anchor-popover-action:hover { background: rgba(99, 102, 241, 0.08); }
+    .anchor-absolute-location {
+      max-width: 52%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      text-align: right;
+      color: inherit;
+    }
+    .anchor-absolute-location:hover { color: rgb(79 70 229); }
   `],
 })
 export class KnowledgeAnchorPopoverComponent {
@@ -119,10 +136,10 @@ export class KnowledgeAnchorPopoverComponent {
       || shortenSiyuanBlockId(link.targetId);
   }
 
-  subtitleLine(): string | null {
-    const hpath = this.normalizeText(this.result().preview?.hpath) || this.normalizeText(this.link().hpath);
-    if (!hpath) return null;
-    return hpath === this.headerTitle() ? null : hpath;
+  absoluteLocation(): string | null {
+    return this.normalizeText(this.result().preview?.hpath)
+      || this.normalizeText(this.link().hpath)
+      || null;
   }
 
   errorMessage(): string {
