@@ -52,6 +52,18 @@ async function flushMicrotasks(turns = 6): Promise<void> {
   }
 }
 
+function createActiveSessionResult() {
+  return {
+    data: {
+      session: {
+        access_token: 'token',
+        expires_at: Math.floor(Date.now() / 1000) + 3600,
+      },
+    },
+    error: null,
+  };
+}
+
 // 创建带 user_id 作用域查询能力的模拟查询对象，用于验证黑匣子远端读取不会跨用户。
 function createScopedQuery<TQuery extends Record<string, unknown>>(
   query: TQuery,
@@ -135,6 +147,7 @@ describe('BlackBoxSyncService', () => {
           useValue: {
             isConfigured: true,
             isOfflineMode: vi.fn(() => false),
+            getSession: vi.fn().mockResolvedValue(createActiveSessionResult()),
             clientAsync: vi.fn().mockResolvedValue({}),
           },
         },
@@ -248,6 +261,69 @@ describe('BlackBoxSyncService', () => {
         }),
       }),
     );
+  });
+
+  it('direct black-box widget notify should skip without an active session', async () => {
+    const supabase = TestBed.inject(SupabaseClientService) as unknown as {
+      clientAsync: ReturnType<typeof vi.fn>;
+      getSession: ReturnType<typeof vi.fn>;
+    };
+    supabase.clientAsync.mockClear();
+    supabase.getSession.mockResolvedValue({ data: { session: null }, error: null });
+
+    await (service as unknown as {
+      sendDirectWidgetBlackBoxNotify: (entry: BlackBoxEntry, action: 'read') => Promise<void>;
+    }).sendDirectWidgetBlackBoxNotify(createEntry({ id: 'entry-no-session' }), 'read');
+
+    expect(supabase.getSession).toHaveBeenCalledTimes(1);
+    expect(supabase.clientAsync).not.toHaveBeenCalled();
+  });
+
+  it('direct black-box widget notify should still run with an expired but refreshable session', async () => {
+    const invoke = vi.fn().mockResolvedValue({ data: null, error: null });
+    const supabase = TestBed.inject(SupabaseClientService) as unknown as {
+      clientAsync: ReturnType<typeof vi.fn>;
+      getSession: ReturnType<typeof vi.fn>;
+    };
+    supabase.clientAsync.mockResolvedValue({ functions: { invoke } });
+    supabase.getSession.mockResolvedValue({
+      data: {
+        session: {
+          access_token: 'expired-token',
+          expires_at: Math.floor(Date.now() / 1000) - 60,
+        },
+      },
+      error: null,
+    });
+
+    await (service as unknown as {
+      sendDirectWidgetBlackBoxNotify: (entry: BlackBoxEntry, action: 'complete') => Promise<void>;
+    }).sendDirectWidgetBlackBoxNotify(createEntry({ id: 'entry-expired-session' }), 'complete');
+
+    expect(invoke).toHaveBeenCalledWith(
+      'widget-notify',
+      expect.objectContaining({
+        body: expect.objectContaining({
+          directNotify: true,
+          entryId: 'entry-expired-session',
+        }),
+      }),
+    );
+  });
+
+  it('direct black-box widget notify should swallow getSession failures', async () => {
+    const supabase = TestBed.inject(SupabaseClientService) as unknown as {
+      clientAsync: ReturnType<typeof vi.fn>;
+      getSession: ReturnType<typeof vi.fn>;
+    };
+    supabase.clientAsync.mockClear();
+    supabase.getSession.mockRejectedValue(new Error('session probe failed'));
+
+    await (service as unknown as {
+      sendDirectWidgetBlackBoxNotify: (entry: BlackBoxEntry, action: 'read') => Promise<void>;
+    }).sendDirectWidgetBlackBoxNotify(createEntry({ id: 'entry-session-error' }), 'read');
+
+    expect(supabase.clientAsync).not.toHaveBeenCalled();
   });
 
   it('should apply resume pull cooldown by default', async () => {

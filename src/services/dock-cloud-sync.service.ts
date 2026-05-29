@@ -116,6 +116,29 @@ export class DockCloudSyncService implements OnDestroy {
     return true;
   }
 
+  private async hasUsableDirectWidgetNotifySession(context: Record<string, unknown>): Promise<boolean> {
+    try {
+      const sessionResult = await this.supabase.getSession();
+      const session = sessionResult.data.session;
+
+      if (!session?.access_token || sessionResult.error) {
+        this.logger.debug('direct widget-notify skipped without active session', {
+          ...context,
+          reason: sessionResult.error?.name ?? 'session-missing',
+        });
+        return false;
+      }
+
+      return true;
+    } catch (error) {
+      this.logger.debug('direct widget-notify skipped while reading session', {
+        ...context,
+        reason: error instanceof Error ? error.message : String(error),
+      });
+      return false;
+    }
+  }
+
   /**
    * 由 DockEngineService 在其构造函数中调用，注入引擎回调。
    * 此服务使用手动上下文注入而非 Angular DI，因为所需回调引用的是 DockEngineService 的私有成员
@@ -208,6 +231,10 @@ export class DockCloudSyncService implements OnDestroy {
     const focusSessionId = this.getDirectFocusSessionId(snapshot);
     if (!focusSessionId) {
       this.logger.debug('direct widget-notify skipped without focus session id', { userId, focusActive });
+      return;
+    }
+
+    if (!(await this.hasUsableDirectWidgetNotifySession({ userId, focusActive, source: 'focus' }))) {
       return;
     }
 

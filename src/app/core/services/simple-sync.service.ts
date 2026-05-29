@@ -2621,12 +2621,12 @@ export class SimpleSyncService {
     return { ...result, newVersion: result.newVersion ?? project.version };
   }
   
-  async loadFullProjectOptimized(projectId: string): Promise<Project | null> {
-    return this.projectDataService.loadFullProjectOptimized(projectId);
+  async loadFullProjectOptimized(projectId: string, expectedUserId?: string): Promise<Project | null> {
+    return this.projectDataService.loadFullProjectOptimized(projectId, expectedUserId);
   }
   
-  async loadFullProject(projectId: string, _userId: string): Promise<Project | null> {
-    return this.projectDataService.loadFullProject(projectId);
+  async loadFullProject(projectId: string, userId?: string): Promise<Project | null> {
+    return this.projectDataService.loadFullProject(projectId, userId);
   }
   
   async loadProjectsFromCloud(userId: string, _silent?: boolean): Promise<Project[]> {

@@ -1,6 +1,6 @@
 import { Injector } from '@angular/core';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { ProjectDataService } from './project-data.service';
+import { ProjectDataService, PROJECT_BATCH_RPC_PROBE_GRACE_MS } from './project-data.service';
 import { SupabaseClientService } from '../../../../services/supabase-client.service';
 import { AuthService } from '../../../../services/auth.service';
 import { LoggerService } from '../../../../services/logger.service';
@@ -662,6 +662,418 @@ describe('ProjectDataService', () => {
 
     expect(result).toBeNull();
     expect(rpc).toHaveBeenCalledTimes(1);
+  });
+
+  it('RPC 504 时应短时熔断批量 RPC，并在冷却期内直接走顺序加载', async () => {
+    const rpc = vi.fn().mockResolvedValue({
+      data: null,
+      error: {
+        code: '504',
+        message: '504 Gateway Timeout',
+      },
+    });
+
+    const injector = Injector.create({
+      providers: [
+        { provide: ProjectDataService, useClass: ProjectDataService },
+        {
+          provide: SupabaseClientService,
+          useValue: {
+            isConfigured: true,
+            clientAsync: vi.fn(async () => ({ rpc })),
+          },
+        },
+        {
+          provide: AuthService,
+          useValue: {
+            currentUserId: vi.fn(() => 'user-1'),
+          },
+        },
+        {
+          provide: LoggerService,
+          useValue: {
+            category: () => ({
+              debug: vi.fn(),
+              info: vi.fn(),
+              warn: vi.fn(),
+              error: vi.fn(),
+            }),
+          },
+        },
+        {
+          provide: RequestThrottleService,
+          useValue: {
+            execute: vi.fn(),
+          },
+        },
+        {
+          provide: SyncStateService,
+          useValue: {
+            setSyncError: vi.fn(),
+          },
+        },
+        {
+          provide: TombstoneService,
+          useValue: {
+            getTombstonesWithCache: vi.fn().mockResolvedValue({ data: [], error: null }),
+            getLocalTombstones: vi.fn().mockReturnValue(new Set()),
+          },
+        },
+        {
+          provide: SentryLazyLoaderService,
+          useValue: {
+            addBreadcrumb: vi.fn(),
+            captureException: vi.fn(),
+            captureMessage: vi.fn(),
+          },
+        },
+      ],
+    });
+
+    const service = injector.get(ProjectDataService);
+    const fallbackSpy = vi.spyOn(
+      service as unknown as { loadFullProject: (projectId: string) => Promise<unknown> },
+      'loadFullProject'
+    ).mockResolvedValue(null);
+
+    await service.loadFullProjectOptimized('proj-timeout');
+    await service.loadFullProjectOptimized('proj-timeout');
+
+    expect(rpc).toHaveBeenCalledTimes(1);
+    expect(fallbackSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('loadProjectsFromCloud 应将 owner hint 传递给完整项目加载链路', async () => {
+    const projectsOrder = {
+      order: vi.fn().mockResolvedValue({
+        data: [{ id: 'proj-owner-hint' }],
+        error: null,
+      }),
+    };
+    const projectsDeleted = {
+      is: vi.fn().mockReturnValue(projectsOrder),
+    };
+    const projectsOwner = {
+      eq: vi.fn().mockReturnValue(projectsDeleted),
+    };
+    const projectsSelect = {
+      select: vi.fn().mockReturnValue(projectsOwner),
+    };
+    const from = vi.fn((table: string) => {
+      if (table === 'projects') {
+        return projectsSelect;
+      }
+      throw new Error(`unexpected table ${table}`);
+    });
+
+    const injector = Injector.create({
+      providers: [
+        { provide: ProjectDataService, useClass: ProjectDataService },
+        {
+          provide: SupabaseClientService,
+          useValue: {
+            isConfigured: true,
+            clientAsync: vi.fn(async () => ({ from })),
+          },
+        },
+        {
+          provide: AuthService,
+          useValue: {
+            currentUserId: vi.fn(() => null),
+            sessionInitialized: vi.fn(() => false),
+            authState: vi.fn(() => ({ isCheckingSession: false })),
+            runtimeState: vi.fn(() => 'idle'),
+            peekPersistedSessionIdentity: vi.fn(() => null),
+          },
+        },
+        {
+          provide: LoggerService,
+          useValue: {
+            category: () => ({
+              debug: vi.fn(),
+              info: vi.fn(),
+              warn: vi.fn(),
+              error: vi.fn(),
+            }),
+          },
+        },
+        {
+          provide: RequestThrottleService,
+          useValue: {
+            execute: vi.fn(async (_key: string, work: () => Promise<unknown>) => work()),
+          },
+        },
+        {
+          provide: SyncStateService,
+          useValue: {
+            setSyncError: vi.fn(),
+            setLoadingRemote: vi.fn(),
+            isLoadingRemote: vi.fn(() => false),
+          },
+        },
+        {
+          provide: TombstoneService,
+          useValue: {
+            getTombstonesWithCache: vi.fn().mockResolvedValue({ data: [], error: null }),
+            getLocalTombstones: vi.fn().mockReturnValue(new Set()),
+          },
+        },
+        {
+          provide: SentryLazyLoaderService,
+          useValue: {
+            addBreadcrumb: vi.fn(),
+            captureException: vi.fn(),
+            captureMessage: vi.fn(),
+          },
+        },
+      ],
+    });
+
+    const service = injector.get(ProjectDataService);
+    const loadSpy = vi.spyOn(
+      service as unknown as { loadFullProjectOptimized: (projectId: string, expectedUserId?: string) => Promise<Project | null> },
+      'loadFullProjectOptimized'
+    ).mockResolvedValue(null);
+
+    await service.loadProjectsFromCloud('user-owner-hint');
+
+    expect(loadSpy).toHaveBeenCalledWith('proj-owner-hint', 'user-owner-hint');
+  });
+
+  it('loadProjectsFromCloud 首个项目触发 RPC 504 后，后续项目应命中短熔断不再重复调用 batch RPC', async () => {
+    const projectsOrder = {
+      order: vi.fn().mockResolvedValue({
+        data: [
+          { id: 'proj-rpc-timeout-1' },
+          { id: 'proj-rpc-timeout-2' },
+          { id: 'proj-rpc-timeout-3' },
+        ],
+        error: null,
+      }),
+    };
+    const projectsDeleted = {
+      is: vi.fn().mockReturnValue(projectsOrder),
+    };
+    const projectsOwner = {
+      eq: vi.fn().mockReturnValue(projectsDeleted),
+    };
+    const projectsSelect = {
+      select: vi.fn().mockReturnValue(projectsOwner),
+    };
+    const rpc = vi.fn().mockResolvedValue({
+      data: null,
+      error: {
+        code: '504',
+        message: '504 Gateway Timeout',
+      },
+    });
+    const from = vi.fn((table: string) => {
+      if (table === 'projects') {
+        return projectsSelect;
+      }
+      throw new Error(`unexpected table ${table}`);
+    });
+
+    const injector = Injector.create({
+      providers: [
+        { provide: ProjectDataService, useClass: ProjectDataService },
+        {
+          provide: SupabaseClientService,
+          useValue: {
+            isConfigured: true,
+            clientAsync: vi.fn(async () => ({ from, rpc })),
+          },
+        },
+        {
+          provide: AuthService,
+          useValue: {
+            currentUserId: vi.fn(() => null),
+            sessionInitialized: vi.fn(() => false),
+            authState: vi.fn(() => ({ isCheckingSession: false })),
+            runtimeState: vi.fn(() => 'idle'),
+            peekPersistedSessionIdentity: vi.fn(() => null),
+          },
+        },
+        {
+          provide: LoggerService,
+          useValue: {
+            category: () => ({
+              debug: vi.fn(),
+              info: vi.fn(),
+              warn: vi.fn(),
+              error: vi.fn(),
+            }),
+          },
+        },
+        {
+          provide: RequestThrottleService,
+          useValue: {
+            execute: vi.fn(async (_key: string, work: () => Promise<unknown>) => work()),
+          },
+        },
+        {
+          provide: SyncStateService,
+          useValue: {
+            setSyncError: vi.fn(),
+            setLoadingRemote: vi.fn(),
+            isLoadingRemote: vi.fn(() => false),
+          },
+        },
+        {
+          provide: TombstoneService,
+          useValue: {
+            getTombstonesWithCache: vi.fn().mockResolvedValue({ data: [], error: null }),
+            getLocalTombstones: vi.fn().mockReturnValue(new Set()),
+          },
+        },
+        {
+          provide: SentryLazyLoaderService,
+          useValue: {
+            addBreadcrumb: vi.fn(),
+            captureException: vi.fn(),
+            captureMessage: vi.fn(),
+          },
+        },
+      ],
+    });
+
+    const service = injector.get(ProjectDataService);
+    const fallbackSpy = vi.spyOn(
+      service as unknown as { loadFullProject: (projectId: string, expectedUserId?: string) => Promise<Project | null> },
+      'loadFullProject'
+    ).mockResolvedValue(null);
+
+    const result = await service.loadProjectsFromCloud('user-batch-timeout');
+
+    expect(result).toEqual([]);
+    expect(rpc).toHaveBeenCalledTimes(1);
+    expect(fallbackSpy).toHaveBeenCalledTimes(3);
+    expect(fallbackSpy).toHaveBeenNthCalledWith(1, 'proj-rpc-timeout-1', 'user-batch-timeout');
+    expect(fallbackSpy).toHaveBeenNthCalledWith(2, 'proj-rpc-timeout-2', 'user-batch-timeout');
+    expect(fallbackSpy).toHaveBeenNthCalledWith(3, 'proj-rpc-timeout-3', 'user-batch-timeout');
+  });
+
+  it('loadProjectsFromCloud 不应等待首个项目完整结束后才启动剩余项目加载', async () => {
+    vi.useFakeTimers();
+
+    const projectsOrder = {
+      order: vi.fn().mockResolvedValue({
+        data: [
+          { id: 'proj-parallel-1' },
+          { id: 'proj-parallel-2' },
+          { id: 'proj-parallel-3' },
+        ],
+        error: null,
+      }),
+    };
+    const projectsDeleted = {
+      is: vi.fn().mockReturnValue(projectsOrder),
+    };
+    const projectsOwner = {
+      eq: vi.fn().mockReturnValue(projectsDeleted),
+    };
+    const projectsSelect = {
+      select: vi.fn().mockReturnValue(projectsOwner),
+    };
+    const from = vi.fn((table: string) => {
+      if (table === 'projects') {
+        return projectsSelect;
+      }
+      throw new Error(`unexpected table ${table}`);
+    });
+
+    const injector = Injector.create({
+      providers: [
+        { provide: ProjectDataService, useClass: ProjectDataService },
+        {
+          provide: SupabaseClientService,
+          useValue: {
+            isConfigured: true,
+            clientAsync: vi.fn(async () => ({ from })),
+          },
+        },
+        {
+          provide: AuthService,
+          useValue: {
+            currentUserId: vi.fn(() => null),
+            sessionInitialized: vi.fn(() => false),
+            authState: vi.fn(() => ({ isCheckingSession: false })),
+            runtimeState: vi.fn(() => 'idle'),
+            peekPersistedSessionIdentity: vi.fn(() => null),
+          },
+        },
+        {
+          provide: LoggerService,
+          useValue: {
+            category: () => ({
+              debug: vi.fn(),
+              info: vi.fn(),
+              warn: vi.fn(),
+              error: vi.fn(),
+            }),
+          },
+        },
+        {
+          provide: RequestThrottleService,
+          useValue: {
+            execute: vi.fn(async (_key: string, work: () => Promise<unknown>) => work()),
+          },
+        },
+        {
+          provide: SyncStateService,
+          useValue: {
+            setSyncError: vi.fn(),
+            setLoadingRemote: vi.fn(),
+            isLoadingRemote: vi.fn(() => false),
+          },
+        },
+        {
+          provide: TombstoneService,
+          useValue: {
+            getTombstonesWithCache: vi.fn().mockResolvedValue({ data: [], error: null }),
+            getLocalTombstones: vi.fn().mockReturnValue(new Set()),
+          },
+        },
+        {
+          provide: SentryLazyLoaderService,
+          useValue: {
+            addBreadcrumb: vi.fn(),
+            captureException: vi.fn(),
+            captureMessage: vi.fn(),
+          },
+        },
+      ],
+    });
+
+    const service = injector.get(ProjectDataService);
+    let resolveFirstLoad: (() => void) | null = null;
+    const loadSpy = vi.spyOn(
+      service as unknown as { loadFullProjectOptimized: (projectId: string, expectedUserId?: string) => Promise<Project | null> },
+      'loadFullProjectOptimized'
+    ).mockImplementation((projectId: string) => {
+      if (projectId === 'proj-parallel-1') {
+        return new Promise<Project | null>((resolve) => {
+          resolveFirstLoad = () => resolve(null);
+        });
+      }
+
+      return Promise.resolve(null);
+    });
+
+    const pendingLoad = service.loadProjectsFromCloud('user-parallel-hint');
+
+    try {
+      await vi.waitFor(() => expect(loadSpy).toHaveBeenCalledTimes(1));
+
+      await vi.advanceTimersByTimeAsync(PROJECT_BATCH_RPC_PROBE_GRACE_MS);
+      expect(loadSpy).toHaveBeenCalledTimes(3);
+      expect(loadSpy).toHaveBeenNthCalledWith(2, 'proj-parallel-2', 'user-parallel-hint');
+      expect(loadSpy).toHaveBeenNthCalledWith(3, 'proj-parallel-3', 'user-parallel-hint');
+    } finally {
+      resolveFirstLoad?.();
+      await pendingLoad;
+      vi.useRealTimers();
+    }
   });
 
   it('startup snapshot 应优先读取 IndexedDB 并返回元数据', async () => {
@@ -2188,5 +2600,99 @@ describe('ProjectDataService', () => {
       'tasks.completed_at 缺失，已降级为旧 schema 任务字段',
       expect.objectContaining({ projectId: 'project-legacy-schema' })
     );
+  });
+
+  it('pullTasksThrottled materialize tombstone 时应保留缺失 content marker', async () => {
+    const taskRow = {
+      id: 'task-missing-content-tombstone',
+      title: '缺失正文但被 tombstone 物化',
+      stage: 1,
+      parent_id: null,
+      order: 0,
+      rank: 10000,
+      status: 'active',
+      x: 0,
+      y: 0,
+      updated_at: '2026-04-28T00:00:00.000Z',
+      deleted_at: null,
+      short_id: null,
+      attachments: [],
+      tags: [],
+      priority: null,
+      due_date: null,
+      expected_minutes: null,
+      cognitive_load: null,
+      wait_minutes: null,
+      created_at: '2026-04-27T00:00:00.000Z',
+      parking_meta: null,
+    };
+    const eq = vi.fn().mockResolvedValue({ data: [taskRow], error: null });
+    const select = vi.fn(() => ({ eq }));
+    const client = {
+      from: vi.fn(() => ({ select })),
+    };
+    const throttleExecute = vi.fn(async (_key: string, operation: () => Promise<unknown>) => operation());
+
+    const injector = Injector.create({
+      providers: [
+        { provide: ProjectDataService, useClass: ProjectDataService },
+        {
+          provide: SupabaseClientService,
+          useValue: {
+            isConfigured: false,
+            clientAsync: vi.fn(),
+          },
+        },
+        {
+          provide: LoggerService,
+          useValue: {
+            category: () => ({
+              debug: vi.fn(),
+              info: vi.fn(),
+              warn: vi.fn(),
+              error: vi.fn(),
+            }),
+          },
+        },
+        {
+          provide: RequestThrottleService,
+          useValue: {
+            execute: throttleExecute,
+          },
+        },
+        {
+          provide: SyncStateService,
+          useValue: {
+            setSyncError: vi.fn(),
+          },
+        },
+        {
+          provide: TombstoneService,
+          useValue: {
+            getTombstonesWithCache: vi.fn().mockResolvedValue({ data: [], error: null }),
+            shouldMaterializeTaskDeletion: vi.fn().mockImplementation((_updatedAt: string | undefined, deletedAt?: number) => deletedAt !== undefined),
+            getLocalTombstoneTimestamp: vi.fn().mockReturnValue(Date.parse('2026-04-29T00:00:00.000Z')),
+            clearLocalTombstones: vi.fn(),
+          },
+        },
+        {
+          provide: SentryLazyLoaderService,
+          useValue: {
+            addBreadcrumb: vi.fn(),
+            captureException: vi.fn(),
+            captureMessage: vi.fn(),
+          },
+        },
+      ],
+    });
+
+    const service = injector.get(ProjectDataService);
+    const result = await (service as unknown as {
+      pullTasksThrottled: (projectId: string, client: unknown) => Promise<Task[]>;
+    }).pullTasksThrottled('project-marker-clone', client);
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.deletedAt).toBe('2026-04-29T00:00:00.000Z');
+    expect(hasTaskContentMissingFromSource(result[0])).toBe(true);
   });
 });

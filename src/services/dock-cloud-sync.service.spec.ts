@@ -44,12 +44,26 @@ const mockSnapshotPersistence = {
 };
 
 const mockFunctionsInvoke = vi.fn().mockResolvedValue({ data: null, error: null });
+
+function createActiveSessionResult() {
+  return {
+    data: {
+      session: {
+        access_token: 'token',
+        expires_at: Math.floor(Date.now() / 1000) + 3600,
+      },
+    },
+    error: null,
+  };
+}
+
 const mockSupabaseClient = {
   clientAsync: vi.fn().mockResolvedValue({
     functions: {
       invoke: mockFunctionsInvoke,
     },
   }),
+  getSession: vi.fn().mockResolvedValue(createActiveSessionResult()),
 };
 
 function setVisibilityState(state: DocumentVisibilityState): void {
@@ -126,6 +140,8 @@ describe('DockCloudSyncService', () => {
     mockLoggerCategory.warn.mockClear();
     mockLoggerCategory.debug.mockClear();
     mockSupabaseClient.clientAsync.mockClear();
+    mockSupabaseClient.getSession.mockClear();
+    mockSupabaseClient.getSession.mockResolvedValue(createActiveSessionResult());
     mockFunctionsInvoke.mockClear();
     mockFunctionsInvoke.mockResolvedValue({ data: null, error: null });
 
@@ -353,6 +369,7 @@ describe('DockCloudSyncService', () => {
 
       await Promise.resolve();
       await Promise.resolve();
+      await Promise.resolve();
 
       expect(mockFunctionsInvoke).toHaveBeenCalledWith(
         'widget-notify',
@@ -457,6 +474,112 @@ describe('DockCloudSyncService', () => {
       expect(mockActionQueue.enqueueForOwner).toHaveBeenCalledTimes(2);
     });
 
+    it('无有效会话时专注翻转不应直推 widget', async () => {
+      const baseSession = makeSnapshot().session;
+      service.init(makeCallbacks());
+
+      service.scheduleCloudPush('user-1', makeSnapshot({ focusMode: false }));
+      vi.advanceTimersByTime(3000);
+      mockSupabaseClient.clientAsync.mockClear();
+      mockSupabaseClient.getSession.mockClear();
+      mockFunctionsInvoke.mockClear();
+      mockSupabaseClient.getSession.mockResolvedValue({ data: { session: null }, error: null });
+
+      service.scheduleCloudPush('user-1', makeSnapshot({
+        focusMode: true,
+        session: {
+          ...baseSession,
+          focusSessionId: 'focus-session-no-session',
+          focusSessionStartedAt: Date.now(),
+          mainTaskId: 'task-main',
+        },
+      }));
+
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(mockSupabaseClient.getSession).toHaveBeenCalledTimes(1);
+      expect(mockSupabaseClient.clientAsync).not.toHaveBeenCalled();
+      expect(mockFunctionsInvoke).not.toHaveBeenCalled();
+
+      vi.advanceTimersByTime(0);
+      expect(mockActionQueue.enqueueForOwner).toHaveBeenCalledTimes(2);
+    });
+
+    it('过期但可刷新的会话不应阻断专注直推 widget', async () => {
+      const baseSession = makeSnapshot().session;
+      service.init(makeCallbacks());
+
+      service.scheduleCloudPush('user-1', makeSnapshot({ focusMode: false }));
+      vi.advanceTimersByTime(3000);
+      mockSupabaseClient.clientAsync.mockClear();
+      mockSupabaseClient.getSession.mockClear();
+      mockFunctionsInvoke.mockClear();
+      mockSupabaseClient.getSession.mockResolvedValue({
+        data: {
+          session: {
+            access_token: 'expired-token',
+            expires_at: Math.floor(Date.now() / 1000) - 60,
+          },
+        },
+        error: null,
+      });
+
+      service.scheduleCloudPush('user-1', makeSnapshot({
+        focusMode: true,
+        session: {
+          ...baseSession,
+          focusSessionId: 'focus-session-expired-ok',
+          focusSessionStartedAt: Date.now(),
+          mainTaskId: 'task-main',
+        },
+      }));
+
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(mockFunctionsInvoke).toHaveBeenCalledWith(
+        'widget-notify',
+        expect.objectContaining({
+          body: expect.objectContaining({
+            directNotify: true,
+            focusActive: true,
+            focusSessionId: 'focus-session-expired-ok',
+          }),
+        }),
+      );
+    });
+
+    it('读取会话失败时专注翻转应静默跳过直推 widget', async () => {
+      const baseSession = makeSnapshot().session;
+      service.init(makeCallbacks());
+
+      service.scheduleCloudPush('user-1', makeSnapshot({ focusMode: false }));
+      vi.advanceTimersByTime(3000);
+      mockSupabaseClient.clientAsync.mockClear();
+      mockSupabaseClient.getSession.mockClear();
+      mockFunctionsInvoke.mockClear();
+      mockSupabaseClient.getSession.mockRejectedValue(new Error('session probe failed'));
+
+      service.scheduleCloudPush('user-1', makeSnapshot({
+        focusMode: true,
+        session: {
+          ...baseSession,
+          focusSessionId: 'focus-session-getsession-error',
+          focusSessionStartedAt: Date.now(),
+          mainTaskId: 'task-main',
+        },
+      }));
+
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(mockSupabaseClient.clientAsync).not.toHaveBeenCalled();
+      expect(mockFunctionsInvoke).not.toHaveBeenCalled();
+    });
+
     it('恢复出已开启专注态后，首次关闭专注也应立即写云并直推 widget', async () => {
       const baseSession = makeSnapshot().session;
       service.init(makeCallbacks());
@@ -480,6 +603,7 @@ describe('DockCloudSyncService', () => {
         },
       }));
 
+      await Promise.resolve();
       await Promise.resolve();
       await Promise.resolve();
 

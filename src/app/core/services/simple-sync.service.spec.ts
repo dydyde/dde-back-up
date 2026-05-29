@@ -859,6 +859,18 @@ describe('SimpleSyncService', () => {
 
       expect(mockProjectData.saveOfflineSnapshotAndWait).toHaveBeenCalledWith(projects, 'target-user');
     });
+
+    it('loadFullProjectOptimized 应透传 expectedUserId 到 ProjectDataService', async () => {
+      await service.loadFullProjectOptimized('project-owner-pass-through-optimized', 'target-user');
+
+      expect(mockProjectData.loadFullProjectOptimized).toHaveBeenCalledWith('project-owner-pass-through-optimized', 'target-user');
+    });
+
+    it('loadSingleProject 应透传 userId 到 ProjectDataService', async () => {
+      await service.loadSingleProject('project-owner-pass-through-single', 'target-user');
+
+      expect(mockProjectData.loadFullProject).toHaveBeenCalledWith('project-owner-pass-through-single', 'target-user');
+    });
   });
 
   describe('Delta Sync cursor candidates', () => {

@@ -23,7 +23,7 @@ import { Task, Project, Connection } from '../../../../models';
 import { TaskRow, ProjectRow, ConnectionRow } from '../../../../models/supabase-types';
 import { supabaseErrorToError, classifySupabaseClientFailure } from '../../../../utils/supabase-error';
 import { openIndexedDBAdaptive } from '../../../../utils/indexeddb-open';
-import { REQUEST_THROTTLE_CONFIG, FIELD_SELECT_CONFIG, CACHE_CONFIG } from '../../../../config/sync.config';
+import { REQUEST_THROTTLE_CONFIG, FIELD_SELECT_CONFIG, CACHE_CONFIG, CIRCUIT_BREAKER_CONFIG } from '../../../../config/sync.config';
 import { AUTH_CONFIG } from '../../../../config/auth.config';
 import { FOCUS_CONFIG } from '../../../../config/focus.config';
 import { TIMEOUT_CONFIG } from '../../../../config/timeout.config';
@@ -40,7 +40,7 @@ import {
   getCompatibleTaskSelectFields,
   markTaskCompletedAtColumnUnavailable,
 } from '../../../../utils/task-schema-compat';
-import { markTaskContentMissingFromSource } from '../../../../utils/task-content-guard';
+import { hasTaskContentMissingFromSource, markTaskContentMissingFromSource } from '../../../../utils/task-content-guard';
 
 interface ParkedTaskCacheRecord {
   taskId: string;
@@ -103,6 +103,8 @@ interface OfflineSnapshotLoadOptions {
   ownerUserId?: string | null;
 }
 
+export const PROJECT_BATCH_RPC_PROBE_GRACE_MS = 120;
+
 @Injectable({
   providedIn: 'root'
 })
@@ -139,6 +141,8 @@ export class ProjectDataService {
   private hasLoggedSupabaseMissingConfig = false;
   /** 会话级熔断：当批量 RPC 不存在时，后续直接走顺序加载 */
   private batchRpcUnavailable = false;
+  /** 瞬时故障短熔断：504/timeout 时短时间跳过批量 RPC，避免控制台持续刷屏。 */
+  private batchRpcTransientCooldownUntil = 0;
 
   private isSupabaseOfflineMode(): boolean {
     const maybeSignal = (this.supabase as unknown as { isOfflineMode?: (() => boolean) | boolean }).isOfflineMode;
@@ -190,6 +194,28 @@ export class ProjectDataService {
       normalized.includes('could not find the function') ||
       normalized.includes('schema cache')
     );
+  }
+
+  private getBatchRpcTransientCooldownRemainingMs(): number {
+    return Math.max(0, this.batchRpcTransientCooldownUntil - Date.now());
+  }
+
+  private isBatchRpcTransientCircuitOpen(): boolean {
+    return this.getBatchRpcTransientCooldownRemainingMs() > 0;
+  }
+
+  private tripBatchRpcTransientCircuit(projectId: string, error: Error): void {
+    const cooldownMs = CIRCUIT_BREAKER_CONFIG.RECOVERY_TIME;
+    const alreadyOpen = this.isBatchRpcTransientCircuitOpen();
+
+    this.batchRpcTransientCooldownUntil = Date.now() + cooldownMs;
+
+    this.logger.warn('批量 RPC 瞬时失败，短时熔断并回退到顺序加载', {
+      projectId,
+      cooldownMs,
+      reason: error.message,
+      alreadyOpen,
+    });
   }
 
   private resolveRemoteSessionUserId(): string | null {
@@ -304,13 +330,21 @@ export class ProjectDataService {
    * - 将 4+ 个 API 请求合并为 1 个 RPC 调用
    * - 减少 ~70% 的网络往返时间
    */
-  async loadFullProjectOptimized(projectId: string): Promise<Project | null> {
-    const client = await this.getSupabaseClient();
+  async loadFullProjectOptimized(projectId: string, expectedUserId?: string): Promise<Project | null> {
+    const client = await this.getSupabaseClient(expectedUserId);
     if (!client) return null;
 
     if (this.batchRpcUnavailable) {
       this.logger.debug('批量 RPC 已熔断，直接走顺序加载', { projectId });
-      return this.loadFullProject(projectId);
+      return this.loadFullProject(projectId, expectedUserId);
+    }
+
+    if (this.isBatchRpcTransientCircuitOpen()) {
+      this.logger.debug('批量 RPC 短时熔断中，直接走顺序加载', {
+        projectId,
+        remainingMs: this.getBatchRpcTransientCooldownRemainingMs(),
+      });
+      return this.loadFullProject(projectId, expectedUserId);
     }
 
     try {
@@ -359,7 +393,7 @@ export class ProjectDataService {
               errorMessage: error.message ?? '',
             }
           });
-          return this.loadFullProject(projectId);
+          return this.loadFullProject(projectId, expectedUserId);
         }
 
         // 【性能优化 2026-02-14】区分 Access Denied 与其他错误
@@ -394,10 +428,16 @@ export class ProjectDataService {
           this.logger.debug('浏览器网络挂起，跳过 RPC 回退', { projectId });
           return null;
         }
+        if (this.isTransientMetadataLoadFailure(rpcErrEnhanced)) {
+          this.tripBatchRpcTransientCircuit(projectId, rpcErrEnhanced);
+          return this.loadFullProject(projectId, expectedUserId);
+        }
         // 其他错误（网络、超时等）仍走 fallback 顺序加载
         this.logger.warn('RPC 调用失败，回退到顺序加载', { error: error.message });
-        return this.loadFullProject(projectId);
+        return this.loadFullProject(projectId, expectedUserId);
       }
+
+      this.batchRpcTransientCooldownUntil = 0;
       
       if (!data?.project) {
         this.logger.warn('RPC 返回空数据', { projectId });
@@ -433,12 +473,16 @@ export class ProjectDataService {
         this.logger.debug('浏览器网络挂起，跳过批量加载', { projectId });
         return null;
       }
+      if (this.isTransientMetadataLoadFailure(err)) {
+        this.tripBatchRpcTransientCircuit(projectId, err);
+        return this.loadFullProject(projectId, expectedUserId);
+      }
       this.logger.error('批量加载项目失败', err);
       this.sentryLazyLoader.captureException(err, {
         tags: { operation: 'loadFullProjectOptimized' },
         extra: { projectId }
       });
-      return this.loadFullProject(projectId);
+      return this.loadFullProject(projectId, expectedUserId);
     }
   }
   
@@ -446,8 +490,8 @@ export class ProjectDataService {
    * 加载完整项目（包含任务和连接）
    * 使用请求限流避免连接池耗尽
    */
-  async loadFullProject(projectId: string): Promise<Project | null> {
-    const client = await this.getSupabaseClient();
+  async loadFullProject(projectId: string, expectedUserId?: string): Promise<Project | null> {
+    const client = await this.getSupabaseClient(expectedUserId);
     if (!client) return null;
 
     if (isBrowserNetworkSuspendedWindow()) {
@@ -653,6 +697,40 @@ export class ProjectDataService {
     );
   }
 
+  private async loadProjectForCloudBatch(
+    projectId: string,
+    userId: string,
+  ): Promise<PromiseSettledResult<Project | null>> {
+    try {
+      return {
+        status: 'fulfilled',
+        value: await this.loadFullProjectOptimized(projectId, userId),
+      };
+    } catch (reason) {
+      return {
+        status: 'rejected',
+        reason,
+      };
+    }
+  }
+
+  private async waitForBatchProbeWindow(firstProjectLoad: Promise<unknown>): Promise<void> {
+    let timerId: ReturnType<typeof setTimeout> | undefined;
+
+    try {
+      await Promise.race([
+        firstProjectLoad.then(() => undefined, () => undefined),
+        new Promise<void>((resolve) => {
+          timerId = setTimeout(resolve, PROJECT_BATCH_RPC_PROBE_GRACE_MS);
+        }),
+      ]);
+    } finally {
+      if (timerId !== undefined) {
+        clearTimeout(timerId);
+      }
+    }
+  }
+
   /**
    * 加载项目列表
    */
@@ -669,7 +747,7 @@ export class ProjectDataService {
       return [];
     }
 
-    const client = await this.getSupabaseClient();
+    const client = await this.getSupabaseClient(userId);
     if (!client) return [];
     
     this.syncState.setLoadingRemote(true);
@@ -699,12 +777,27 @@ export class ProjectDataService {
       
       // 2. 批量加载完整项目数据
       this.logger.debug('开始批量加载项目', { count: projectList.length });
-      
-      const loadPromises = projectList.map(row => 
-        this.loadFullProjectOptimized(row.id)
-      );
-      
-      const results = await Promise.allSettled(loadPromises);
+      const [firstProject, ...remainingProjects] = projectList;
+
+      const firstProjectResult = firstProject
+        ? this.loadProjectForCloudBatch(firstProject.id, userId)
+        : null;
+
+      // 给首个项目一个很短的探测窗口：若它快速触发 504/timeout 短熔断，后续同批项目
+      // 会直接观察到打开的熔断状态；若健康路径尚未返回，也不要整批串行等待首项目完成。
+      if (firstProjectResult && remainingProjects.length > 0) {
+        await this.waitForBatchProbeWindow(firstProjectResult);
+      }
+
+      const remainingResultsPromise = remainingProjects.length > 0
+        ? Promise.all(remainingProjects.map((row) => this.loadProjectForCloudBatch(row.id, userId)))
+        : Promise.resolve([] as Array<PromiseSettledResult<Project | null>>);
+
+      const results: Array<PromiseSettledResult<Project | null>> = [];
+      if (firstProjectResult) {
+        results.push(await firstProjectResult);
+      }
+      results.push(...(await remainingResultsPromise));
       
       const projects: Project[] = [];
       let failedCount = 0;
@@ -773,8 +866,8 @@ export class ProjectDataService {
   /**
    * 加载单个项目
    */
-  async loadSingleProject(projectId: string): Promise<Project | null> {
-    return this.loadFullProjectOptimized(projectId);
+  async loadSingleProject(projectId: string, expectedUserId?: string): Promise<Project | null> {
+    return this.loadFullProjectOptimized(projectId, expectedUserId);
   }
 
   /**
@@ -1111,12 +1204,18 @@ export class ProjectDataService {
     return allTasks.map(task => {
       const remoteDeletedAt = remoteTombstoneTimestamps.get(task.id);
       if (this.tombstoneService.shouldMaterializeTaskDeletion(task.updatedAt, remoteDeletedAt)) {
-        return { ...task, deletedAt: task.deletedAt || new Date(remoteDeletedAt!).toISOString() };
+        const materializedTask = { ...task, deletedAt: task.deletedAt || new Date(remoteDeletedAt!).toISOString() };
+        return hasTaskContentMissingFromSource(task)
+          ? markTaskContentMissingFromSource(materializedTask)
+          : materializedTask;
       }
 
       const localDeletedAt = this.tombstoneService.getLocalTombstoneTimestamp(projectId, task.id);
       if (this.tombstoneService.shouldMaterializeTaskDeletion(task.updatedAt, localDeletedAt)) {
-        return { ...task, deletedAt: task.deletedAt || new Date(localDeletedAt!).toISOString() };
+        const materializedTask = { ...task, deletedAt: task.deletedAt || new Date(localDeletedAt!).toISOString() };
+        return hasTaskContentMissingFromSource(task)
+          ? markTaskContentMissingFromSource(materializedTask)
+          : materializedTask;
       }
 
       if (localDeletedAt !== undefined) {

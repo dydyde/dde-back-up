@@ -805,6 +805,29 @@ export class BlackBoxSyncService {
     this.schedulePendingPushFlush();
   }
 
+  private async hasUsableDirectWidgetNotifySession(context: Record<string, unknown>): Promise<boolean> {
+    try {
+      const sessionResult = await this.supabase.getSession();
+      const session = sessionResult.data.session;
+
+      if (!session?.access_token || sessionResult.error) {
+        this.logger.debug('direct black-box widget-notify skipped without active session', {
+          ...context,
+          reason: sessionResult.error?.name ?? 'session-missing',
+        });
+        return false;
+      }
+
+      return true;
+    } catch (error) {
+      this.logger.debug('direct black-box widget-notify skipped while reading session', {
+        ...context,
+        reason: error instanceof Error ? error.message : String(error),
+      });
+      return false;
+    }
+  }
+
   private async sendDirectWidgetBlackBoxNotify(
     entry: BlackBoxEntry,
     action?: BlackBoxWidgetNotifyAction,
@@ -822,6 +845,10 @@ export class BlackBoxSyncService {
         action,
         resumeDelayMs: getRemainingBrowserNetworkResumeDelayMs(),
       });
+      return;
+    }
+
+    if (!(await this.hasUsableDirectWidgetNotifySession({ entryId: entry.id, action }))) {
       return;
     }
 
