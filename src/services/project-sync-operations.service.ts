@@ -57,7 +57,9 @@ export class ProjectSyncOperationsService {
       return { success: false, message: '无活动项目或未登录' };
     }
     
-    const localProject = this.projectState.activeProject();
+    const activeProject = this.projectState.activeProject();
+    const localProject = this.projectState.getProjectWithCurrentData(projectId)
+      ?? (activeProject?.id === projectId ? activeProject : null);
     if (!localProject) {
       return { success: false, message: '本地项目不存在' };
     }

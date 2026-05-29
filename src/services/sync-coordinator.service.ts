@@ -754,8 +754,9 @@ export class SyncCoordinatorService {
     const handedOffProjectIds = new Set<string>();
 
     for (const projectId of Array.from(projectIds)) {
-      const project = this.projectState.getProject(projectId)
-        ?? (this.projectState.activeProject()?.id === projectId ? this.projectState.activeProject() : null);
+      const activeProject = this.projectState.activeProject();
+      const project = this.projectState.getProjectWithCurrentData(projectId)
+        ?? (activeProject?.id === projectId ? activeProject : null);
       if (!project) {
         this.logger.error('切换账号前未找到待转交项目，拒绝继续 owner handoff', {
           projectId,

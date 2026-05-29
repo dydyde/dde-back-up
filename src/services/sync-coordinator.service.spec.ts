@@ -164,6 +164,7 @@ const mockProjectStateService = {
   setProjects: vi.fn(),
   setActiveProjectId: vi.fn(),
   getProject: vi.fn((id: string) => mockProjectStateService.projects().find((p: Project) => p.id === id)),
+  getProjectWithCurrentData: vi.fn((id: string) => mockProjectStateService.getProjectsWithCurrentData().find((p: Project) => p.id === id)),
   getProjectsWithCurrentData: vi.fn(() => mockProjectStateService.projects()),
 };
 
@@ -174,6 +175,9 @@ const resolveMockActiveProjectId = (): string | null => {
 const bindProjectStateMockImplementations = () => {
   mockProjectStateService.getProject.mockImplementation(
     (id: string) => mockProjectStateService.projects().find((project: Project) => project.id === id)
+  );
+  mockProjectStateService.getProjectWithCurrentData.mockImplementation(
+    (id: string) => mockProjectStateService.getProjectsWithCurrentData().find((project: Project) => project.id === id)
   );
   mockProjectStateService.setProjects.mockImplementation((projects: Project[]) => {
     mockProjectStateService.projects.set(projects);
@@ -1179,6 +1183,82 @@ describe('持久化状态管理', () => {
       );
     });
 
+    it('preparePendingPersistForOwnerChange 应使用当前 store 快照转交非活动 dirty project', async () => {
+      const staleTask = createTestTask({
+        id: 'task-inactive-stale',
+        title: 'Stale Task',
+        stage: null,
+        updatedAt: '2026-05-14T09:20:00.000Z',
+      });
+      const staleConnection = {
+        id: 'connection-inactive-stale',
+        source: 'task-inactive-stale',
+        target: 'task-inactive-target',
+        title: 'Stale Connection',
+        updatedAt: '2026-05-14T09:20:00.000Z',
+      };
+      const currentTask = {
+        ...staleTask,
+        title: 'Current Task',
+        stage: 3,
+        updatedAt: '2026-05-14T09:22:00.000Z',
+      };
+      const currentConnection = {
+        ...staleConnection,
+        title: 'Current Connection',
+        updatedAt: '2026-05-14T09:22:00.000Z',
+      };
+      const staleProject = createTestProject({
+        id: 'proj-inactive-current-data',
+        pendingSync: true,
+        tasks: [staleTask],
+        connections: [staleConnection],
+      });
+      const currentProject = {
+        ...staleProject,
+        tasks: [currentTask],
+        connections: [currentConnection],
+      };
+
+      mockProjectStateService.activeProject.set(null);
+      mockProjectStateService.projects.set([staleProject]);
+      mockProjectStateService.getProjectsWithCurrentData.mockImplementation(() => [currentProject]);
+      mockChangeTrackerService.getChangedProjectIds.mockReturnValueOnce(['proj-inactive-current-data']);
+      mockChangeTrackerService.getChangedProjectIds.mockReturnValueOnce(['proj-inactive-current-data']);
+      mockChangeTrackerService.getProjectChanges.mockReturnValueOnce({
+        tasksToCreate: [],
+        tasksToUpdate: [],
+        taskIdsToDelete: [],
+        connectionsToCreate: [],
+        connectionsToUpdate: [],
+        connectionsToDelete: [],
+        hasChanges: true,
+        totalChanges: 1,
+      });
+
+      const prepared = await service.preparePendingPersistForOwnerChange(
+        'user-123',
+        'owner-switch:user-123->user-456',
+      );
+
+      expect(prepared).toBe(true);
+      expect(mockSyncService.saveProjectSmart).not.toHaveBeenCalled();
+      expect(mockActionQueueService.enqueueForOwner).toHaveBeenCalledWith(
+        'user-123',
+        expect.objectContaining({
+          entityId: 'proj-inactive-current-data',
+          payload: expect.objectContaining({
+            project: expect.objectContaining({
+              tasks: [currentTask],
+              connections: [currentConnection],
+            }),
+          }),
+        }),
+      );
+
+      mockProjectStateService.getProjectsWithCurrentData.mockImplementation(() => mockProjectStateService.projects());
+    });
+
     it('收到 data-synced 广播应走本地回填并受 cooldown 限制', () => {
       const callback = mockTabSyncService.setOnDataSyncedCallback.mock.calls[0]?.[0] as
         | ((projectId: string, updatedAt: string) => void)
@@ -2097,6 +2177,139 @@ describe('持久化状态管理', () => {
       
       expect(mockSyncService.destroy).toHaveBeenCalled();
     });
+  });
+});
+
+describe('ProjectSyncOperationsService', () => {
+  const mockProjectSyncOpsSyncService = {
+    loadSingleProject: vi.fn(),
+    saveProjectSmart: vi.fn(),
+  };
+  const mockProjectSyncOpsConflictService = {
+    smartMerge: vi.fn(),
+  };
+  const mockProjectSyncOpsConflictStorage = {
+    saveConflict: vi.fn(),
+  };
+  const mockProjectSyncOpsProjectState = {
+    activeProjectId: vi.fn(),
+    activeProject: vi.fn(),
+    getProjectWithCurrentData: vi.fn(),
+    updateProjects: vi.fn(),
+  };
+  const mockProjectSyncOpsAuthService = {
+    currentUserId: vi.fn(),
+  };
+  const mockProjectSyncOpsChangeTracker = {
+    clearProjectFieldLocks: vi.fn(),
+  };
+  const mockProjectSyncOpsLayoutService = {
+    rebalance: vi.fn((project: Project) => project),
+  };
+  const mockProjectSyncOpsToastService = {
+    warning: vi.fn(),
+    error: vi.fn(),
+    info: vi.fn(),
+    success: vi.fn(),
+  };
+  const mockProjectSyncOpsDeltaCoordinator = {
+    processPendingDeltaSync: vi.fn(),
+  };
+  const mockProjectSyncOpsLoggerCategory = {
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+  };
+  const mockProjectSyncOpsLoggerService = {
+    category: vi.fn(() => mockProjectSyncOpsLoggerCategory),
+  };
+
+  let projectSyncOpsService: ProjectSyncOperationsService;
+  let projectSyncOpsInjector: Injector;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+
+    mockProjectSyncOpsAuthService.currentUserId.mockReturnValue('user-123');
+    mockProjectSyncOpsSyncService.loadSingleProject.mockResolvedValue(null);
+    mockProjectSyncOpsSyncService.saveProjectSmart.mockResolvedValue({ success: true });
+
+    projectSyncOpsInjector = Injector.create({
+      providers: [
+        { provide: ProjectSyncOperationsService, useClass: ProjectSyncOperationsService },
+        { provide: SimpleSyncService, useValue: mockProjectSyncOpsSyncService },
+        { provide: ConflictResolutionService, useValue: mockProjectSyncOpsConflictService },
+        { provide: ConflictStorageService, useValue: mockProjectSyncOpsConflictStorage },
+        { provide: ProjectStateService, useValue: mockProjectSyncOpsProjectState },
+        { provide: AuthService, useValue: mockProjectSyncOpsAuthService },
+        { provide: ChangeTrackerService, useValue: mockProjectSyncOpsChangeTracker },
+        { provide: LayoutService, useValue: mockProjectSyncOpsLayoutService },
+        { provide: ToastService, useValue: mockProjectSyncOpsToastService },
+        { provide: DeltaSyncCoordinatorService, useValue: mockProjectSyncOpsDeltaCoordinator },
+        { provide: LoggerService, useValue: mockProjectSyncOpsLoggerService },
+      ],
+    });
+
+    projectSyncOpsService = runInInjectionContext(
+      projectSyncOpsInjector,
+      () => projectSyncOpsInjector.get(ProjectSyncOperationsService),
+    );
+  });
+
+  it('resyncActiveProject 应使用当前 store 快照而不是陈旧 activeProject', async () => {
+    const staleTask = createTestTask({
+      id: 'task-resync-stale',
+      title: 'Stale Task',
+      stage: null,
+      updatedAt: '2026-05-14T09:20:00.000Z',
+    });
+    const staleConnection = {
+      id: 'connection-resync-stale',
+      source: 'task-resync-stale',
+      target: 'task-resync-target',
+      title: 'Stale Connection',
+      updatedAt: '2026-05-14T09:20:00.000Z',
+    };
+    const currentTask = {
+      ...staleTask,
+      title: 'Current Task',
+      stage: 4,
+      updatedAt: '2026-05-14T09:22:00.000Z',
+    };
+    const currentConnection = {
+      ...staleConnection,
+      title: 'Current Connection',
+      updatedAt: '2026-05-14T09:22:00.000Z',
+    };
+    const staleProject = createTestProject({
+      id: 'proj-resync-current-data',
+      version: 3,
+      tasks: [staleTask],
+      connections: [staleConnection],
+    });
+    const currentProject = {
+      ...staleProject,
+      tasks: [currentTask],
+      connections: [currentConnection],
+    };
+    const remoteProject = createTestProject({
+      id: 'proj-resync-current-data',
+      version: 2,
+      tasks: [currentTask],
+      connections: [currentConnection],
+    });
+
+    mockProjectSyncOpsProjectState.activeProjectId.mockReturnValue('proj-resync-current-data');
+    mockProjectSyncOpsProjectState.activeProject.mockReturnValue(staleProject);
+    mockProjectSyncOpsProjectState.getProjectWithCurrentData.mockReturnValue(currentProject);
+    mockProjectSyncOpsSyncService.loadSingleProject.mockResolvedValueOnce(remoteProject);
+    mockProjectSyncOpsSyncService.saveProjectSmart.mockResolvedValueOnce({ success: true });
+
+    const result = await projectSyncOpsService.resyncActiveProject(async () => new Set<string>());
+
+    expect(result).toEqual({ success: true, message: '本地更改已推送到云端' });
+    expect(mockProjectSyncOpsSyncService.saveProjectSmart).toHaveBeenCalledWith(currentProject, 'user-123');
   });
 });
 

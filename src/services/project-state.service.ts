@@ -342,6 +342,25 @@ export class ProjectStateService {
   }
 
   /**
+   * 获取指定项目，并将 tasks/connections 从 Store 实时化
+   *
+   * 写入云端或 durable 队列时禁止直接使用 ProjectStore 壳对象，
+   * 否则 metadata-only / stale shell 里的旧任务结构会被重新推回云端。
+   */
+  getProjectWithCurrentData(projectId: string): Project | undefined {
+    const project = this.projectStore.getProject(projectId);
+    if (!project) {
+      return undefined;
+    }
+
+    return {
+      ...project,
+      tasks: this.taskStore.getTasksByProject(projectId),
+      connections: this.connectionStore.getConnectionsByProject(projectId),
+    };
+  }
+
+  /**
    * 获取所有项目，并将 tasks/connections 从 Store 实时化
    *
    * ProjectStore 中 Project.tasks 可能因 setProjectsMetadataOnly 等路径变陈旧，
