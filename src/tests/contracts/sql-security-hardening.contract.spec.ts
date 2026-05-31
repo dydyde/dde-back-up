@@ -452,4 +452,174 @@ describe('SQL 安全加固契约', () => {
     expect(sql).toContain("policyname = 'Users can view own attachments'");
     expect(sql).toContain('DROP POLICY IF EXISTS "Project members can view attachments" ON storage.objects;');
   });
+
+  it('数据库灾备加固迁移必须提供 service-only 冻结开关与自审计', () => {
+    const sql = readSql('supabase/migrations/20260531120000_database_hardening_dr_controls.sql');
+    const normalized = sql.replace(/\s+/g, ' ');
+
+    expect(sql).toContain('CREATE TABLE IF NOT EXISTS public.data_safety_flags');
+    expect(sql).toContain("value IN ('normal', 'audit_only', 'read_only', 'quarantine')");
+    expect(sql).toContain('CREATE TABLE IF NOT EXISTS public.data_safety_flag_audit');
+    expect(sql).toContain('ALTER TABLE public.data_safety_flags FORCE ROW LEVEL SECURITY;');
+    expect(sql).toContain('REVOKE ALL ON public.data_safety_flags FROM PUBLIC, anon, authenticated;');
+    expect(sql).toContain('CREATE POLICY data_safety_flags_service_all');
+    expect(normalized).toContain('CREATE OR REPLACE FUNCTION public.set_data_safety_flag(p_key TEXT, p_value TEXT) RETURNS void LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp');
+    expect(sql).toContain('REVOKE ALL ON FUNCTION public.set_data_safety_flag(TEXT, TEXT) FROM PUBLIC, anon, authenticated;');
+    expect(sql).toContain('GRANT EXECUTE ON FUNCTION public.set_data_safety_flag(TEXT, TEXT) TO service_role;');
+    expect(normalized).toContain('CREATE OR REPLACE FUNCTION public.enforce_data_safety_freeze() RETURNS TRIGGER LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp');
+    expect(sql).toContain("COALESCE(v_sync_mode, 'normal') IN ('read_only', 'quarantine') AND NOT v_bypass");
+    expect(sql).toContain('CREATE TRIGGER trg_data_safety_freeze_tasks');
+    expect(sql).toContain('CREATE TRIGGER trg_data_safety_freeze_connections');
+    expect(sql).toContain('CREATE TRIGGER trg_data_safety_freeze_projects');
+    expect(sql).toContain('CREATE TRIGGER trg_data_safety_freeze_black_box_entries');
+  });
+
+  it('数据库灾备加固迁移必须提供隔离表的幂等、防重、保留期与权限收敛', () => {
+    const sql = readSql('supabase/migrations/20260531120000_database_hardening_dr_controls.sql');
+    const normalized = sql.replace(/\s+/g, ' ');
+
+    expect(sql).toContain('CREATE TABLE IF NOT EXISTS public.sync_write_quarantine');
+    expect(sql).toContain('CONSTRAINT sync_write_quarantine_operation_uniq UNIQUE (operation_id)');
+    expect(sql).toContain('CONSTRAINT sync_write_quarantine_digest_uniq UNIQUE (payload_digest)');
+    expect(sql).toContain("expires_at      TIMESTAMPTZ NOT NULL DEFAULT (now() + INTERVAL '30 days')");
+    expect(sql).toContain("review_decision TEXT CHECK (review_decision IS NULL OR review_decision IN ('replay', 'discard', 'escalate'))");
+    expect(sql).toContain('ALTER TABLE public.sync_write_quarantine FORCE ROW LEVEL SECURITY;');
+    expect(sql).toContain('REVOKE ALL ON public.sync_write_quarantine FROM PUBLIC, anon, authenticated;');
+    expect(sql).toContain('CREATE POLICY sync_write_quarantine_service_all');
+    expect(sql).toContain('CREATE OR REPLACE FUNCTION public.sync_canonical_payload_digest(p_payload JSONB)');
+    expect(sql).toContain("COALESCE(p_payload, '{}'::JSONB) - 'operation_id' - 'operationId'");
+    expect(normalized).toContain('CREATE OR REPLACE FUNCTION public.record_sync_write_quarantine( p_operation_id UUID, p_user_id UUID, p_entity_type TEXT, p_entity_id UUID, p_client_git_sha TEXT, p_client_origin TEXT, p_reason TEXT, p_payload JSONB ) RETURNS BIGINT LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, extensions, pg_temp');
+    expect(sql).toContain('v_digest TEXT := public.sync_canonical_payload_digest(p_payload);');
+  });
+
+  it('数据库灾备加固迁移必须强化 task_change_audit 来源归因与 suspicious 标记', () => {
+    const sql = readSql('supabase/migrations/20260531120000_database_hardening_dr_controls.sql');
+    const normalized = sql.replace(/\s+/g, ' ');
+
+    expect(sql).toContain('ADD COLUMN IF NOT EXISTS operation_id UUID');
+    expect(sql).toContain('ADD COLUMN IF NOT EXISTS client_git_sha TEXT');
+    expect(sql).toContain('ADD COLUMN IF NOT EXISTS deployment_epoch BIGINT');
+    expect(sql).toContain('ADD COLUMN IF NOT EXISTS origin_unverified BOOLEAN NOT NULL DEFAULT false');
+    expect(sql).toContain('ADD COLUMN IF NOT EXISTS suspicious BOOLEAN NOT NULL DEFAULT false');
+    expect(sql).toContain('CREATE INDEX IF NOT EXISTS task_change_audit_suspicious_idx');
+    expect(normalized).toContain('CREATE OR REPLACE FUNCTION public.capture_task_change_audit() RETURNS TRIGGER LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp');
+    expect(sql).toContain("current_setting('app.operation_id', true)");
+    expect(sql).toContain('v_origin_unverified BOOLEAN := true;');
+    expect(sql).toContain("v_origin_unverified := COALESCE(NULLIF(current_setting('app.origin_unverified', true), '')::BOOLEAN, true);");
+    expect(normalized).toContain('IF v_operation_id IS NULL OR v_client_git_sha IS NULL OR v_client_origin IS NULL OR v_payload_digest IS NULL THEN v_origin_unverified := true; END IF;');
+    expect(sql).toContain("v_suspicious_reason := 'structure_degrade_content_equals_title';");
+    expect(sql).toContain('ALTER FUNCTION public.capture_task_change_audit() OWNER TO postgres;');
+    expect(sql).toContain('capture_task_change_audit owner must BYPASSRLS before task_change_audit FORCE RLS');
+    expect(sql).toContain('REVOKE ALL ON FUNCTION public.capture_task_change_audit() FROM PUBLIC, anon, authenticated;');
+    expect(sql).toContain('CREATE TABLE IF NOT EXISTS public.task_change_audit_archive');
+    expect(sql).toContain('CREATE OR REPLACE FUNCTION public.archive_old_task_change_audit(');
+  });
+
+  it('数据库灾备加固迁移必须自动启用新 public 表 RLS 且固定 search_path', () => {
+    const sql = readSql('supabase/migrations/20260531120000_database_hardening_dr_controls.sql');
+    const normalized = sql.replace(/\s+/g, ' ');
+
+    expect(normalized).toContain('CREATE OR REPLACE FUNCTION public.rls_auto_enable() RETURNS EVENT_TRIGGER LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp');
+    expect(sql).toContain("EXECUTE 'CREATE EVENT TRIGGER ensure_rls ON ddl_command_end");
+    expect(sql).toContain("WHEN TAG IN (''CREATE TABLE'', ''CREATE TABLE AS'', ''SELECT INTO'')");
+    expect(sql).toContain('EXCEPTION WHEN insufficient_privilege THEN');
+    expect(sql).toContain('REVOKE ALL ON FUNCTION public.rls_auto_enable() FROM PUBLIC, anon, authenticated;');
+  });
+
+  it('数据库灾备加固迁移必须提供只读结构审计与 stage-null 诊断视图', () => {
+    const sql = readSql('supabase/migrations/20260531120000_database_hardening_dr_controls.sql');
+
+    expect(sql).toContain('CREATE OR REPLACE VIEW public.project_structure_audit');
+    expect(sql).toContain('WITH (security_invoker = true)');
+    expect(sql).toContain('stage_null');
+    expect(sql).toContain('content_equals_title');
+    expect(sql).toContain('GRANT SELECT ON public.project_structure_audit TO authenticated;');
+    expect(sql).toContain('CREATE OR REPLACE VIEW public.stage_null_recovery_diagnostics');
+    expect(sql).toContain('soft_deleted_stage_candidates');
+    expect(sql).toContain('audit_preimage_candidates');
+    expect(sql).toContain('evidence_class');
+    expect(sql).toContain('GRANT SELECT ON public.stage_null_recovery_diagnostics TO authenticated;');
+  });
+
+  it('数据库灾备门禁必须由 CODEOWNERS 与 CI contract workflow 承载', () => {
+    const owners = readSql('.github/CODEOWNERS');
+    const workflow = readSql('.github/workflows/database-hardening-gates.yml');
+
+    expect(owners).toContain('/supabase/migrations/ @wgje');
+    expect(owners).toContain('/scripts/validate-sql-structure.cjs @wgje');
+    expect(owners).toContain('/src/app/core/services/sync/ @wgje');
+    expect(owners).toContain('/src/types/supabase.ts @wgje');
+    expect(owners).toContain('/src/models/supabase-types.ts @wgje');
+    expect(owners).toContain('/src/tests/contracts/batch-upsert-tasks-stale-write-protection.contract.spec.ts @wgje');
+    expect(owners).toContain('/src/tests/contracts/project-soft-delete.contract.spec.ts @wgje');
+    expect(owners).toContain('/.github/CODEOWNERS @wgje');
+    expect(owners).toContain('/.github/workflows/database-hardening-gates.yml @wgje');
+    expect(owners).toContain('/.github/workflows/supabase-logical-backup.yml @wgje');
+    expect(workflow).toContain('name: Database hardening gates');
+    expect(workflow).toContain('src/tests/contracts/sql-security-hardening.contract.spec.ts');
+    expect(workflow).toContain('src/tests/contracts/project-soft-delete.contract.spec.ts');
+    expect(workflow).toContain('src/tests/contracts/sync-upsert-task-missing-timestamp-guard.contract.spec.ts');
+    expect(workflow).toContain('src/tests/contracts/batch-upsert-tasks-stale-write-protection.contract.spec.ts');
+    expect(workflow).toContain('node scripts/validate-sql-structure.cjs');
+    expect(workflow).toContain("'scripts/validate-sql-structure.cjs'");
+    expect(workflow).toContain("'src/types/supabase.ts'");
+    expect(workflow).toContain("'.github/workflows/supabase-logical-backup.yml'");
+  });
+
+  it('逻辑备份 workflow 必须加密上传独立对象存储且不提交明文 dump', () => {
+    const workflow = readSql('.github/workflows/supabase-logical-backup.yml');
+
+    expect(workflow).toContain('permissions:\n  contents: read\n  id-token: write');
+    expect(workflow).toContain('SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}');
+    expect(workflow).toContain('BACKUP_AGE_PUBLIC_KEY: ${{ secrets.BACKUP_AGE_PUBLIC_KEY }}');
+    expect(workflow).toContain('BACKUP_S3_BUCKET: ${{ secrets.BACKUP_S3_BUCKET }}');
+    expect(workflow).toContain('BACKUP_AWS_ROLE_TO_ASSUME: ${{ secrets.BACKUP_AWS_ROLE_TO_ASSUME }}');
+    expect(workflow).toContain('aws sts assume-role-with-web-identity');
+    expect(workflow).toContain('supabase db dump --db-url "$SUPABASE_DB_URL" -f roles.sql --role-only');
+    expect(workflow).toContain('age -r "$BACKUP_AGE_PUBLIC_KEY"');
+    expect(workflow).toContain('shred -u "$file"');
+    expect(workflow).toContain('aws s3 cp . "s3://$BACKUP_S3_BUCKET/$(date -u +%Y/%m/%d)/"');
+    expect(workflow).not.toContain('BACKUP_AWS_ACCESS_KEY_ID');
+    expect(workflow).not.toContain('BACKUP_AWS_SECRET_ACCESS_KEY');
+    expect(workflow).not.toContain('git-auto-commit');
+    expect(workflow).not.toContain('contents: write');
+  });
+
+  it('advisor follow-up 迁移必须收敛 anon SECURITY DEFINER 暴露与 service-only RLS policy', () => {
+    const sql = readSql('supabase/migrations/20260531123000_advisor_followup_rls_and_function_exposure.sql');
+    const normalized = sql.replace(/\s+/g, ' ');
+
+    expect(sql).toContain('ALTER FUNCTION public.user_preferences_keep_latest_backup_proof()');
+    expect(sql).toContain('SET search_path = public, pg_temp');
+    expect(sql).toContain("IF to_regprocedure('public.cascade_soft_delete_connections()') IS NOT NULL THEN");
+    expect(sql).toContain('REVOKE ALL ON FUNCTION public.get_all_projects_data(TIMESTAMPTZ)');
+    expect(sql).toContain('FROM PUBLIC, anon;');
+    expect(sql).toContain('GRANT EXECUTE ON FUNCTION public.get_all_projects_data(TIMESTAMPTZ)');
+    expect(sql).toContain('REVOKE ALL ON FUNCTION public.prevent_black_box_content_loss()');
+    expect(sql).toContain('FROM PUBLIC, anon, authenticated;');
+    expect(normalized).toContain("FOREACH v_table IN ARRAY ARRAY[ 'routine_completion_events', 'widget_devices', 'widget_devices_legacy_retired', 'widget_instances', 'widget_instances_legacy_retired', 'widget_notify_events', 'widget_notify_throttle', 'widget_request_rate_limits' ]");
+    expect(sql).toContain('CREATE POLICY %I ON public.%I FOR ALL TO service_role USING (true) WITH CHECK (true)');
+  });
+
+  it('advisor index cleanup 迁移必须移除归档表重复索引', () => {
+    const sql = readSql('supabase/migrations/20260531124000_advisor_followup_index_cleanup.sql');
+
+    expect(sql).toContain('DROP INDEX IF EXISTS public.task_change_audit_archive_owner_id_changed_at_idx1');
+  });
+
+  it('隔离 digest 与审计来源补丁必须修复 retry 放大和无归因误判', () => {
+    const sql = readSql('supabase/migrations/20260531125000_quarantine_digest_and_audit_origin_hardening.sql');
+    const normalized = sql.replace(/\s+/g, ' ');
+
+    expect(sql).toContain('CREATE OR REPLACE FUNCTION public.sync_canonical_payload_digest(p_payload JSONB)');
+    expect(sql).toContain("COALESCE(p_payload, '{}'::JSONB) - 'operation_id' - 'operationId'");
+    expect(sql).toContain('v_digest TEXT := public.sync_canonical_payload_digest(p_payload);');
+    expect(sql).toContain('v_origin_unverified BOOLEAN := true;');
+    expect(sql).toContain("v_origin_unverified := COALESCE(NULLIF(current_setting('app.origin_unverified', true), '')::BOOLEAN, true);");
+    expect(normalized).toContain('IF v_operation_id IS NULL OR v_client_git_sha IS NULL OR v_client_origin IS NULL OR v_payload_digest IS NULL THEN v_origin_unverified := true; END IF;');
+
+    const databaseTypes = readSql('src/types/supabase.ts');
+    expect(databaseTypes).toContain('sync_canonical_payload_digest: {');
+    expect(databaseTypes).toContain('Args: { p_payload: Json }');
+  });
 });

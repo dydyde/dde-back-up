@@ -1,0 +1,1 @@
+DROP INDEX IF EXISTS public.task_change_audit_archive_owner_id_changed_at_idx1;

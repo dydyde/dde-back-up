@@ -11,9 +11,14 @@ import { describe, expect, it } from 'vitest';
  */
 const migrationPath =
   'supabase/migrations/20260527110000_batch_upsert_tasks_content_presence_guard.sql';
+const hardeningMigrationPath = 'supabase/migrations/20260531120000_database_hardening_dr_controls.sql';
 
 function readMigration(): string {
   return fs.readFileSync(path.join(process.cwd(), migrationPath), 'utf8');
+}
+
+function readHardeningMigration(): string {
+  return fs.readFileSync(path.join(process.cwd(), hardeningMigrationPath), 'utf8');
 }
 
 function normalize(sql: string): string {
@@ -116,5 +121,30 @@ describe('batch_upsert_tasks stale-write protection migration', () => {
     expect(sql).toContain("RAISE EXCEPTION 'Unauthorized: not project owner'");
     expect(sql).toContain('GRANT EXECUTE ON FUNCTION public.batch_upsert_tasks(jsonb[], uuid) TO authenticated');
     expect(sql).toContain('GRANT EXECUTE ON FUNCTION public.batch_upsert_tasks(jsonb[], uuid) TO service_role');
+  });
+
+  it('hardening migration blocks direct batch writes while sync is frozen', () => {
+    const sql = normalize(readHardeningMigration());
+
+    expect(sql).toContain("SELECT value INTO v_sync_mode FROM public.data_safety_flags WHERE key = 'sync_mode'");
+    expect(sql).toContain("IF v_sync_mode IN ('read_only', 'quarantine') THEN");
+    expect(sql).toContain("RAISE EXCEPTION 'sync_write_blocked: %', v_sync_mode");
+  });
+
+  it('hardening migration preserves structure fields for task_text_update intents', () => {
+    const sql = normalize(readHardeningMigration());
+
+    expect(sql).toContain("v_write_intent NOT IN ('task_full_upsert', 'task_text_update', 'task_structure_update', 'task_soft_delete')");
+    expect(sql).toContain("stage = CASE WHEN v_is_stale OR v_write_intent IN ('task_text_update', 'task_soft_delete') THEN v_existing_stage ELSE EXCLUDED.stage END");
+    expect(sql).toContain("parent_id = CASE WHEN v_is_stale OR v_write_intent IN ('task_text_update', 'task_soft_delete') THEN v_existing_parent ELSE EXCLUDED.parent_id END");
+    expect(sql).toContain("\"order\" = CASE WHEN v_write_intent = 'task_text_update' THEN existing.\"order\" ELSE EXCLUDED.\"order\" END");
+  });
+
+  it('hardening migration preserves text fields for task_structure_update intents', () => {
+    const sql = normalize(readHardeningMigration());
+
+    expect(sql).toContain("title = CASE WHEN v_write_intent IN ('task_structure_update', 'task_soft_delete') THEN existing.title ELSE EXCLUDED.title END");
+    expect(sql).toContain("WHEN v_write_intent IN ('task_structure_update', 'task_soft_delete') THEN existing.content");
+    expect(sql).toContain("status = CASE WHEN v_write_intent = 'task_structure_update' THEN existing.status ELSE EXCLUDED.status END");
   });
 });

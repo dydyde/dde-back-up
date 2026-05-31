@@ -1,0 +1,44 @@
+name: Database hardening gates
+
+on:
+  pull_request:
+    paths:
+      - 'supabase/**'
+      - 'scripts/init-supabase.sql'
+      - 'scripts/validate-sql-structure.cjs'
+      - 'src/app/core/services/sync/**'
+      - 'src/services/sync-rpc-client.service.ts'
+      - 'src/types/supabase.ts'
+      - 'src/models/supabase-types.ts'
+      - 'src/tests/contracts/**'
+      - 'docs/database-hardening-disaster-recovery-plan.md'
+      - '.github/CODEOWNERS'
+      - '.github/workflows/database-hardening-gates.yml'
+      - '.github/workflows/supabase-logical-backup.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  contracts:
+    name: SQL and sync contracts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run test:prepare-env
+      - name: Validate SQL structure
+        run: node scripts/validate-sql-structure.cjs
+      - name: Run database hardening contract specs
+        run: >-
+          npx vitest run
+          src/tests/contracts/sql-security-hardening.contract.spec.ts
+          src/tests/contracts/project-soft-delete.contract.spec.ts
+          src/tests/contracts/sync-upsert-task-missing-timestamp-guard.contract.spec.ts
+          src/tests/contracts/batch-upsert-tasks-stale-write-protection.contract.spec.ts
+          --config vitest.config.mts

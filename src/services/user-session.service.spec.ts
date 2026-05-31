@@ -1642,7 +1642,7 @@ describe('UserSessionService', () => {
         },
         'syncProjectListMetadata'
       ).mockImplementation(async () => {
-        (mockProjectState['setProjectsMetadataOnly'] as ReturnType<typeof vi.fn>)([
+        (mockProjectState['setProjectsMetadataOnly'] as (projects: Project[]) => void)([
           localProject,
           remoteShellProject,
         ]);
@@ -3065,7 +3065,7 @@ describe('UserSessionService', () => {
         updatedAt: '2026-05-27T08:00:00.000Z',
       });
 
-      (mockProjectState['setProjects'] as ReturnType<typeof vi.fn>)([shellProject]);
+      (mockProjectState['setProjects'] as (projects: Project[]) => void)([shellProject]);
       (mockProjectState['getProjectsWithCurrentData'] as ReturnType<typeof vi.fn>).mockReturnValue([localProject]);
       (mockSyncCoordinator['hasPendingChangesForProject'] as ReturnType<typeof vi.fn>).mockReturnValue(false);
 
@@ -3075,7 +3075,7 @@ describe('UserSessionService', () => {
         }
       ).mergeSingleProject(remoteProject, 'user-1');
 
-      const mergedProject = ((mockProjectState['projects'] as ReturnType<typeof vi.fn>)() as Project[])
+      const mergedProject = (mockProjectState['projects'] as () => Project[])()
         .find((project) => project.id === 'proj-content-guard');
 
       expect(mergedProject?.tasks[0]?.content).toBe('local content should survive');
@@ -3121,7 +3121,7 @@ describe('UserSessionService', () => {
         updatedAt: '2026-05-27T08:00:00.000Z',
       });
 
-      (mockProjectState['setProjects'] as ReturnType<typeof vi.fn>)([shellProject]);
+      (mockProjectState['setProjects'] as (projects: Project[]) => void)([shellProject]);
       (mockProjectState['getProjectsWithCurrentData'] as ReturnType<typeof vi.fn>).mockReturnValue([localProject]);
       (mockSyncCoordinator['hasPendingChangesForProject'] as ReturnType<typeof vi.fn>).mockReturnValue(false);
 
@@ -3131,7 +3131,7 @@ describe('UserSessionService', () => {
         }
       ).mergeSingleProject(remoteProject, 'user-1');
 
-      const mergedProject = ((mockProjectState['projects'] as ReturnType<typeof vi.fn>)() as Project[])
+      const mergedProject = (mockProjectState['projects'] as () => Project[])()
         .find((project) => project.id === 'proj-explicit-empty');
 
       expect(mergedProject?.tasks[0]?.content).toBe('');
@@ -3174,7 +3174,7 @@ describe('UserSessionService', () => {
         updatedAt: '2026-05-27T08:00:00.000Z',
       });
 
-      (mockProjectState['setProjects'] as ReturnType<typeof vi.fn>)([shellProject]);
+      (mockProjectState['setProjects'] as (projects: Project[]) => void)([shellProject]);
       (mockProjectState['getProjectsWithCurrentData'] as ReturnType<typeof vi.fn>).mockReturnValue([localProject]);
       (mockSyncCoordinator['hasPendingChangesForProject'] as ReturnType<typeof vi.fn>).mockReturnValue(true);
 
@@ -3184,7 +3184,7 @@ describe('UserSessionService', () => {
         }
       ).mergeSingleProject(remoteProject, 'user-1');
 
-      const mergedProject = ((mockProjectState['projects'] as ReturnType<typeof vi.fn>)() as Project[])
+      const mergedProject = (mockProjectState['projects'] as () => Project[])()
         .find((project) => project.id === 'proj-pending-merge');
 
       expect(mergedProject?.tasks[0]?.content).toBe('pending local content');

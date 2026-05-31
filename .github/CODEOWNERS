@@ -1,0 +1,16 @@
+# Database and sync safety paths require explicit owner review.
+/supabase/migrations/ @wgje
+/scripts/init-supabase.sql @wgje
+/scripts/validate-sql-structure.cjs @wgje
+/src/app/core/services/sync/ @wgje
+/src/services/sync-rpc-client.service.ts @wgje
+/src/types/supabase.ts @wgje
+/src/models/supabase-types.ts @wgje
+/src/tests/contracts/*sync* @wgje
+/src/tests/contracts/batch-upsert-tasks-stale-write-protection.contract.spec.ts @wgje
+/src/tests/contracts/project-soft-delete.contract.spec.ts @wgje
+/src/tests/contracts/sql-security-hardening.contract.spec.ts @wgje
+/docs/database-hardening-disaster-recovery-plan.md @wgje
+/.github/CODEOWNERS @wgje
+/.github/workflows/database-hardening-gates.yml @wgje
+/.github/workflows/supabase-logical-backup.yml @wgje

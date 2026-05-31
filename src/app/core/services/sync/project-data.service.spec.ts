@@ -15,6 +15,7 @@ import { FIELD_SELECT_CONFIG } from '../../../../config/sync.config';
 import { resetBrowserNetworkSuspensionTrackingForTests } from '../../../../utils/browser-network-suspension';
 import { hasTaskContentMissingFromSource } from '../../../../utils/task-content-guard';
 import { resetTaskSchemaCompatibilityForTests } from '../../../../utils/task-schema-compat';
+import type { Project, Task } from '../../../../models';
 
 const OFFLINE_SNAPSHOT_DB_NAME = 'nanoflow-offline-snapshots';
 const OFFLINE_SNAPSHOT_STORE_NAME = 'snapshots';
@@ -1046,7 +1047,7 @@ describe('ProjectDataService', () => {
     });
 
     const service = injector.get(ProjectDataService);
-    let resolveFirstLoad: (() => void) | null = null;
+    let resolveFirstLoad = (): void => undefined;
     const loadSpy = vi.spyOn(
       service as unknown as { loadFullProjectOptimized: (projectId: string, expectedUserId?: string) => Promise<Project | null> },
       'loadFullProjectOptimized'
@@ -1070,7 +1071,7 @@ describe('ProjectDataService', () => {
       expect(loadSpy).toHaveBeenNthCalledWith(2, 'proj-parallel-2', 'user-parallel-hint');
       expect(loadSpy).toHaveBeenNthCalledWith(3, 'proj-parallel-3', 'user-parallel-hint');
     } finally {
-      resolveFirstLoad?.();
+      resolveFirstLoad();
       await pendingLoad;
       vi.useRealTimers();
     }

@@ -2651,10 +2651,10 @@ describe('WorkspaceShellComponent 输入事件处理', () => {
       flushWidgetWorkspaceGateRecheck: (WorkspaceShellComponent.prototype as unknown as {
         flushWidgetWorkspaceGateRecheck: (this: WorkspaceShellComponent) => void;
       }).flushWidgetWorkspaceGateRecheck,
-    } as unknown as WorkspaceShellComponent & {
+    } as {
       pendingWidgetWorkspaceGateRecheckKey: string | null;
       focusProbeInitializedForUser: string | null;
-    };
+    } & Record<string, unknown>;
 
     (WorkspaceShellComponent.prototype as unknown as {
       primeWidgetWorkspaceGateSync: (this: WorkspaceShellComponent, startupEntryIntent: {
@@ -2662,7 +2662,7 @@ describe('WorkspaceShellComponent 输入事件处理', () => {
         intent: 'open-workspace' | null;
         rawIntent: string | null;
       }) => void;
-    }).primeWidgetWorkspaceGateSync.call(context, {
+    }).primeWidgetWorkspaceGateSync.call(context as unknown as WorkspaceShellComponent, {
       entry: 'widget',
       intent: 'open-workspace',
       rawIntent: 'open-workspace',
@@ -2673,7 +2673,7 @@ describe('WorkspaceShellComponent 输入事件处理', () => {
 
     (WorkspaceShellComponent.prototype as unknown as {
       flushWidgetWorkspaceGateRecheck: (this: WorkspaceShellComponent) => void;
-    }).flushWidgetWorkspaceGateRecheck.call(context);
+    }).flushWidgetWorkspaceGateRecheck.call(context as unknown as WorkspaceShellComponent);
 
     expect(recheckGate).toHaveBeenCalledWith({
       source: 'widget-open-workspace',
@@ -2705,10 +2705,10 @@ describe('WorkspaceShellComponent 输入事件处理', () => {
       flushWidgetWorkspaceGateRecheck: (WorkspaceShellComponent.prototype as unknown as {
         flushWidgetWorkspaceGateRecheck: (this: WorkspaceShellComponent) => void;
       }).flushWidgetWorkspaceGateRecheck,
-    } as unknown as WorkspaceShellComponent & {
+    } as {
       pendingWidgetWorkspaceGateRecheckKey: string | null;
       focusProbeInitializedForUser: string | null;
-    };
+    } & Record<string, unknown>;
 
     (WorkspaceShellComponent.prototype as unknown as {
       primeWidgetWorkspaceGateSync: (this: WorkspaceShellComponent, startupEntryIntent: {
@@ -2716,7 +2716,7 @@ describe('WorkspaceShellComponent 输入事件处理', () => {
         intent: 'open-workspace' | null;
         rawIntent: string | null;
       }) => void;
-    }).primeWidgetWorkspaceGateSync.call(context, {
+    }).primeWidgetWorkspaceGateSync.call(context as unknown as WorkspaceShellComponent, {
       entry: 'widget',
       intent: 'open-workspace',
       rawIntent: 'open-workspace',
@@ -2754,10 +2754,10 @@ describe('WorkspaceShellComponent 输入事件处理', () => {
       flushWidgetWorkspaceGateRecheck: (WorkspaceShellComponent.prototype as unknown as {
         flushWidgetWorkspaceGateRecheck: (this: WorkspaceShellComponent) => void;
       }).flushWidgetWorkspaceGateRecheck,
-    } as unknown as WorkspaceShellComponent & {
+    } as {
       pendingWidgetWorkspaceGateRecheckKey: string | null;
       focusProbeInitializedForUser: string | null;
-    };
+    } & Record<string, unknown>;
 
     (WorkspaceShellComponent.prototype as unknown as {
       primeWidgetWorkspaceGateSync: (this: WorkspaceShellComponent, startupEntryIntent: {
@@ -2765,7 +2765,7 @@ describe('WorkspaceShellComponent 输入事件处理', () => {
         intent: 'open-workspace' | null;
         rawIntent: string | null;
       }) => void;
-    }).primeWidgetWorkspaceGateSync.call(context, {
+    }).primeWidgetWorkspaceGateSync.call(context as unknown as WorkspaceShellComponent, {
       entry: 'twa',
       intent: 'open-workspace',
       rawIntent: 'open-workspace',
@@ -2777,7 +2777,7 @@ describe('WorkspaceShellComponent 输入事件处理', () => {
     currentUserId = 'user-1';
     (WorkspaceShellComponent.prototype as unknown as {
       flushWidgetWorkspaceGateRecheck: (this: WorkspaceShellComponent) => void;
-    }).flushWidgetWorkspaceGateRecheck.call(context);
+    }).flushWidgetWorkspaceGateRecheck.call(context as unknown as WorkspaceShellComponent);
 
     expect(recheckGate).toHaveBeenCalledWith({
       source: 'widget-open-workspace',
@@ -2794,14 +2794,14 @@ describe('WorkspaceShellComponent 输入事件处理', () => {
       bootStage: { isApplicationReady: () => true },
       pendingWidgetWorkspaceGateRecheckKey: 'widget:open-workspace:/projects',
       focusProbeInitializedForUser: null,
-    } as unknown as WorkspaceShellComponent & {
+    } as {
       pendingWidgetWorkspaceGateRecheckKey: string | null;
       focusProbeInitializedForUser: string | null;
-    };
+    } & Record<string, unknown>;
 
     (WorkspaceShellComponent.prototype as unknown as {
       flushWidgetWorkspaceGateRecheck: (this: WorkspaceShellComponent) => void;
-    }).flushWidgetWorkspaceGateRecheck.call(context);
+    }).flushWidgetWorkspaceGateRecheck.call(context as unknown as WorkspaceShellComponent);
 
     expect(recheckGate).not.toHaveBeenCalled();
     expect(context.pendingWidgetWorkspaceGateRecheckKey).toBe('widget:open-workspace:/projects');
