@@ -13,6 +13,8 @@
   - `/api/block/getBlockKramdown`
   - `/api/block/getChildBlocks`
   - `/api/filetree/getHPathByID`
+  - `/api/filetree/getHPathByPath`
+  - `/api/filetree/getPathByID`
   - `/api/attr/getBlockAttrs`
 - 不提供通用 URL 代理、SQL、文件、snippet 或写接口。
 

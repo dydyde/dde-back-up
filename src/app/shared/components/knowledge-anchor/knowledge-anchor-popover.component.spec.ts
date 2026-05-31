@@ -36,7 +36,7 @@ describe('KnowledgeAnchorPopoverComponent', () => {
         linkId: link.id,
         blockId: link.targetId,
         title: '细菌能量来源',
-        hpath: '/生物/细菌能量来源',
+        hpath: '/生物/微生物/细菌能量来源',
         excerpt: '对于细菌选择光能还是化能……',
         fetchedAt: '2026-05-28T12:34:00.000Z',
         fetchStatus: 'ready',
@@ -81,11 +81,34 @@ describe('KnowledgeAnchorPopoverComponent', () => {
     expect(title.textContent).toContain('细菌能量来源');
     expect(fixture.nativeElement.textContent).not.toContain('缓存时间');
     expect(linkedAt.textContent).toContain('关联于：05/18');
-    expect(absoluteLocation.textContent).toContain('/生物/细菌能量来源');
+    expect(absoluteLocation.textContent).toContain('/生物/微生物/细菌能量来源');
     expect(updateMetadata).toHaveBeenCalledWith(link.id, {
       label: '细菌能量来源',
-      hpath: '/生物/细菌能量来源',
+      hpath: '/生物/微生物/细菌能量来源',
     });
+  });
+
+  it('normalizes a folder-relative hpath into an absolute visible location', () => {
+    fixture.componentInstance.result.set({
+      status: 'ready',
+      origin: 'cache',
+      preview: {
+        linkId: link.id,
+        blockId: link.targetId,
+        title: '细菌能量来源',
+        hpath: '生物/微生物/细菌能量来源',
+        excerpt: 'placeholder',
+        fetchedAt: '2026-05-28T12:35:00.000Z',
+        fetchStatus: 'ready',
+        truncated: false,
+      },
+    });
+    fixture.detectChanges();
+
+    const absoluteLocation = fixture.nativeElement.querySelector('[data-testid="knowledge-anchor-absolute-location"]') as HTMLButtonElement;
+
+    expect(absoluteLocation.textContent).toContain('/生物/微生物/细菌能量来源');
+    expect(absoluteLocation.title).toBe('/生物/微生物/细菌能量来源');
   });
 
   it('prefers resolved hpath over the placeholder link label when preview title is absent', () => {

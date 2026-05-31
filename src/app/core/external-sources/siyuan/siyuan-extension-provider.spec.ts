@@ -198,7 +198,7 @@ describe('siyuan-extension-provider', () => {
       data: {
         blockId: '20260426123456-abc1234',
         title: '细菌能量来源',
-        hpath: '/生物/细菌能量来源',
+        hpath: '/生物/微生物/细菌能量来源',
         plainText: '摘要',
         childBlocks: [],
         truncated: false,
@@ -208,7 +208,7 @@ describe('siyuan-extension-provider', () => {
     const preview = await provider.getBlockPreview('20260426123456-abc1234');
 
     expect(preview.title).toBe('细菌能量来源');
-    expect(preview.hpath).toBe('/生物/细菌能量来源');
+    expect(preview.hpath).toBe('/生物/微生物/细菌能量来源');
     expect(preview.excerpt).toBe('摘要');
   });
 });

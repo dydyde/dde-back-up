@@ -14,6 +14,7 @@ interface SiyuanApiResponse<T> {
 
 interface KramdownData { id?: string; kramdown?: string; }
 interface HPathData { hPath?: string; }
+interface PathData { notebook?: string; path?: string; }
 interface AttrData { title?: string; updated?: string; updatedAt?: string; }
 interface ChildBlockData { id?: string; content?: string; markdown?: string; type?: string; }
 
@@ -66,9 +67,10 @@ export class SiyuanDirectProvider implements SiyuanPreviewProvider {
     const abortListener = () => controller.abort();
     signal?.addEventListener('abort', abortListener, { once: true });
     try {
-      const [kramdown, hpath, attrs, children] = await Promise.all([
+      const [kramdown, hpath, absoluteHpath, attrs, children] = await Promise.all([
         this.call<KramdownData>(config.baseUrl, config.token, '/api/block/getBlockKramdown', { id: blockId }, controller.signal),
         this.call<HPathData | string>(config.baseUrl, config.token, '/api/filetree/getHPathByID', { id: blockId }, controller.signal).catch(() => undefined),
+        this.resolveAbsoluteHPath(config.baseUrl, config.token, blockId, controller.signal),
         this.call<AttrData>(config.baseUrl, config.token, '/api/attr/getBlockAttrs', { id: blockId }, controller.signal).catch(() => undefined),
         this.call<ChildBlockData[]>(config.baseUrl, config.token, '/api/block/getChildBlocks', { id: blockId }, controller.signal).catch(() => []),
       ]);
@@ -77,7 +79,7 @@ export class SiyuanDirectProvider implements SiyuanPreviewProvider {
       return normalizePreview({
         blockId,
         title: this.readTitle(attrs),
-        hpath: this.readHPath(hpath),
+        hpath: this.pickMostSpecificHPath(absoluteHpath, this.readHPath(hpath)),
         kramdown: kramdown.kramdown ?? '',
         sourceUpdatedAt: attrs?.updatedAt ?? attrs?.updated,
         childBlocks: this.mapChildren(children ?? []),
@@ -88,6 +90,26 @@ export class SiyuanDirectProvider implements SiyuanPreviewProvider {
     } finally {
       window.clearTimeout(timeout);
       signal?.removeEventListener('abort', abortListener);
+    }
+  }
+
+  private async resolveAbsoluteHPath(baseUrl: string, token: string, blockId: string, signal: AbortSignal): Promise<string | undefined> {
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), SIYUAN_CONFIG.ABSOLUTE_HPATH_FETCH_TIMEOUT_MS);
+    const abortListener = () => controller.abort();
+    signal.addEventListener('abort', abortListener, { once: true });
+    try {
+      const pathData = await this.call<PathData>(baseUrl, token, '/api/filetree/getPathByID', { id: blockId }, controller.signal);
+      const notebook = this.normalizeText(pathData?.notebook);
+      const path = this.normalizeText(pathData?.path);
+      if (!notebook || !path) return undefined;
+      const hpath = await this.call<HPathData | string>(baseUrl, token, '/api/filetree/getHPathByPath', { notebook, path }, controller.signal);
+      return this.readHPath(hpath);
+    } catch {
+      return undefined;
+    } finally {
+      window.clearTimeout(timeout);
+      signal.removeEventListener('abort', abortListener);
     }
   }
 
@@ -106,14 +128,37 @@ export class SiyuanDirectProvider implements SiyuanPreviewProvider {
   }
 
   private readHPath(value: HPathData | string | undefined): string | undefined {
-    if (typeof value === 'string') return value;
-    return value?.hPath;
+    if (typeof value === 'string') return this.normalizeHPath(value);
+    return this.normalizeHPath(value?.hPath);
+  }
+
+  private pickMostSpecificHPath(...values: Array<string | undefined>): string | undefined {
+    return values
+      .map(value => this.normalizeHPath(value))
+      .filter((value): value is string => Boolean(value))
+      .sort((a, b) => this.hpathScore(b) - this.hpathScore(a))[0];
+  }
+
+  private hpathScore(value: string): number {
+    return value.split('/').filter(Boolean).length * 1000 + value.length;
+  }
+
+  private normalizeHPath(value: string | undefined): string | undefined {
+    const text = this.normalizeText(value);
+    if (!text) return undefined;
+    const hpath = text.startsWith('/') ? text : `/${text}`;
+    return hpath.slice(0, SIYUAN_CONFIG.MAX_HPATH_LENGTH);
   }
 
   private readTitle(value: AttrData | undefined): string | undefined {
-    if (typeof value?.title !== 'string') return undefined;
-    const title = value.title.trim();
+    const title = this.normalizeText(value?.title);
     return title ? title.slice(0, SIYUAN_CONFIG.MAX_LABEL_LENGTH) : undefined;
+  }
+
+  private normalizeText(value: string | undefined): string | undefined {
+    if (typeof value !== 'string') return undefined;
+    const text = value.trim();
+    return text || undefined;
   }
 
   private mapChildren(children: ChildBlockData[]): SiyuanChildBlockPreview[] {

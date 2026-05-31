@@ -1,5 +1,6 @@
 const DEFAULT_BASE_URL = 'http://127.0.0.1:6806';
 const PREVIEW_FETCH_TIMEOUT_MS = 5000;
+const ABSOLUTE_HPATH_FETCH_TIMEOUT_MS = 1200;
 const MAX_PREVIEW_CHILDREN = 10;
 const MAX_PREVIEW_CHARS = 1200;
 const MAX_TITLE_LENGTH = 256;
@@ -11,6 +12,8 @@ const ALLOWED_API_PATHS = new Set([
   '/api/block/getBlockKramdown',
   '/api/block/getChildBlocks',
   '/api/filetree/getHPathByID',
+  '/api/filetree/getHPathByPath',
+  '/api/filetree/getPathByID',
   '/api/attr/getBlockAttrs',
 ]);
 
@@ -123,9 +126,10 @@ async function getPreview(message) {
 
   try {
     const config = await loadConfig();
-    const [kramdown, hpath, attrs, children] = await Promise.all([
+    const [kramdown, hpath, absoluteHpath, attrs, children] = await Promise.all([
       callSiyuan(config, '/api/block/getBlockKramdown', { id: blockId }),
       callSiyuan(config, '/api/filetree/getHPathByID', { id: blockId }).catch(() => undefined),
+      readAbsoluteHPath(config, blockId),
       callSiyuan(config, '/api/attr/getBlockAttrs', { id: blockId }).catch(() => undefined),
       includeChildren
         ? callSiyuan(config, '/api/block/getChildBlocks', { id: blockId }).catch(() => [])
@@ -145,7 +149,7 @@ async function getPreview(message) {
       data: {
         blockId,
         title: readTitle(attrs),
-        hpath: readHPath(hpath),
+        hpath: pickMostSpecificHPath(absoluteHpath, readHPath(hpath)),
         plainText: truncatedText,
         kramdown: truncateString(kramdown.kramdown, maxChars * 2),
         sourceUpdatedAt: readSourceUpdatedAt(attrs),
@@ -155,6 +159,22 @@ async function getPreview(message) {
     };
   } catch (error) {
     return buildPreviewError(message, mapError(error));
+  }
+}
+
+async function readAbsoluteHPath(config, blockId) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ABSOLUTE_HPATH_FETCH_TIMEOUT_MS);
+  try {
+    const pathData = await callSiyuan(config, '/api/filetree/getPathByID', { id: blockId }, controller.signal);
+    const notebook = normalizeString(pathData?.notebook);
+    const path = normalizeString(pathData?.path);
+    if (!notebook || !path) return undefined;
+    return readHPath(await callSiyuan(config, '/api/filetree/getHPathByPath', { notebook, path }, controller.signal));
+  } catch {
+    return undefined;
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -182,10 +202,13 @@ function isTrustedBaseUrl(value) {
   }
 }
 
-async function callSiyuan(config, path, body) {
+async function callSiyuan(config, path, body, signal) {
   if (!ALLOWED_API_PATHS.has(path)) throw new RelayError('unknown');
+  if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
   const controller = new AbortController();
+  const abortListener = () => controller.abort();
   const timer = setTimeout(() => controller.abort(), PREVIEW_FETCH_TIMEOUT_MS);
+  signal?.addEventListener('abort', abortListener, { once: true });
   try {
     const response = await fetch(new URL(path, config.baseUrl).toString(), {
       method: 'POST',
@@ -207,6 +230,7 @@ async function callSiyuan(config, path, body) {
     throw new RelayError('kernel-unreachable');
   } finally {
     clearTimeout(timer);
+    signal?.removeEventListener('abort', abortListener);
   }
 }
 
@@ -230,9 +254,26 @@ async function buildChildBlocks(config, rawChildren, maxChildren) {
 }
 
 function readHPath(value) {
-  if (typeof value === 'string') return truncateString(value, 1024);
-  if (typeof value?.hPath === 'string') return truncateString(value.hPath, 1024);
+  if (typeof value === 'string') return normalizeHPath(value);
+  if (typeof value?.hPath === 'string') return normalizeHPath(value.hPath);
   return undefined;
+}
+
+function pickMostSpecificHPath(...values) {
+  return values
+    .map(normalizeHPath)
+    .filter(Boolean)
+    .sort((a, b) => hpathScore(b) - hpathScore(a))[0];
+}
+
+function hpathScore(value) {
+  return value.split('/').filter(Boolean).length * 1000 + value.length;
+}
+
+function normalizeHPath(value) {
+  const text = normalizeString(value);
+  if (!text) return undefined;
+  return truncateString(text.startsWith('/') ? text : `/${text}`, 1024);
 }
 
 function readTitle(value) {
@@ -261,6 +302,12 @@ function toPlainText(kramdown) {
 function truncateString(value, maxLength) {
   if (typeof value !== 'string') return undefined;
   return value.length > maxLength ? value.slice(0, maxLength) : value;
+}
+
+function normalizeString(value) {
+  if (typeof value !== 'string') return undefined;
+  const text = value.trim();
+  return text || undefined;
 }
 
 function clampInteger(value, min, max) {

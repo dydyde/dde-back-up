@@ -102,6 +102,9 @@ describe('SiYuan Relay extension contracts', () => {
     expect(background).toContain("'http://127.0.0.1:6806'");
     expect(background).toContain("'http://localhost:6806'");
     expect(background).toContain('isTrustedBaseUrl');
+    expect(background).toContain("'/api/filetree/getPathByID'");
+    expect(background).toContain("'/api/filetree/getHPathByPath'");
+    expect(background).toContain('ABSOLUTE_HPATH_FETCH_TIMEOUT_MS');
   });
 
   it('manifest content_scripts whitelist still covers nanoflow domains and uses an MV3 service worker', () => {

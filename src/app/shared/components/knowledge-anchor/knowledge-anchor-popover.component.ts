@@ -2,7 +2,7 @@ import { ChangeDetectionStrategy, Component, inject, input, output, signal } fro
 import { CommonModule } from '@angular/common';
 import { SIYUAN_CONFIG, SIYUAN_ERROR_MESSAGES } from '../../../../config/siyuan.config';
 import { LoggerService } from '../../../../services/logger.service';
-import type { ExternalSourceLink, LocalSiyuanPreviewCache, SiyuanPreviewResult } from '../../../core/external-sources/external-source.model';
+import type { ExternalSourceLink, SiyuanPreviewResult } from '../../../core/external-sources/external-source.model';
 import { ExternalSourceLinkService } from '../../../core/external-sources/external-source-link.service';
 import { SiyuanPreviewService } from '../../../core/external-sources/siyuan/siyuan-preview.service';
 import { shortenSiyuanBlockId } from '../../../core/external-sources/siyuan/siyuan-link-parser';
@@ -79,11 +79,11 @@ import { shortenSiyuanBlockId } from '../../../core/external-sources/siyuan/siyu
     .anchor-popover-action { border-radius: 0.375rem; padding: 0.25rem 0.4rem; font-size: 10px; font-weight: 700; color: rgb(79 70 229); }
     .anchor-popover-action:hover { background: rgba(99, 102, 241, 0.08); }
     .anchor-absolute-location {
-      max-width: 52%;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
+      display: block;
+      max-width: 68%;
+      overflow-wrap: anywhere;
       text-align: right;
+      line-height: 1.25;
       color: inherit;
     }
     .anchor-absolute-location:hover { color: rgb(79 70 229); }
@@ -137,8 +137,8 @@ export class KnowledgeAnchorPopoverComponent {
   }
 
   absoluteLocation(): string | null {
-    return this.normalizeText(this.result().preview?.hpath)
-      || this.normalizeText(this.link().hpath)
+    return this.normalizeHPath(this.result().preview?.hpath)
+      || this.normalizeHPath(this.link().hpath)
       || null;
   }
 
@@ -173,10 +173,16 @@ export class KnowledgeAnchorPopoverComponent {
   }
 
   private extractHPathTitle(hpath: string | undefined): string | undefined {
-    const normalized = this.normalizeText(hpath);
+    const normalized = this.normalizeHPath(hpath);
     if (!normalized) return undefined;
     const segments = normalized.split('/').filter(Boolean);
     return segments.at(-1) ?? normalized;
+  }
+
+  private normalizeHPath(value: string | undefined): string | undefined {
+    const normalized = this.normalizeText(value);
+    if (!normalized) return undefined;
+    return normalized.startsWith('/') ? normalized : `/${normalized}`;
   }
 
   private normalizeText(value: string | undefined): string | undefined {
