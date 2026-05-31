@@ -2681,9 +2681,7 @@ export class WorkspaceShellComponent implements OnInit, OnDestroy, AfterViewInit
     const isAuthoritativelyAccessible = !canAuthoritativelyRejectProjectRoute
       || this.userSession.isProjectAuthoritativelyAccessible(projectId);
     if (projectExists && isAuthoritativelyAccessible) {
-      if (projectId !== this.projectState.activeProjectId()) {
-        this.userSession.switchActiveProject(projectId);
-      }
+      this.userSession.switchActiveProject(projectId);
       return;
     }
 

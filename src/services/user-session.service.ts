@@ -1053,7 +1053,12 @@ export class UserSessionService {
   switchActiveProject(projectId: string | null): void {
     const previousProjectId = this.projectState.activeProjectId();
 
-    if (previousProjectId === projectId) return;
+    if (previousProjectId === projectId) {
+      if (projectId) {
+        this.prepareActiveProjectAfterSelection(projectId);
+      }
+      return;
+    }
 
     // 清理搜索状态
     this.uiState.clearSearch();
@@ -1071,16 +1076,20 @@ export class UserSessionService {
 
     // 更新附件 URL 监控
     if (projectId) {
-      const newProject = this.projectState.getProject(projectId);
-      if (newProject) {
-        void this.monitorProjectAttachments(newProject);
-      }
-      // 【P0 修复】切换项目时按需加载目标项目数据
-      // 项目可能是 syncProjectListMetadata 创建的空壳（tasks: []），需要从云端全量加载
-      void this.hydrateProjectIfNeeded(projectId);
+      this.prepareActiveProjectAfterSelection(projectId);
     } else {
       this.attachmentServiceRef?.clearMonitoredAttachments();
     }
+  }
+
+  private prepareActiveProjectAfterSelection(projectId: string): void {
+    const newProject = this.projectState.getProject(projectId);
+    if (newProject) {
+      void this.monitorProjectAttachments(newProject);
+    }
+    // 【P0 修复】切换项目时按需加载目标项目数据
+    // 项目可能是 syncProjectListMetadata 创建的空壳（tasks: []），需要从云端全量加载
+    void this.hydrateProjectIfNeeded(projectId);
   }
 
   /**
@@ -1093,30 +1102,36 @@ export class UserSessionService {
    * - 用户已登录且非本地模式
    */
   private async hydrateProjectIfNeeded(projectId: string): Promise<void> {
-    // 已加载过或正在加载，跳过
-    if (this.hydratedProjectIds.has(projectId)) return;
-    const existing = this.hydrationInFlight.get(projectId);
-    if (existing) return;
-
     const userId = this.currentUserId();
     if (!userId || userId === AUTH_CONFIG.LOCAL_MODE_USER_ID) return;
 
-    const project = this.projectState.getProject(projectId);
+    const storedProject = this.projectState.getProject(projectId);
+    const project = this.resolveProjectForHydration(projectId);
     if (!project || project.syncSource === 'local-only') return;
 
+    const shouldRecoverFromSnapshotPreview = this.hasSnapshotPreviewHydrationBlocker(project);
+    const hasStoredProjectTasks = Array.isArray(storedProject?.tasks) && storedProject.tasks.length > 0;
+
+    // 已加载过或正在加载，跳过；但旧启动快照物化出的预览任务必须允许再次补水。
+    if (this.hydratedProjectIds.has(projectId) && !shouldRecoverFromSnapshotPreview) return;
+    const existing = this.hydrationInFlight.get(projectId);
+    if (existing) return;
+
     // 检查 TaskStore 是否已有该项目的任务数据
-    const tasks = this.projectState.tasks();
-    // tasks 是基于 activeProjectId 的 computed，但此时 activeProjectId 已经切换过来了
-    // 如果已有任务，认为项目已水合（可能来自离线快照）
-    if (tasks.length > 0) {
+    const tasks = project.tasks ?? [];
+    // 如果已有真实任务，认为项目已水合（可能来自离线快照）。旧 launch-snapshot
+    // recentTasks 物化出的预览任务缺少远端 freshness，不能阻止云端全量补水。
+    // metadata-only 壳里的 current data 可能只是本地保留数据，仍需走远端复核。
+    if (hasStoredProjectTasks && !shouldRecoverFromSnapshotPreview) {
       this.hydratedProjectIds.add(projectId);
       return;
     }
 
-    // Project.tasks 也为空才需要加载
-    if (project.tasks && project.tasks.length > 0) {
-      this.hydratedProjectIds.add(projectId);
-      return;
+    if (shouldRecoverFromSnapshotPreview) {
+      this.logger.warn('检测到启动快照预览任务阻塞项目补水，改为拉取云端完整项目', {
+        projectId,
+        localTaskCount: tasks.length,
+      });
     }
 
     const sessionGuard = this.captureCurrentSessionGuard();
@@ -1130,6 +1145,32 @@ export class UserSessionService {
         this.hydrationInFlight.delete(projectId);
       }
     }
+  }
+
+  private resolveProjectForHydration(projectId: string): Project | undefined {
+    return this.projectState.getProjectsWithCurrentData()
+      .find(project => project.id === projectId)
+      ?? this.projectState.getProject(projectId);
+  }
+
+  private hasSnapshotPreviewHydrationBlocker(project: Project): boolean {
+    if (this.hasRealLocalChanges(project.id)) {
+      return false;
+    }
+
+    const tasks = project.tasks ?? [];
+    return tasks.length > 0 && tasks.some(task => this.isSnapshotPreviewTask(task));
+  }
+
+  private isSnapshotPreviewTask(task: Task): boolean {
+    const content = task.content.trim();
+    const title = task.title.trim();
+
+    return !task.updatedAt
+      && task.stage === null
+      && task.parentId === null
+      && content.length > 0
+      && content === title;
   }
 
   private async loadProjectForHydration(

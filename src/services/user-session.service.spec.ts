@@ -69,6 +69,20 @@ function createTask(overrides: Partial<Task> = {}): Task {
   };
 }
 
+function createSnapshotPreviewTask(overrides: Partial<Task> = {}): Task {
+  const title = overrides.title ?? 'Preview Task';
+  return {
+    ...createTask({
+      ...overrides,
+      title,
+      content: overrides.content ?? title,
+      stage: null,
+      parentId: null,
+    }),
+    updatedAt: undefined,
+  };
+}
+
 function createProject(overrides: Partial<Project> = {}): Project {
   const now = new Date().toISOString();
   return {
@@ -463,6 +477,69 @@ describe('UserSessionService', () => {
       expect(mockProjectState['setProjects']).toHaveBeenCalledWith([
         expect.objectContaining({ id: 'shell-1', name: 'Loaded On Retry' }),
       ]);
+    });
+
+    it('已选中的项目只有启动快照预览任务时仍应重新补水', async () => {
+      userIdSignal.set('user-1');
+      const previewProject = createProject({
+        id: 'preview-blocked-project',
+        name: 'test errors',
+        syncSource: 'synced',
+        tasks: [createSnapshotPreviewTask({ id: 'preview-task', title: 'stage1' })],
+        connections: [],
+      });
+      const remoteProject = createProject({
+        id: 'preview-blocked-project',
+        name: 'test errors',
+        syncSource: 'synced',
+        tasks: [createTask({ id: 'remote-task', title: 'remote restored', content: 'full content' })],
+        connections: [],
+      });
+      const seedProjects = mockProjectState['setProjects'] as unknown as (projects: Project[]) => void;
+      const setActiveProjectId = mockProjectState['setActiveProjectId'] as unknown as (projectId: string | null) => void;
+      seedProjects([previewProject]);
+      setActiveProjectId('preview-blocked-project');
+      vi.clearAllMocks();
+
+      (mockSyncCoordinator['loadSingleProjectFromCloud'] as ReturnType<typeof vi.fn>)
+        .mockResolvedValueOnce(remoteProject);
+
+      service.switchActiveProject('preview-blocked-project');
+      await flushAsyncWork();
+
+      expect(mockSyncCoordinator['loadSingleProjectFromCloud']).toHaveBeenCalledWith('preview-blocked-project');
+      expect(mockProjectState['setProjects']).toHaveBeenCalledWith([
+        expect.objectContaining({
+          id: 'preview-blocked-project',
+          tasks: [expect.objectContaining({ id: 'remote-task', content: 'full content' })],
+        }),
+      ]);
+      expect(mockLoggerCategory.warn).toHaveBeenCalledWith(
+        '检测到启动快照预览任务阻塞项目补水，改为拉取云端完整项目',
+        expect.objectContaining({ projectId: 'preview-blocked-project', localTaskCount: 1 }),
+      );
+    });
+
+    it('已选中的项目已有真实任务时不应重复拉取云端', async () => {
+      userIdSignal.set('user-1');
+      const hydratedProject = createProject({
+        id: 'already-hydrated-project',
+        name: 'Loaded Project',
+        syncSource: 'synced',
+        tasks: [createTask({ id: 'real-task', title: 'real', content: 'real content' })],
+        connections: [],
+      });
+      const seedProjects = mockProjectState['setProjects'] as unknown as (projects: Project[]) => void;
+      const setActiveProjectId = mockProjectState['setActiveProjectId'] as unknown as (projectId: string | null) => void;
+      seedProjects([hydratedProject]);
+      setActiveProjectId('already-hydrated-project');
+      vi.clearAllMocks();
+
+      service.switchActiveProject('already-hydrated-project');
+      await flushAsyncWork();
+
+      expect(mockSyncCoordinator['loadSingleProjectFromCloud']).not.toHaveBeenCalled();
+      expect(mockProjectState['setProjects']).not.toHaveBeenCalled();
     });
 
     it('首次补水返回空项目时应复核一次并采用非空复核结果', async () => {

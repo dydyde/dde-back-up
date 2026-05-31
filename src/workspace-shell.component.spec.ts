@@ -2891,6 +2891,41 @@ describe('WorkspaceShellComponent 输入事件处理', () => {
     expect(navigate).not.toHaveBeenCalled();
   });
 
+  it('syncStateFromRoute 在路由项目已选中时仍应触发会话层补水检查', () => {
+    const switchActiveProject = vi.fn();
+    const navigate = vi.fn();
+    const context = {
+      getCurrentStartupEntryIntent: () => null,
+      route: {
+        snapshot: { params: {} },
+        firstChild: {
+          snapshot: { params: { projectId: 'project-1' } },
+          firstChild: null,
+        },
+      },
+      projectState: {
+        activeProjectId: () => 'project-1',
+        projects: () => [{ id: 'project-1' }],
+      },
+      userSession: {
+        switchActiveProject,
+        canAuthoritativelyRejectProjectRoute: () => true,
+        isProjectAuthoritativelyAccessible: () => true,
+        startupProjectCatalogStage: () => 'resolved',
+      },
+      startupLaunchSnapshot: null,
+      router: { navigate },
+      resolveStartupProjectFallbackId: vi.fn(),
+    } as unknown as WorkspaceShellComponent;
+
+    (WorkspaceShellComponent.prototype as unknown as {
+      syncStateFromRoute: (this: WorkspaceShellComponent) => void;
+    }).syncStateFromRoute.call(context);
+
+    expect(switchActiveProject).toHaveBeenCalledWith('project-1');
+    expect(navigate).not.toHaveBeenCalled();
+  });
+
   it('syncStateFromRoute 不应把 partial 启动目录误当成完整真相并提前吃掉 deep-link', () => {
     const setActiveProjectId = vi.fn();
     const navigate = vi.fn();
