@@ -176,16 +176,6 @@ import { TextStageCardComponent } from './text-stage-card.component';
     .stage-scroll-item {
       scroll-margin-block: 0.75rem;
     }
-
-    @media (prefers-reduced-motion: no-preference) {
-      .stage-scroll-container {
-        scroll-snap-type: y proximity;
-      }
-
-      .stage-scroll-item {
-        scroll-snap-align: start;
-      }
-    }
   `]
 })
 export class TextStagesComponent {

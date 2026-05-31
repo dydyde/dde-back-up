@@ -1,9 +1,16 @@
-import { Component, inject, input, output, ChangeDetectionStrategy } from '@angular/core';
+import { Component, ElementRef, inject, input, output, ChangeDetectionStrategy } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { ProjectStateService } from '../../../../services/project-state.service';
 import { Task } from '../../../../models';
 import { StageData, DropTargetInfo, TaskTouchStartPayload } from './text-view.types';
 import { TextTaskCardComponent } from './text-task-card.component';
+
+const NESTED_SCROLL_EDGE_THRESHOLD_PX = 96;
+const NESTED_SCROLL_MIN_DELTA_PX = 0.5;
+const NESTED_SCROLL_MAX_OUTER_SHARE = 0.58;
+const WHEEL_DELTA_LINE_MODE = 1;
+const WHEEL_DELTA_PAGE_MODE = 2;
+const WHEEL_DELTA_LINE_PX = 16;
 
 /**
  * 阶段卡片组件
@@ -49,12 +56,17 @@ import { TextTaskCardComponent } from './text-task-card.component';
       </header>
 
       <!-- 任务列表 -->
-      <div class="flex-1 min-h-0 custom-scrollbar task-stack transition-all duration-150 ease-out"
+      <div class="flex-1 min-h-0 overflow-y-auto custom-scrollbar task-stack transition-all duration-150 ease-out"
            [attr.data-stage-task-list]="stage().stageNumber"
            [attr.inert]="!isExpanded() ? '' : null"
+           (wheel)="onTaskListWheel($event)"
+           (touchstart)="onTaskListTouchStart($event)"
+           (touchmove)="onTaskListTouchMove($event)"
+           (touchend)="resetTaskListTouch()"
+           (touchcancel)="resetTaskListTouch()"
            [ngClass]="{
-             'space-y-2 px-3 pb-3 max-h-none overflow-visible opacity-100 animate-collapse-open': isExpanded() && !isMobile(),
-             'space-y-1.5 px-2 pb-2 max-h-none overflow-visible opacity-100 animate-collapse-open': isExpanded() && isMobile(),
+             'space-y-2 px-3 pb-3 max-h-[60vh] opacity-100 animate-collapse-open': isExpanded() && !isMobile(),
+             'space-y-1.5 px-2 pb-2 max-h-[40vh] opacity-100 animate-collapse-open': isExpanded() && isMobile(),
              'max-h-0 opacity-0 pointer-events-none overflow-hidden py-0 px-0 collapsed-section': !isExpanded()
            }"
            [attr.aria-hidden]="!isExpanded()">
@@ -100,6 +112,8 @@ import { TextTaskCardComponent } from './text-task-card.component';
   styles: [`
     .task-stack {
       touch-action: pan-y;
+      overscroll-behavior-y: auto;
+      -webkit-overflow-scrolling: touch;
     }
 
     .animate-collapse-open { 
@@ -113,6 +127,8 @@ import { TextTaskCardComponent } from './text-task-card.component';
 })
 export class TextStageCardComponent {
   private readonly projectState = inject(ProjectStateService);
+  private readonly hostElement = inject(ElementRef<HTMLElement>);
+  private taskListTouchLastY: number | null = null;
   
   readonly stage = input.required<StageData>();
   readonly isMobile = input(false);
@@ -147,6 +163,145 @@ export class TextStageCardComponent {
   readonly taskTouchMove = output<TouchEvent>();
   readonly taskTouchEnd = output<TouchEvent>();
   readonly taskTouchCancel = output<TouchEvent>();
+
+  onTaskListWheel(event: WheelEvent): void {
+    if (event.ctrlKey || this.shouldIgnoreScrollHandoff(event.target)) {
+      return;
+    }
+
+    const taskList = this.readCurrentTaskList(event.currentTarget);
+    const outerStageList = taskList ? this.findOuterStageList(taskList) : null;
+    if (!taskList || !outerStageList) {
+      return;
+    }
+
+    const consumed = this.applyNestedScrollHandoff(taskList, outerStageList, this.normalizeWheelDeltaY(event, taskList));
+    if (consumed && event.cancelable) {
+      event.preventDefault();
+    }
+  }
+
+  onTaskListTouchStart(event: TouchEvent): void {
+    if (event.touches.length !== 1 || this.shouldIgnoreScrollHandoff(event.target)) {
+      this.resetTaskListTouch();
+      return;
+    }
+
+    this.taskListTouchLastY = event.touches[0]?.clientY ?? null;
+  }
+
+  onTaskListTouchMove(event: TouchEvent): void {
+    if (event.touches.length !== 1 || this.taskListTouchLastY === null || this.shouldIgnoreScrollHandoff(event.target)) {
+      this.resetTaskListTouch();
+      return;
+    }
+
+    const currentY = event.touches[0]?.clientY ?? this.taskListTouchLastY;
+    const deltaY = this.taskListTouchLastY - currentY;
+    this.taskListTouchLastY = currentY;
+
+    const taskList = this.readCurrentTaskList(event.currentTarget);
+    const outerStageList = taskList ? this.findOuterStageList(taskList) : null;
+    if (!taskList || !outerStageList) {
+      return;
+    }
+
+    const consumed = this.applyNestedScrollHandoff(taskList, outerStageList, deltaY);
+    if (consumed && event.cancelable) {
+      event.preventDefault();
+    }
+  }
+
+  resetTaskListTouch(): void {
+    this.taskListTouchLastY = null;
+  }
+
+  // 内层接近边缘时提前分一部分滚动量给外层，避免到底后才硬切换。
+  private applyNestedScrollHandoff(taskList: HTMLElement, outerStageList: HTMLElement, deltaY: number): boolean {
+    if (!this.isExpanded() || Math.abs(deltaY) < NESTED_SCROLL_MIN_DELTA_PX) {
+      return false;
+    }
+
+    const outerShare = this.computeOuterScrollShare(taskList, outerStageList, deltaY);
+    const requestedOuterDelta = deltaY * outerShare;
+    const requestedInnerDelta = deltaY - requestedOuterDelta;
+    const consumedInnerDelta = this.applyScrollDelta(taskList, requestedInnerDelta);
+    const handoffDelta = deltaY - consumedInnerDelta;
+    const consumedOuterDelta = this.applyScrollDelta(outerStageList, handoffDelta);
+    const unconsumedDelta = deltaY - consumedInnerDelta - consumedOuterDelta;
+    const fallbackInnerDelta = this.applyScrollDelta(taskList, unconsumedDelta);
+
+    return Math.abs(consumedInnerDelta + consumedOuterDelta + fallbackInnerDelta) >= NESTED_SCROLL_MIN_DELTA_PX;
+  }
+
+  private computeOuterScrollShare(taskList: HTMLElement, outerStageList: HTMLElement, deltaY: number): number {
+    if (this.getScrollRoom(outerStageList, deltaY) <= 0) {
+      return 0;
+    }
+
+    const innerRoom = this.getScrollRoom(taskList, deltaY);
+    const threshold = Math.min(NESTED_SCROLL_EDGE_THRESHOLD_PX, Math.max(32, taskList.clientHeight * 0.35));
+    if (innerRoom >= threshold) {
+      return 0;
+    }
+
+    const edgeProgress = 1 - innerRoom / threshold;
+    const easedProgress = edgeProgress * edgeProgress * (3 - 2 * edgeProgress);
+    return easedProgress * NESTED_SCROLL_MAX_OUTER_SHARE;
+  }
+
+  private getScrollRoom(element: HTMLElement, deltaY: number): number {
+    if (deltaY > 0) {
+      return Math.max(0, element.scrollHeight - element.clientHeight - element.scrollTop);
+    }
+
+    return Math.max(0, element.scrollTop);
+  }
+
+  private applyScrollDelta(element: HTMLElement, deltaY: number): number {
+    if (Math.abs(deltaY) < NESTED_SCROLL_MIN_DELTA_PX) {
+      return 0;
+    }
+
+    const previousScrollTop = element.scrollTop;
+    const maxScrollTop = Math.max(0, element.scrollHeight - element.clientHeight);
+    element.scrollTop = Math.min(maxScrollTop, Math.max(0, previousScrollTop + deltaY));
+    return element.scrollTop - previousScrollTop;
+  }
+
+  private normalizeWheelDeltaY(event: WheelEvent, taskList: HTMLElement): number {
+    if (event.deltaMode === WHEEL_DELTA_LINE_MODE) {
+      return event.deltaY * WHEEL_DELTA_LINE_PX;
+    }
+
+    if (event.deltaMode === WHEEL_DELTA_PAGE_MODE) {
+      return event.deltaY * taskList.clientHeight;
+    }
+
+    return event.deltaY;
+  }
+
+  private readCurrentTaskList(currentTarget: EventTarget | null): HTMLElement | null {
+    return currentTarget instanceof HTMLElement ? currentTarget : null;
+  }
+
+  private findOuterStageList(taskList: HTMLElement): HTMLElement | null {
+    const closestStageList = taskList.closest('[data-stage-scroll-container]');
+    if (closestStageList instanceof HTMLElement) {
+      return closestStageList;
+    }
+
+    const hostParent = this.hostElement.nativeElement.parentElement;
+    return hostParent?.closest('[data-stage-scroll-container]') ?? null;
+  }
+
+  private shouldIgnoreScrollHandoff(target: EventTarget | null): boolean {
+    if (!(target instanceof Element)) {
+      return false;
+    }
+
+    return !!target.closest('input, textarea, select, [contenteditable="true"], [data-drag-handle], app-text-task-editor');
+  }
   
   getConnections(taskId: string) {
     return this.projectState.getTaskConnections(taskId);
