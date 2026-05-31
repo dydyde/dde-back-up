@@ -3196,7 +3196,7 @@ describe('UserSessionService', () => {
 
   // ====== 快照预填充测试 ======
   describe('prehydrateFromSnapshot', () => {
-    it('Store 为空时应从全局快照预填充项目', () => {
+    it('Store 为空时应从全局快照预填充项目元数据但不 materialize recentTasks', () => {
       (mockProjectState['projects'] as ReturnType<typeof vi.fn>).mockReturnValue([]);
       (mockAuthService['peekPersistedSessionIdentity'] as ReturnType<typeof vi.fn>).mockReturnValue({
         userId: 'snapshot-user',
@@ -3236,10 +3236,8 @@ describe('UserSessionService', () => {
           expect.objectContaining({
             id: 'a0000000-0000-4000-8000-000000000001',
             name: 'Alpha Protocol',
-            tasks: expect.arrayContaining([
-              expect.objectContaining({ id: 'b0000000-0000-4000-8000-000000000001', content: '阶段 1: 环境搭建' }),
-              expect.objectContaining({ id: 'b0000000-0000-4000-8000-000000000002', content: '核心逻辑实现' }),
-            ]),
+            tasks: [],
+            connections: [],
           }),
         ]),
       );

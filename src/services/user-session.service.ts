@@ -32,7 +32,7 @@ import { ToastService } from './toast.service';
 import { pushStartupTrace } from '../utils/startup-trace';
 import { isValidUUID } from '../utils/validation';
 import { resetFocusState } from '../state/focus-stores';
-import type { LaunchSnapshot, LaunchSnapshotProject, LaunchSnapshotTask } from '../models/launch-shell';
+import type { LaunchSnapshot, LaunchSnapshotProject } from '../models/launch-shell';
 
 type StartupProjectCatalogStage = 'unresolved' | 'partial' | 'resolved';
 
@@ -533,7 +533,6 @@ export class UserSessionService {
   private buildPrehydrateProjects(snapshotProjects: LaunchSnapshotProject[]): Project[] {
     // 安全限制：最多预填充 50 个项目，防止恶意 localStorage 注入导致内存/渲染爆炸
     const MAX_PREHYDRATE_PROJECTS = 50;
-    const MAX_RECENT_TASKS = 20;
     const MAX_NAME_LENGTH = 200;
     const now = new Date().toISOString();
     const results: Project[] = [];
@@ -542,31 +541,15 @@ export class UserSessionService {
       // 安全校验：ID 必须是合法 UUID，防止注入恶意字符串
       if (!sp.id || typeof sp.id !== 'string' || !isValidUUID(sp.id)) continue;
 
-      const tasks: Task[] = (sp.recentTasks ?? [])
-        .slice(0, MAX_RECENT_TASKS)
-        .filter((t: LaunchSnapshotTask) => t.id && typeof t.id === 'string' && isValidUUID(t.id))
-        .map((t: LaunchSnapshotTask, idx: number) => ({
-          id: t.id,
-          title: this.sanitizeSnapshotString(t.title, MAX_NAME_LENGTH),
-          content: this.sanitizeSnapshotString(t.title, MAX_NAME_LENGTH),
-          stage: null,
-          parentId: null,
-          order: idx,
-          rank: 10000 + idx,
-          status: t.status || 'active',
-          x: 0,
-          y: 0,
-          createdDate: now,
-          displayId: t.displayId || '?',
-        }));
-
       results.push({
         id: sp.id,
         name: this.sanitizeSnapshotString(sp.name, MAX_NAME_LENGTH) || 'Untitled',
         description: this.sanitizeSnapshotString(sp.description, MAX_NAME_LENGTH),
         createdDate: now,
         updatedAt: sp.updatedAt ?? now,
-        tasks,
+        // launch-snapshot 里的 recentTasks 只是秒开摘要，不包含 stage/parentId/content 等
+        // 完整字段；不能 materialize 到 TaskStore，否则会被当成真实待分配任务展示。
+        tasks: [],
         connections: [],
       });
     }
