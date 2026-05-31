@@ -577,6 +577,23 @@ describe('RetryQueueService', () => {
     expect(service.hasTerminalConflictDrainFlag()).toBe(true);
   });
 
+  it('缺少 updatedAt 的 task upsert 重试项应在回放前终止清理', async () => {
+    const staleTask = createTask('missing-updated-at-retry');
+    delete staleTask.updatedAt;
+
+    service.add('task', 'upsert', staleTask, 'project-missing-updated-at', 'test-user');
+    online = true;
+
+    const result = await service.processQueueSlice({ maxItems: 1, maxDurationMs: 1000 });
+
+    expect(result.completed).toBe(true);
+    expect(handler.pushTask).not.toHaveBeenCalled();
+    expect(service.length).toBe(0);
+    expect(service.hasSuccessfulDrainFlag()).toBe(false);
+    expect(service.hasTerminalConflictDrainFlag()).toBe(true);
+    expect(toastMock.error).not.toHaveBeenCalled();
+  });
+
   it('切账号后清空当前视图并保存，不应覆盖其它账号的持久化重试项', async () => {
     loadFromStorageSpy.mockRestore();
     initDbSpy.mockResolvedValue(null);

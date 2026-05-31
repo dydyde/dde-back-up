@@ -503,6 +503,13 @@ describe('DisasterBackupService', () => {
     expect(payload.localState!.offlineSnapshot?.localStorage).not.toContain('foreign-legacy-offline-project');
     expect(payload.localState!.offlineSnapshot?.indexedDb).not.toContain('foreign-legacy-snapshot-project');
     expect(payload.localState!.dockSnapshot?.localStorage).not.toContain('foreign-task');
+    expect(payload.localState!.retryQueue).toEqual([
+      expect.objectContaining({
+        id: 'retry-1',
+        data: { id: 'task-1' },
+        sourceUserId: 'user-1',
+      }),
+    ]);
     expect(JSON.stringify(payload.localState!.dockSnapshot?.indexedDb)).not.toContain('foreign-task');
     expect(payload.localState!.retryQueue).not.toEqual(expect.arrayContaining([expect.objectContaining({ id: 'retry-foreign' })]));
     expect(payload.localState!.actionQueue).not.toEqual(expect.arrayContaining([expect.objectContaining({ id: 'action-foreign' })]));

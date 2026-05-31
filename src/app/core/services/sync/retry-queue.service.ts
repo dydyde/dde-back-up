@@ -21,8 +21,7 @@ import { AuthService } from '../../../../services/auth.service';
 import { ProjectStateService } from '../../../../services/project-state.service';
 import { BlackBoxSyncService } from '../../../../services/black-box-sync.service';
 import { WriteGuardService } from '../../../../services/write-guard.service';
-import { SyncWriterLeaseService } from '../../../../services/sync-writer-lease.service';
-import type { LeaseHandle } from '../../../../services/sync-writer-lease.service';
+import { SyncWriterLeaseService, type LeaseHandle } from '../../../../services/sync-writer-lease.service';
 import { SYNC_CONFIG, SYNC_DURABILITY_CONFIG, CIRCUIT_BREAKER_CONFIG } from '../../../../config';
 import { AUTH_CONFIG } from '../../../../config/auth.config';
 import { Task, Project, Connection, BlackBoxEntry } from '../../../../models';
@@ -753,6 +752,15 @@ export class RetryQueueService {
       content: existingEntry.content,
     };
   }
+
+  private isTaskUpsertMissingUpdatedAt(item: RetryQueueItem): boolean {
+    if (item.type !== 'task' || item.operation !== 'upsert') {
+      return false;
+    }
+
+    const updatedAt = (item.data as Partial<Task>).updatedAt;
+    return typeof updatedAt !== 'string' || updatedAt.trim().length === 0;
+  }
   
   /**
    * 移除所有匹配的项
@@ -1135,6 +1143,7 @@ export class RetryQueueService {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.logger.warn('sync writer lease 获取失败，本轮 RetryQueue flush 已延后', { message });
+      // eslint-disable-next-line no-restricted-syntax -- lease 获取失败用 null 表示本轮延后，避免误删队列项。
       return null;
     } finally {
       clearTimeout(timeout);
@@ -1831,6 +1840,17 @@ export class RetryQueueService {
 
         if (item.data?.id && !isValidUUID(item.data.id)) {
           this.logger.warn('队列中发现非法 ID，自动移除', { type: item.type, id: item.data.id });
+          processedIds.add(item.id);
+          hadTerminalRemoval = true;
+          continue;
+        }
+
+        if (this.isTaskUpsertMissingUpdatedAt(item)) {
+          this.logger.info('清理缺少 updatedAt 的任务重试项，跳过危险重放', {
+            taskId: item.data.id,
+            projectId: item.projectId,
+            sourceUserId: item.sourceUserId,
+          });
           processedIds.add(item.id);
           hadTerminalRemoval = true;
           continue;

@@ -47,6 +47,9 @@ import {
   markTaskCompletedAtColumnUnavailable,
   omitTaskCompletedAtColumn,
 } from '../../../../utils/task-schema-compat';
+
+const MISSING_TASK_TIMESTAMP_REASON = 'missing_task_timestamp';
+
 /** Tombstone 查询结果 */
 export interface TombstoneQueryResult {
   ids: Set<string>;
@@ -192,6 +195,80 @@ export class TaskSyncOperationsService {
         details: `taskId=${taskId}, projectId=${projectId}, remoteUpdatedAt=${remoteUpdatedAt ?? 'unknown'}`,
       },
     ) as EnhancedError;
+  }
+
+  private createMissingTaskTimestampConflictError(
+    taskId: string,
+    projectId: string,
+    remoteUpdatedAt: string | null,
+  ): EnhancedError {
+    return Object.assign(
+      new Error('任务缺少本地更新时间，已放弃旧写入并等待远端权威数据覆盖'),
+      {
+        name: 'VersionConflictError',
+        errorType: 'VersionConflictError',
+        code: 'TASK_REMOTE_NEWER',
+        isRetryable: false,
+        details: `taskId=${taskId}, projectId=${projectId}, remoteUpdatedAt=${remoteUpdatedAt ?? 'unknown'}, reason=${MISSING_TASK_TIMESTAMP_REASON}`,
+      },
+    ) as EnhancedError;
+  }
+
+  private isMissingTaskTimestampRejection(result: SyncRpcResult): boolean {
+    return result.status === 'remote-newer' && result.reason === MISSING_TASK_TIMESTAMP_REASON;
+  }
+
+  private throwMissingTaskTimestampPermanentFailure(
+    task: Task,
+    projectId: string,
+    result: SyncRpcResult,
+  ): never {
+    this.logger.info('pushTask: 丢弃缺少 updatedAt 的旧任务写入，等待远端权威数据覆盖', {
+      taskId: task.id,
+      projectId,
+      remoteUpdatedAt: result.remoteUpdatedAt,
+      reason: result.reason,
+    });
+
+    throw new PermanentFailureError(
+      'Task missing local updatedAt rejected by sync RPC',
+      this.createMissingTaskTimestampConflictError(task.id, projectId, result.remoteUpdatedAt ?? null),
+      {
+        operation: 'pushTask',
+        taskId: task.id,
+        projectId,
+        reason: MISSING_TASK_TIMESTAMP_REASON,
+        remoteUpdatedAt: result.remoteUpdatedAt ?? null,
+      },
+    );
+  }
+
+  private handleRemoteNewerTaskSyncRpcResult(
+    result: SyncRpcResult,
+    task: Task,
+    projectId: string,
+    fromRetryQueue: boolean,
+    sourceUserId: string | undefined,
+  ): boolean {
+    if (this.isMissingTaskTimestampRejection(result)) {
+      this.throwMissingTaskTimestampPermanentFailure(task, projectId, result);
+    }
+
+    this.logger.warn('pushTask: sync RPC CAS 拒绝，远端版本更新', {
+      taskId: task.id,
+      projectId,
+      remoteUpdatedAt: result.remoteUpdatedAt,
+      reason: result.reason,
+    });
+    this.sentryLazyLoader.captureMessage('sync_rpc_task_remote_newer', {
+      level: 'warning',
+      tags: { operation: 'pushTask', entityType: 'task', status: result.status },
+      extra: { taskId: task.id, projectId, remoteUpdatedAt: result.remoteUpdatedAt, reason: result.reason },
+    });
+    if (!fromRetryQueue) {
+      this.safeAddToRetryQueue('task', 'upsert', task, projectId, sourceUserId);
+    }
+    return false;
   }
 
   private createClockUncertainError(
@@ -819,21 +896,7 @@ export class TaskSyncOperationsService {
     }
 
     if (result.status === 'remote-newer') {
-      this.logger.warn('pushTask: sync RPC CAS 拒绝，远端版本更新', {
-        taskId: task.id,
-        projectId,
-        remoteUpdatedAt: result.remoteUpdatedAt,
-        reason: result.reason,
-      });
-      this.sentryLazyLoader.captureMessage('sync_rpc_task_remote_newer', {
-        level: 'warning',
-        tags: { operation: 'pushTask', entityType: 'task', status: result.status },
-        extra: { taskId: task.id, projectId, remoteUpdatedAt: result.remoteUpdatedAt, reason: result.reason },
-      });
-      if (!fromRetryQueue) {
-        this.safeAddToRetryQueue('task', 'upsert', task, projectId, sourceUserId);
-      }
-      return false;
+      return this.handleRemoteNewerTaskSyncRpcResult(result, task, projectId, fromRetryQueue, sourceUserId);
     }
 
     const message = result.status === 'client-version-rejected'

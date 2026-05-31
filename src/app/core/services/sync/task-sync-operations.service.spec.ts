@@ -915,6 +915,38 @@ describe('TaskSyncOperationsService', () => {
     expect(mockRetryQueue.recordCircuitSuccess).not.toHaveBeenCalled();
   });
 
+  it('pushTask sync RPC 遇到 missing_task_timestamp 时应作为终止态旧写入丢弃', async () => {
+    mockSyncRpcClient.isFeatureEnabled.mockReturnValue(true);
+    const rpcResult: SyncRpcResult = createSyncRpcResult({
+      status: 'remote-newer',
+      reason: 'missing_task_timestamp',
+      remoteUpdatedAt: '2026-05-31T09:31:36.000Z',
+    });
+    mockSyncRpcClient.upsertTask.mockImplementationOnce(async () => rpcResult);
+    const task: Task = {
+      id: 'task-rpc-missing-timestamp',
+      title: '旧快照任务',
+      content: '旧快照任务',
+      stage: null,
+      parentId: null,
+      order: 0,
+      rank: 10000,
+      status: 'active',
+      x: 0,
+      y: 0,
+      displayId: 'T-RPCM',
+      createdDate: new Date().toISOString(),
+      deletedAt: null,
+    };
+
+    await expect(service.pushTask(task, 'project-1', false, false, 'user-1'))
+      .rejects.toBeInstanceOf(PermanentFailureError);
+
+    expect(upsertPayload).toBeNull();
+    expect(mockRetryQueue.add).not.toHaveBeenCalled();
+    expect(mockSyncState.setSyncError).not.toHaveBeenCalledWith('同步写入被服务端拒绝，已保留本地变更等待重试');
+  });
+
   it('sourceUserId 与当前会话不匹配时应拒绝写云端并按原 owner 入队', async () => {
     const task: Task = {
       id: 'task-owner-mismatch',
