@@ -37,6 +37,21 @@ export const APP_LIFECYCLE_CONFIG = {
   NEW_VERSION_PROMPT_THRESHOLD_MS: 15 * 60 * 1000,
 
   /**
+   * Service Worker 注册完成后的首次主动版本检查延迟（毫秒）
+   */
+  SW_UPDATE_INITIAL_CHECK_DELAY_MS: 10 * 1000,
+
+  /**
+   * 页面保持前台时的版本检查间隔（毫秒）
+   */
+  SW_UPDATE_VISIBLE_POLL_INTERVAL_MS: 5 * 60 * 1000,
+
+  /**
+   * visibility/focus/online 连续触发时的版本检查冷却窗口（毫秒）
+   */
+  SW_UPDATE_RESUME_CHECK_COOLDOWN_MS: 60 * 1000,
+
+  /**
    * 恢复场景下黑匣子拉取冷却时间（毫秒）
    */
   RESUME_PULL_COOLDOWN_MS: 10 * 1000,

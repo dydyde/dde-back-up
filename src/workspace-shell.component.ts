@@ -108,6 +108,8 @@ type StartupDiagnosticsLike = {
   initialize: () => Promise<void> | void;
 };
 
+type SwUpdateCheckReason = 'startup' | 'periodic' | 'visibility' | 'focus' | 'online';
+
 const DATA_PROTECTION_REMINDER_TITLE = '数据备份提醒';
 const DATA_PROTECTION_REMINDER_MESSAGE = '已超过 7 天未完成数据备份，建议前往设置执行导出或本地备份。';
 const ANDROID_WIDGET_BOOTSTRAP_STORAGE_KEY = 'nanoflow.android-widget-bootstrap';
@@ -954,12 +956,27 @@ export class WorkspaceShellComponent implements OnInit, OnDestroy, AfterViewInit
   /** Android Widget 主回跳未接管时，切换 intent fallback 的等待时间 */
   private readonly ANDROID_WIDGET_CALLBACK_FALLBACK_MS = 800;
   private androidWidgetManualCallbackFallbackTimer: ReturnType<typeof setTimeout> | null = null;
+  private swUpdateInitialCheckTimer: ReturnType<typeof setTimeout> | null = null;
+  private swUpdatePollTimer: ReturnType<typeof setInterval> | null = null;
+  private swUpdateCheckInFlight = false;
+  private lastSwUpdateCheckAt = 0;
   private androidWidgetBootstrapCaptureKey: string | null = null;
   private androidWidgetBootstrapInFlight = false;
   private destroyed = false;
   private modalCoordRef: WorkspaceModalCoordinatorService | null = null;
   private modalCoordPromise: Promise<WorkspaceModalCoordinatorService> | null = null;
   private readonly launchSnapshotWriteBlocked = signal(false);
+  private readonly handleSwUpdateVisibilityCheck = () => {
+    if (document.visibilityState === 'visible') {
+      void this.checkForSwUpdate('visibility');
+    }
+  };
+  private readonly handleSwUpdateFocusCheck = () => {
+    void this.checkForSwUpdate('focus');
+  };
+  private readonly handleSwUpdateOnlineCheck = () => {
+    void this.checkForSwUpdate('online');
+  };
 
   constructor() {
     // 启动流程：仅执行必要的同步初始化
@@ -2241,6 +2258,7 @@ export class WorkspaceShellComponent implements OnInit, OnDestroy, AfterViewInit
   }
 
   ngOnDestroy() {
+    this.destroyed = true;
     // DestroyRef 自动处理取消订阅，无需手动触发
     
     // 确保待处理的撤销操作被保存
@@ -2256,6 +2274,7 @@ export class WorkspaceShellComponent implements OnInit, OnDestroy, AfterViewInit
     this.clearFocusEntrySyncPulseRetry();
     this.teardownFlowRestoreBreadcrumbListener();
     this.teardownSyncPulseBreadcrumbListener();
+    this.teardownSwUpdateChecks();
     this.destroySyncPulse();
     this.startupTier.destroy();
     if (FEATURE_FLAGS.RESUME_INTERACTION_FIRST_V1) {
@@ -2774,7 +2793,80 @@ export class WorkspaceShellComponent implements OnInit, OnDestroy, AfterViewInit
             }
           );
         });
+      this.setupSwUpdateChecks();
     }
+  }
+
+  private setupSwUpdateChecks(): void {
+    this.scheduleSwUpdateCheck('startup', APP_LIFECYCLE_CONFIG.SW_UPDATE_INITIAL_CHECK_DELAY_MS, true);
+
+    if (!this.swUpdatePollTimer) {
+      this.swUpdatePollTimer = setInterval(() => {
+        void this.checkForSwUpdate('periodic');
+      }, APP_LIFECYCLE_CONFIG.SW_UPDATE_VISIBLE_POLL_INTERVAL_MS);
+    }
+
+    document.addEventListener('visibilitychange', this.handleSwUpdateVisibilityCheck);
+    window.addEventListener('focus', this.handleSwUpdateFocusCheck);
+    window.addEventListener('online', this.handleSwUpdateOnlineCheck);
+  }
+
+  private scheduleSwUpdateCheck(reason: SwUpdateCheckReason, delayMs: number, force = false): void {
+    if (this.swUpdateInitialCheckTimer) {
+      clearTimeout(this.swUpdateInitialCheckTimer);
+    }
+
+    this.swUpdateInitialCheckTimer = setTimeout(() => {
+      this.swUpdateInitialCheckTimer = null;
+      void this.checkForSwUpdate(reason, force);
+    }, delayMs);
+  }
+
+  private async checkForSwUpdate(reason: SwUpdateCheckReason, force = false): Promise<void> {
+    if (!this.swUpdate.isEnabled || this.destroyed || this.swUpdateCheckInFlight) {
+      return;
+    }
+
+    if (document.visibilityState === 'hidden') {
+      return;
+    }
+
+    const now = Date.now();
+    if (!force && now - this.lastSwUpdateCheckAt < APP_LIFECYCLE_CONFIG.SW_UPDATE_RESUME_CHECK_COOLDOWN_MS) {
+      return;
+    }
+
+    this.lastSwUpdateCheckAt = now;
+    this.swUpdateCheckInFlight = true;
+    try {
+      const updateFound = await this.swUpdate.checkForUpdate();
+      if (updateFound) {
+        this.logger.info('SwUpdate checkForUpdate detected a deploy version', { reason });
+      } else {
+        this.logger.debug('SwUpdate checkForUpdate completed without new version', { reason });
+      }
+    } catch (error) {
+      this.logger.warn('SwUpdate checkForUpdate failed', {
+        reason,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      this.swUpdateCheckInFlight = false;
+    }
+  }
+
+  private teardownSwUpdateChecks(): void {
+    if (this.swUpdateInitialCheckTimer) {
+      clearTimeout(this.swUpdateInitialCheckTimer);
+      this.swUpdateInitialCheckTimer = null;
+    }
+    if (this.swUpdatePollTimer) {
+      clearInterval(this.swUpdatePollTimer);
+      this.swUpdatePollTimer = null;
+    }
+    document.removeEventListener('visibilitychange', this.handleSwUpdateVisibilityCheck);
+    window.removeEventListener('focus', this.handleSwUpdateFocusCheck);
+    window.removeEventListener('online', this.handleSwUpdateOnlineCheck);
   }
 
   // Resizing State
