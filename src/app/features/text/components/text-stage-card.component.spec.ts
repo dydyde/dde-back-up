@@ -10,11 +10,13 @@ describe('TextStageCardComponent', () => {
     expect(source).toContain('[attr.aria-hidden]="!isExpanded()"');
   });
 
-  it('阶段任务列表应允许滚动链传递到外层阶段列表', () => {
+  it('阶段任务列表应交给外层阶段容器统一滚动', () => {
     const source = readFileSync(resolve(__dirname, 'text-stage-card.component.ts'), 'utf8');
 
-    expect(source).toContain("[style.overscroll-behavior-y]=\"'auto'\"");
-    expect(source).not.toContain('overscroll-behavior-y]=\"isMobile()');
-    expect(source).not.toContain("'contain'");
+    expect(source).toContain('max-h-none overflow-visible');
+    expect(source).not.toContain('overflow-y-auto');
+    expect(source).not.toContain('max-h-[60vh]');
+    expect(source).not.toContain('max-h-[40vh]');
+    expect(source).not.toContain('[style.overscroll-behavior-y]');
   });
 });

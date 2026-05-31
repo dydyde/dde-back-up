@@ -110,11 +110,12 @@ import { TextStageCardComponent } from './text-stage-card.component';
         </div>
         
         <!-- 阶段列表 -->
-           <div class="w-full flex-1 min-h-0 min-w-0 overflow-auto flex flex-col gap-3"
+           <div class="stage-scroll-container custom-scrollbar w-full flex-1 min-h-0 min-w-0 overflow-auto flex flex-col gap-3"
              data-stage-scroll-container
              [ngClass]="{'px-1': !isMobile, 'gap-2': isMobile}">
           @for (stage of visibleStages(); track stage.stageNumber) {
             <app-text-stage-card
+              class="stage-scroll-item"
               [stage]="stage"
               [isMobile]="isMobile"
               [isExpanded]="isStageExpanded(stage.stageNumber)"
@@ -162,6 +163,28 @@ import { TextStageCardComponent } from './text-stage-card.component';
     @keyframes dropdown {
       from { opacity: 0; transform: translateY(-4px); }
       to { opacity: 1; transform: translateY(0); }
+    }
+
+    .stage-scroll-container {
+      overscroll-behavior-y: contain;
+      scroll-behavior: smooth;
+      scroll-padding-block: 0.75rem;
+      touch-action: pan-y;
+      -webkit-overflow-scrolling: touch;
+    }
+
+    .stage-scroll-item {
+      scroll-margin-block: 0.75rem;
+    }
+
+    @media (prefers-reduced-motion: no-preference) {
+      .stage-scroll-container {
+        scroll-snap-type: y proximity;
+      }
+
+      .stage-scroll-item {
+        scroll-snap-align: start;
+      }
     }
   `]
 })
