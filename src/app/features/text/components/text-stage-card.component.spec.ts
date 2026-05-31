@@ -19,6 +19,10 @@ describe('TextStageCardComponent', () => {
     expect(source).toContain('(wheel)="onTaskListWheel($event)"');
     expect(source).toContain('(touchmove)="onTaskListTouchMove($event)"');
     expect(source).toContain('NESTED_SCROLL_EDGE_THRESHOLD_PX');
-    expect(source).toContain('NESTED_SCROLL_MAX_OUTER_SHARE');
+    expect(source).toContain('NESTED_SCROLL_PREVIEW_MAX_OUTER_SHARE');
+    expect(source).toContain('NESTED_SCROLL_BOUNDARY_EPSILON_PX');
+    expect(source).toContain('computeOuterPreviewDelta');
+    expect(source).toContain('getClampedScrollTop');
+    expect(source).not.toContain('requestedInnerDelta');
   });
 });

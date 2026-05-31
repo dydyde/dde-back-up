@@ -5,9 +5,10 @@ import { Task } from '../../../../models';
 import { StageData, DropTargetInfo, TaskTouchStartPayload } from './text-view.types';
 import { TextTaskCardComponent } from './text-task-card.component';
 
-const NESTED_SCROLL_EDGE_THRESHOLD_PX = 96;
+const NESTED_SCROLL_EDGE_THRESHOLD_PX = 144;
 const NESTED_SCROLL_MIN_DELTA_PX = 0.5;
-const NESTED_SCROLL_MAX_OUTER_SHARE = 0.58;
+const NESTED_SCROLL_PREVIEW_MAX_OUTER_SHARE = 0.42;
+const NESTED_SCROLL_BOUNDARY_EPSILON_PX = 1;
 const WHEEL_DELTA_LINE_MODE = 1;
 const WHEEL_DELTA_PAGE_MODE = 2;
 const WHEEL_DELTA_LINE_PX = 16;
@@ -175,8 +176,8 @@ export class TextStageCardComponent {
       return;
     }
 
-    const consumed = this.applyNestedScrollHandoff(taskList, outerStageList, this.normalizeWheelDeltaY(event, taskList));
-    if (consumed && event.cancelable) {
+    const shouldPreventDefault = this.applyNestedScrollHandoff(taskList, outerStageList, this.normalizeWheelDeltaY(event, taskList));
+    if (shouldPreventDefault && event.cancelable) {
       event.preventDefault();
     }
   }
@@ -206,8 +207,8 @@ export class TextStageCardComponent {
       return;
     }
 
-    const consumed = this.applyNestedScrollHandoff(taskList, outerStageList, deltaY);
-    if (consumed && event.cancelable) {
+    const shouldPreventDefault = this.applyNestedScrollHandoff(taskList, outerStageList, deltaY);
+    if (shouldPreventDefault && event.cancelable) {
       event.preventDefault();
     }
   }
@@ -216,46 +217,63 @@ export class TextStageCardComponent {
     this.taskListTouchLastY = null;
   }
 
-  // 内层接近边缘时提前分一部分滚动量给外层，避免到底后才硬切换。
+  // 保留原生内层滚动惯性；只在边缘预滚外层，并在真正跨界时接管一次。
   private applyNestedScrollHandoff(taskList: HTMLElement, outerStageList: HTMLElement, deltaY: number): boolean {
     if (!this.isExpanded() || Math.abs(deltaY) < NESTED_SCROLL_MIN_DELTA_PX) {
       return false;
     }
 
-    const outerShare = this.computeOuterScrollShare(taskList, outerStageList, deltaY);
-    const requestedOuterDelta = deltaY * outerShare;
-    const requestedInnerDelta = deltaY - requestedOuterDelta;
-    const consumedInnerDelta = this.applyScrollDelta(taskList, requestedInnerDelta);
-    const handoffDelta = deltaY - consumedInnerDelta;
-    const consumedOuterDelta = this.applyScrollDelta(outerStageList, handoffDelta);
-    const unconsumedDelta = deltaY - consumedInnerDelta - consumedOuterDelta;
-    const fallbackInnerDelta = this.applyScrollDelta(taskList, unconsumedDelta);
+    const innerRoom = this.getScrollRoom(taskList, deltaY);
+    const outerRoom = this.getScrollRoom(outerStageList, deltaY);
+    if (outerRoom <= NESTED_SCROLL_BOUNDARY_EPSILON_PX) {
+      return false;
+    }
 
-    return Math.abs(consumedInnerDelta + consumedOuterDelta + fallbackInnerDelta) >= NESTED_SCROLL_MIN_DELTA_PX;
+    if (innerRoom <= NESTED_SCROLL_BOUNDARY_EPSILON_PX) {
+      return Math.abs(this.applyScrollDelta(outerStageList, deltaY)) >= NESTED_SCROLL_MIN_DELTA_PX;
+    }
+
+    const deltaMagnitude = Math.abs(deltaY);
+    if (deltaMagnitude > innerRoom + NESTED_SCROLL_BOUNDARY_EPSILON_PX) {
+      const innerDelta = Math.sign(deltaY) * innerRoom;
+      const consumedInnerDelta = this.applyScrollDelta(taskList, innerDelta);
+      const consumedOuterDelta = this.applyScrollDelta(outerStageList, deltaY - consumedInnerDelta);
+      return Math.abs(consumedInnerDelta + consumedOuterDelta) >= NESTED_SCROLL_MIN_DELTA_PX;
+    }
+
+    this.applyScrollDelta(outerStageList, this.computeOuterPreviewDelta(taskList, outerStageList, deltaY, innerRoom));
+    return false;
   }
 
-  private computeOuterScrollShare(taskList: HTMLElement, outerStageList: HTMLElement, deltaY: number): number {
-    if (this.getScrollRoom(outerStageList, deltaY) <= 0) {
+  private computeOuterPreviewDelta(
+    taskList: HTMLElement,
+    outerStageList: HTMLElement,
+    deltaY: number,
+    innerRoom: number,
+  ): number {
+    const outerRoom = this.getScrollRoom(outerStageList, deltaY);
+    if (outerRoom <= NESTED_SCROLL_BOUNDARY_EPSILON_PX) {
       return 0;
     }
 
-    const innerRoom = this.getScrollRoom(taskList, deltaY);
-    const threshold = Math.min(NESTED_SCROLL_EDGE_THRESHOLD_PX, Math.max(32, taskList.clientHeight * 0.35));
+    const threshold = Math.min(NESTED_SCROLL_EDGE_THRESHOLD_PX, Math.max(48, taskList.clientHeight * 0.42));
     if (innerRoom >= threshold) {
       return 0;
     }
 
     const edgeProgress = 1 - innerRoom / threshold;
     const easedProgress = edgeProgress * edgeProgress * (3 - 2 * edgeProgress);
-    return easedProgress * NESTED_SCROLL_MAX_OUTER_SHARE;
+    const requestedDelta = deltaY * easedProgress * NESTED_SCROLL_PREVIEW_MAX_OUTER_SHARE;
+    return Math.sign(deltaY) * Math.min(Math.abs(requestedDelta), outerRoom);
   }
 
   private getScrollRoom(element: HTMLElement, deltaY: number): number {
+    const scrollTop = this.getClampedScrollTop(element);
     if (deltaY > 0) {
-      return Math.max(0, element.scrollHeight - element.clientHeight - element.scrollTop);
+      return Math.max(0, this.getMaxScrollTop(element) - scrollTop);
     }
 
-    return Math.max(0, element.scrollTop);
+    return scrollTop;
   }
 
   private applyScrollDelta(element: HTMLElement, deltaY: number): number {
@@ -263,10 +281,18 @@ export class TextStageCardComponent {
       return 0;
     }
 
-    const previousScrollTop = element.scrollTop;
-    const maxScrollTop = Math.max(0, element.scrollHeight - element.clientHeight);
+    const previousScrollTop = this.getClampedScrollTop(element);
+    const maxScrollTop = this.getMaxScrollTop(element);
     element.scrollTop = Math.min(maxScrollTop, Math.max(0, previousScrollTop + deltaY));
-    return element.scrollTop - previousScrollTop;
+    return this.getClampedScrollTop(element) - previousScrollTop;
+  }
+
+  private getMaxScrollTop(element: HTMLElement): number {
+    return Math.max(0, element.scrollHeight - element.clientHeight);
+  }
+
+  private getClampedScrollTop(element: HTMLElement): number {
+    return Math.min(this.getMaxScrollTop(element), Math.max(0, element.scrollTop));
   }
 
   private normalizeWheelDeltaY(event: WheelEvent, taskList: HTMLElement): number {
