@@ -10,6 +10,7 @@ import { SentryLazyLoaderService } from './sentry-lazy-loader.service';
 import { mockSentryLazyLoaderService } from '../test-setup.mocks';
 import type { ChangeRecord } from './change-tracker.types';
 import type { Connection, Project, Task } from '../models';
+import { createBrowserNetworkSuspendedError } from '../utils/browser-network-suspension';
 
 const mockLoggerCategory = {
   info: vi.fn(),
@@ -154,6 +155,16 @@ describe('DeltaSyncCoordinatorService', () => {
   });
 
   describe('performDeltaSync connection merge', () => {
+    it('should defer browser network suspension without logging an error or reporting Sentry', async () => {
+      mockSimpleSyncService.checkForDrift.mockRejectedValue(createBrowserNetworkSuspendedError());
+
+      const result = await service.performDeltaSync('project-1');
+
+      expect(result).toEqual({ taskChanges: 0, connectionChanges: 0 });
+      expect(mockLoggerCategory.error).not.toHaveBeenCalled();
+      expect(mockSentryLazyLoaderService.captureException).not.toHaveBeenCalled();
+    });
+
     it('should persist merged state before committing the returned cursor candidate', async () => {
       const currentProject = createProject({
         updatedAt: '2026-04-19T00:00:00.000Z',

@@ -78,6 +78,8 @@ describe('ConnectionSyncOperationsService', () => {
 
   const mockTombstoneService = {
     getLocalTombstones: vi.fn(() => new Set<string>()),
+    getConnectionTombstoneCache: vi.fn(() => null),
+    updateConnectionTombstoneCache: vi.fn(),
   };
 
   let connectionTombstoneResult: { data: { connection_id: string } | null; error: unknown | null };
@@ -356,6 +358,16 @@ describe('ConnectionSyncOperationsService', () => {
 
     expect(result).toBe(false);
     expect(mockRetryQueue.add).toHaveBeenCalledWith('connection', 'upsert', connection, 'project-1', 'user-1');
+  });
+
+  it('getConnectionTombstoneIds 在浏览器网络挂起时应延后且不告警', async () => {
+    setVisibilityState('hidden');
+
+    const tombstones = await service.getConnectionTombstoneIds('project-1');
+
+    expect(tombstones.size).toBe(0);
+    expect(mockClient.from).not.toHaveBeenCalledWith('connection_tombstones');
+    expect(mockLogger.warn).not.toHaveBeenCalled();
   });
 
   it('pushConnection 在 sync RPC flag 开启时应走 RPC/CAS 而不是直接 table upsert', async () => {

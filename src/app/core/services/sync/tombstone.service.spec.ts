@@ -3,6 +3,17 @@ import { Injector, runInInjectionContext } from '@angular/core';
 import { TombstoneService } from './tombstone.service';
 import { LoggerService } from '../../../../services/logger.service';
 import { RequestThrottleService } from '../../../../services/request-throttle.service';
+import {
+  isBrowserNetworkSuspendedError,
+  resetBrowserNetworkSuspensionTrackingForTests,
+} from '../../../../utils/browser-network-suspension';
+
+function setVisibilityState(state: DocumentVisibilityState): void {
+  Object.defineProperty(document, 'visibilityState', {
+    configurable: true,
+    value: state,
+  });
+}
 
 const mockLoggerCategory = {
   info: vi.fn(),
@@ -23,8 +34,11 @@ describe('TombstoneService', () => {
   let service: TombstoneService;
 
   beforeEach(() => {
+    vi.clearAllMocks();
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-04-23T00:00:00.000Z'));
+    resetBrowserNetworkSuspensionTrackingForTests();
+    setVisibilityState('visible');
     localStorage.removeItem('nanoflow.local-tombstones');
 
     const injector = Injector.create({
@@ -40,6 +54,7 @@ describe('TombstoneService', () => {
 
   afterEach(() => {
     vi.useRealTimers();
+    resetBrowserNetworkSuspensionTrackingForTests();
     localStorage.removeItem('nanoflow.local-tombstones');
   });
 
@@ -84,5 +99,18 @@ describe('TombstoneService', () => {
     service.updateTombstoneCache('project-1', new Set(['task-1']));
 
     expect(service.shouldRejectTaskUpsert('project-1', 'task-1', '2026-04-23T01:00:00.000Z')).toBe(false);
+  });
+
+  it('getTombstonesWithCache should return a suspension error without querying remote while hidden', async () => {
+    setVisibilityState('hidden');
+
+    const result = await service.getTombstonesWithCache(
+      'project-1',
+      {} as Parameters<TombstoneService['getTombstonesWithCache']>[1]
+    );
+
+    expect(result.data).toBeNull();
+    expect(isBrowserNetworkSuspendedError(result.error)).toBe(true);
+    expect(mockThrottleService.execute).not.toHaveBeenCalled();
   });
 });

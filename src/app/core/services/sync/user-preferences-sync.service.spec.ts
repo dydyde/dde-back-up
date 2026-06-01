@@ -3,6 +3,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { UserPreferencesSyncService } from './user-preferences-sync.service';
 import { SupabaseClientService } from '../../../../services/supabase-client.service';
 import { LoggerService } from '../../../../services/logger.service';
+import { resetBrowserNetworkSuspensionTrackingForTests } from '../../../../utils/browser-network-suspension';
+
+function setVisibilityState(state: DocumentVisibilityState): void {
+  Object.defineProperty(document, 'visibilityState', {
+    configurable: true,
+    value: state,
+  });
+}
 
 describe('UserPreferencesSyncService', () => {
   const maybeSingle = vi.fn();
@@ -13,6 +21,8 @@ describe('UserPreferencesSyncService', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    resetBrowserNetworkSuspensionTrackingForTests();
+    setVisibilityState('visible');
     maybeSingle.mockResolvedValue({ data: null, error: null });
     upsert.mockResolvedValue({ error: null });
 
@@ -110,5 +120,15 @@ describe('UserPreferencesSyncService', () => {
     expect(payload.user_id).toBe('user-1');
     expect(payload.last_backup_proof_at).toBe('2026-04-23T11:00:00.000Z');
     expect(payload.dock_snapshot).toBeUndefined();
+  });
+
+  it('saveUserPreferences should defer quietly during browser network suspension', async () => {
+    setVisibilityState('hidden');
+
+    const service = TestBed.inject(UserPreferencesSyncService);
+    const ok = await service.saveUserPreferences('user-1', { theme: 'default' });
+
+    expect(ok).toBe(false);
+    expect(upsert).not.toHaveBeenCalled();
   });
 });

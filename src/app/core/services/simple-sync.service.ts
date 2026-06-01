@@ -1949,6 +1949,14 @@ export class SimpleSyncService {
   // ==================== Delta Sync ====================
   
   async checkForDrift(projectId: string): Promise<ProjectDeltaDrift> {
+    if (isBrowserNetworkSuspendedWindow()) {
+      this.logger.debug('浏览器网络挂起，跳过 Delta Sync 检查', {
+        projectId,
+        resumeDelayMs: getRemainingBrowserNetworkResumeDelayMs(),
+      });
+      return { tasks: [], connections: [], nextCursor: null };
+    }
+
     const client = await this.getSupabaseClient();
     if (!client || !SYNC_CONFIG.DELTA_SYNC_ENABLED) {
       return { tasks: [], connections: [], nextCursor: null };
@@ -2023,6 +2031,15 @@ export class SimpleSyncService {
         nextCursor
       };
     } catch (e) {
+      const enhanced = supabaseErrorToError(e);
+      if (isBrowserNetworkSuspendedError(enhanced) || isBrowserNetworkSuspendedWindow()) {
+        this.logger.debug('浏览器网络挂起，跳过 Delta Sync 检查', {
+          projectId,
+          resumeDelayMs: getRemainingBrowserNetworkResumeDelayMs(),
+        });
+        return { tasks: [], connections: [], nextCursor: null };
+      }
+
       this.logger.error('Delta Sync 检查失败', e);
       throw e;
     }

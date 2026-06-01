@@ -18,6 +18,11 @@ import { LoggerService } from './logger.service';
 import { Project, Task, Connection } from '../models';
 import { SYNC_CONFIG } from '../config';
 import { SentryLazyLoaderService } from './sentry-lazy-loader.service';
+import {
+  isBrowserNetworkSuspendedError,
+  isBrowserNetworkSuspendedWindow,
+} from '../utils/browser-network-suspension';
+
 @Injectable({
   providedIn: 'root'
 })
@@ -188,6 +193,11 @@ export class DeltaSyncCoordinatorService {
 
       return { taskChanges: tasks.length, connectionChanges: connections.length };
     } catch (error) {
+      if (isBrowserNetworkSuspendedError(error) || isBrowserNetworkSuspendedWindow()) {
+        this.logger.debug('浏览器网络挂起，延后 Delta Sync', { projectId });
+        return { taskChanges: 0, connectionChanges: 0 };
+      }
+
       this.logger.error('Delta Sync 失败', { projectId, error });
       this.sentryLazyLoader.captureException(error, {
         tags: { operation: 'performDeltaSync' },

@@ -1779,6 +1779,18 @@ export class TaskSyncOperationsService {
   
   // Tombstone 管理
 
+  private useLocalTombstonesForSuspension(
+    projectId: string,
+    tombstoneIds: Set<string>,
+    localCount: number,
+  ): TombstoneQueryResult {
+    this.logger.debug('浏览器网络挂起，使用本地 tombstone 缓存', {
+      projectId,
+      localCount,
+    });
+    return { ids: tombstoneIds, fromRemote: false, localCacheOnly: true, timestamp: Date.now() };
+  }
+
   /** 获取项目的所有 tombstone 任务 ID */
   async getTombstoneIds(projectId: string): Promise<Set<string>> {
     const result = await this.getTombstoneIdsWithStatus(projectId);
@@ -1794,6 +1806,10 @@ export class TaskSyncOperationsService {
     localTombstones.forEach(id => {
       tombstoneIds.add(id);
     });
+
+    if (isBrowserNetworkSuspendedWindow()) {
+      return this.useLocalTombstonesForSuspension(projectId, tombstoneIds, localTombstones.size);
+    }
     
     const client = this.getSupabaseClient();
     if (!client) {
@@ -1808,6 +1824,10 @@ export class TaskSyncOperationsService {
       const { data, error } = await this.tombstoneService.getTombstonesWithCache(projectId, client);
       
       if (error) {
+        if (isBrowserNetworkSuspendedError(error) || isBrowserNetworkSuspendedWindow()) {
+          return this.useLocalTombstonesForSuspension(projectId, tombstoneIds, localTombstones.size);
+        }
+
         this.logger.warn('获取云端 tombstones 失败，使用本地缓存', error);
         return { ids: tombstoneIds, fromRemote: false, localCacheOnly: true, timestamp: Date.now() };
       }
@@ -1829,6 +1849,10 @@ export class TaskSyncOperationsService {
       
       return { ids: tombstoneIds, fromRemote, localCacheOnly: false, timestamp: Date.now() };
     } catch (e) {
+      if (isBrowserNetworkSuspendedError(e) || isBrowserNetworkSuspendedWindow()) {
+        return this.useLocalTombstonesForSuspension(projectId, tombstoneIds, localTombstones.size);
+      }
+
       this.logger.warn('获取 tombstones 异常，使用本地缓存', e);
       return { ids: tombstoneIds, fromRemote: false, localCacheOnly: true, timestamp: Date.now() };
     }

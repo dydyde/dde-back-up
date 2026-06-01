@@ -1646,6 +1646,11 @@ export class ConnectionSyncOperationsService {
     }
 
     const tombstoneIds = new Set<string>();
+
+    if (isBrowserNetworkSuspendedWindow()) {
+      this.logger.debug('浏览器网络挂起，返回本地连接 tombstone 缓存', { projectId });
+      return tombstoneIds;
+    }
     
     const client = this.getSupabaseClient();
     if (!client) {
@@ -1660,6 +1665,11 @@ export class ConnectionSyncOperationsService {
         .eq('project_id', projectId);
       
       if (error) {
+        if (isBrowserNetworkSuspendedError(error) || isBrowserNetworkSuspendedWindow()) {
+          this.logger.debug('浏览器网络挂起，返回本地连接 tombstone 缓存', { projectId });
+          return tombstoneIds;
+        }
+
         this.logger.warn('获取连接 tombstones 失败', error);
         return tombstoneIds;
       }
@@ -1680,6 +1690,11 @@ export class ConnectionSyncOperationsService {
       
       return tombstoneIds;
     } catch (e) {
+      if (isBrowserNetworkSuspendedError(e) || isBrowserNetworkSuspendedWindow()) {
+        this.logger.debug('浏览器网络挂起，返回本地连接 tombstone 缓存', { projectId });
+        return tombstoneIds;
+      }
+
       this.logger.warn('获取连接 tombstones 异常', e);
       return tombstoneIds;
     }

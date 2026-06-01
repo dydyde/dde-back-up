@@ -34,6 +34,10 @@ import { pushStartupTrace } from '../utils/startup-trace';
 import { isValidUUID } from '../utils/validation';
 import { resetFocusState } from '../state/focus-stores';
 import type { LaunchSnapshot, LaunchSnapshotProject } from '../models/launch-shell';
+import {
+  isBrowserNetworkSuspendedError,
+  isBrowserNetworkSuspendedWindow,
+} from '../utils/browser-network-suspension';
 
 type StartupProjectCatalogStage = 'unresolved' | 'partial' | 'resolved';
 
@@ -49,6 +53,16 @@ type ProjectHydrationLoadResult =
   | { status: 'inaccessible' }
   | { status: 'retry' }
   | { status: 'stale' };
+
+type ProjectListMetadataRow = {
+  id: string;
+  title: string | null;
+  description: string | null;
+  created_date: string | null;
+  updated_at: string | null;
+  version: number | null;
+  owner_id: string | null;
+};
 
 const FULL_WIPE_LOCAL_STORAGE_PREFIXES = [
   'nanoflow.project-manifest-watermark',
@@ -2382,20 +2396,41 @@ export class UserSessionService {
     if (this.shouldAbortStaleSession(sessionGuard, 'syncProjectListMetadata:after-session')) {
       return fallbackIds;
     }
+
+    if (isBrowserNetworkSuspendedWindow()) {
+      this.logger.debug('浏览器网络挂起，延后同步项目列表元数据', { userId });
+      return fallbackIds;
+    }
     
-    const { data, error } = await client
-      .from('projects')
-      .select('id,title,description,created_date,updated_at,version,owner_id')
-      .eq('owner_id', userId)
-      .is('deleted_at', null)
-      .order('updated_at', { ascending: false });
+    let data: ProjectListMetadataRow[] | null = null;
+    let error: unknown = null;
+    try {
+      const response = await client
+        .from('projects')
+        .select('id,title,description,created_date,updated_at,version,owner_id')
+        .eq('owner_id', userId)
+        .is('deleted_at', null)
+        .order('updated_at', { ascending: false });
+      data = (response.data ?? null) as ProjectListMetadataRow[] | null;
+      error = response.error;
+    } catch (queryError: unknown) {
+      error = queryError;
+    }
 
     if (this.shouldAbortStaleSession(sessionGuard, 'syncProjectListMetadata:after-query')) {
       return fallbackIds;
     }
     
     if (error) {
-      this.logger.warn('获取项目列表失败', { message: error.message });
+      if (isBrowserNetworkSuspendedError(error) || isBrowserNetworkSuspendedWindow()) {
+        this.logger.debug('浏览器网络挂起，延后同步项目列表元数据', { userId });
+        return fallbackIds;
+      }
+
+      const message = typeof (error as { message?: unknown })?.message === 'string'
+        ? (error as { message: string }).message
+        : String(error);
+      this.logger.warn('获取项目列表失败', { message });
       return fallbackIds;
     }
 

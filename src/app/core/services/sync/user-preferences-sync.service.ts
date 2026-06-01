@@ -15,6 +15,10 @@ import { UserPreferences, ThemeType, ColorMode } from '../../../../models';
 import { FocusPreferences, DEFAULT_FOCUS_PREFERENCES } from '../../../../models/focus';
 import { nowISO } from '../../../../utils/date';
 import { supabaseErrorToError } from '../../../../utils/supabase-error';
+import {
+  isBrowserNetworkSuspendedError,
+  isBrowserNetworkSuspendedWindow,
+} from '../../../../utils/browser-network-suspension';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
 @Injectable({
@@ -24,6 +28,43 @@ export class UserPreferencesSyncService {
   private readonly supabase = inject(SupabaseClientService);
   private readonly loggerService = inject(LoggerService);
   private readonly logger = this.loggerService.category('UserPrefsSync');
+
+  private shouldDeferForBrowserSuspension(
+    operation: '加载' | '保存',
+    userId: string,
+    error?: unknown,
+  ): boolean {
+    const suspended = error === undefined
+      ? isBrowserNetworkSuspendedWindow()
+      : isBrowserNetworkSuspendedError(error) || isBrowserNetworkSuspendedWindow();
+
+    if (!suspended) {
+      return false;
+    }
+
+    this.logger.debug(`浏览器网络挂起，延后${operation}用户偏好`, { userId });
+    return true;
+  }
+
+  private parseFocusPreferences(value: unknown): FocusPreferences | undefined {
+    if (!value || typeof value !== 'object') {
+      return undefined;
+    }
+
+    const fp = value as Record<string, unknown>;
+    return {
+      gateEnabled: (fp['gateEnabled'] as boolean) ?? DEFAULT_FOCUS_PREFERENCES.gateEnabled,
+      strataEnabled: (fp['strataEnabled'] as boolean) ?? DEFAULT_FOCUS_PREFERENCES.strataEnabled,
+      blackBoxEnabled: (fp['blackBoxEnabled'] as boolean) ?? DEFAULT_FOCUS_PREFERENCES.blackBoxEnabled,
+      maxSnoozePerDay: (fp['maxSnoozePerDay'] as number) ?? DEFAULT_FOCUS_PREFERENCES.maxSnoozePerDay,
+      routineResetHourLocal:
+        (fp['routineResetHourLocal'] as number) ?? DEFAULT_FOCUS_PREFERENCES.routineResetHourLocal,
+      restReminderHighLoadMinutes:
+        (fp['restReminderHighLoadMinutes'] as number) ?? DEFAULT_FOCUS_PREFERENCES.restReminderHighLoadMinutes,
+      restReminderLowLoadMinutes:
+        (fp['restReminderLowLoadMinutes'] as number) ?? DEFAULT_FOCUS_PREFERENCES.restReminderLowLoadMinutes,
+    };
+  }
   
   /**
    * 获取 Supabase 客户端
@@ -46,6 +87,10 @@ export class UserPreferencesSyncService {
   async loadUserPreferences(userId: string): Promise<UserPreferences | null> {
     const client = this.getSupabaseClient();
     if (!client) return null;
+
+    if (this.shouldDeferForBrowserSuspension('加载', userId)) {
+      return null;
+    }
     
     try {
       const { data, error } = await client
@@ -58,22 +103,7 @@ export class UserPreferencesSyncService {
       if (!data) return null;
       
       // 解析 focusPreferences（JSONB → 领域模型）
-      let focusPreferences: FocusPreferences | undefined;
-      if (data.focus_preferences && typeof data.focus_preferences === 'object') {
-        const fp = data.focus_preferences as Record<string, unknown>;
-        focusPreferences = {
-          gateEnabled: (fp['gateEnabled'] as boolean) ?? DEFAULT_FOCUS_PREFERENCES.gateEnabled,
-          strataEnabled: (fp['strataEnabled'] as boolean) ?? DEFAULT_FOCUS_PREFERENCES.strataEnabled,
-          blackBoxEnabled: (fp['blackBoxEnabled'] as boolean) ?? DEFAULT_FOCUS_PREFERENCES.blackBoxEnabled,
-          maxSnoozePerDay: (fp['maxSnoozePerDay'] as number) ?? DEFAULT_FOCUS_PREFERENCES.maxSnoozePerDay,
-          routineResetHourLocal:
-            (fp['routineResetHourLocal'] as number) ?? DEFAULT_FOCUS_PREFERENCES.routineResetHourLocal,
-          restReminderHighLoadMinutes:
-            (fp['restReminderHighLoadMinutes'] as number) ?? DEFAULT_FOCUS_PREFERENCES.restReminderHighLoadMinutes,
-          restReminderLowLoadMinutes:
-            (fp['restReminderLowLoadMinutes'] as number) ?? DEFAULT_FOCUS_PREFERENCES.restReminderLowLoadMinutes,
-        };
-      }
+      const focusPreferences = this.parseFocusPreferences(data.focus_preferences);
 
       return {
         theme: (data.theme as ThemeType) || 'default',
@@ -87,6 +117,10 @@ export class UserPreferencesSyncService {
         focusPreferences,
       };
     } catch (e) {
+      if (this.shouldDeferForBrowserSuspension('加载', userId, e)) {
+        return null;
+      }
+
       this.logger.error('加载用户偏好失败', e);
       // eslint-disable-next-line no-restricted-syntax -- 返回 null 语义正确：偏好加载失败使用默认值
       return null;
@@ -101,6 +135,10 @@ export class UserPreferencesSyncService {
   async saveUserPreferences(userId: string, preferences: Partial<UserPreferences>): Promise<boolean> {
     const client = this.getSupabaseClient();
     if (!client) return false;
+
+    if (this.shouldDeferForBrowserSuspension('保存', userId)) {
+      return false;
+    }
     
     try {
       // 构建 upsert payload，只包含有值的字段
@@ -126,6 +164,10 @@ export class UserPreferencesSyncService {
       if (error) throw supabaseErrorToError(error);
       return true;
     } catch (e) {
+      if (this.shouldDeferForBrowserSuspension('保存', userId, e)) {
+        return false;
+      }
+
       this.logger.error('保存用户偏好失败', e);
       return false;
     }

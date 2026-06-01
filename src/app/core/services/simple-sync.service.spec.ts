@@ -937,6 +937,18 @@ describe('SimpleSyncService', () => {
       expect(connectionQuery.terminal.order).toHaveBeenCalledWith('id', { ascending: true });
     });
 
+    it('checkForDrift should defer during browser network suspension without touching Supabase', async () => {
+      mockSupabase.isConfigured = true;
+      mockSupabase.clientAsync.mockResolvedValue(mockClient);
+      service.setLastSyncTime('project-1', '2026-04-29T07:59:59.000Z');
+      setVisibilityState('hidden');
+
+      const drift = await service.checkForDrift('project-1');
+
+      expect(drift).toEqual({ tasks: [], connections: [], nextCursor: null });
+      expect(mockSupabase.clientAsync).not.toHaveBeenCalled();
+    });
+
     it('checkForDrift should resume from the persisted combination cursor with a safety lookback', async () => {
       const taskQuery = createOrderedQuery([]);
       const connectionQuery = createOrderedQuery([]);

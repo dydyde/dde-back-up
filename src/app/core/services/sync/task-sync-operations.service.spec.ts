@@ -330,6 +330,20 @@ describe('TaskSyncOperationsService', () => {
     expect(mockRetryQueue.add).toHaveBeenCalledWith('task', 'upsert', task, 'project-1', 'user-1');
   });
 
+  it('getTombstoneIdsWithStatus 在浏览器网络挂起时应只用本地缓存且不告警', async () => {
+    const localTombstones = new Set(['task-local-delete']);
+    mockTombstoneService.getLocalTombstones.mockReturnValueOnce(localTombstones);
+    setVisibilityState('hidden');
+
+    const result = await service.getTombstoneIdsWithStatus('project-1');
+
+    expect(result.ids).toEqual(localTombstones);
+    expect(result.fromRemote).toBe(false);
+    expect(result.localCacheOnly).toBe(true);
+    expect(mockTombstoneService.getTombstonesWithCache).not.toHaveBeenCalled();
+    expect(mockLogger.warn).not.toHaveBeenCalled();
+  });
+
   it('重试队列回放 task upsert 遇到浏览器网络挂起时应抛出延后错误，避免消耗 retry budget', async () => {
     const task: Task = {
       id: 'task-browser-suspended-replay',

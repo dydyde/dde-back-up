@@ -21,6 +21,17 @@ import { Project, Task } from '../models';
 import { markTaskContentMissingFromSource } from '../utils/task-content-guard';
 import { StartupPlaceholderStateService } from './startup-placeholder-state.service';
 import { blackBoxEntriesMap, gateSnoozeCount, gateState, resetFocusState } from '../state/focus-stores';
+import {
+  createBrowserNetworkSuspendedError,
+  resetBrowserNetworkSuspensionTrackingForTests,
+} from '../utils/browser-network-suspension';
+
+function setVisibilityState(state: DocumentVisibilityState): void {
+  Object.defineProperty(document, 'visibilityState', {
+    configurable: true,
+    value: state,
+  });
+}
 
 function createStorageMock(): Storage {
   const store: Record<string, string> = {};
@@ -163,6 +174,8 @@ describe('UserSessionService', () => {
   let originalSessionStorage: Storage;
 
   beforeEach(() => {
+    resetBrowserNetworkSuspensionTrackingForTests();
+    setVisibilityState('visible');
     originalLocalStorage = globalThis.localStorage;
     originalSessionStorage = globalThis.sessionStorage;
     Object.defineProperty(globalThis, 'localStorage', {
@@ -365,6 +378,7 @@ describe('UserSessionService', () => {
   });
 
   afterEach(() => {
+    resetBrowserNetworkSuspensionTrackingForTests();
     delete (window as Window & { __NANOFLOW_LAUNCH_SNAPSHOT__?: unknown }).__NANOFLOW_LAUNCH_SNAPSHOT__;
     delete (window as Window & { __NANOFLOW_SESSION_PREWARM__?: unknown }).__NANOFLOW_SESSION_PREWARM__;
     resetFocusState();
@@ -2697,6 +2711,35 @@ describe('UserSessionService', () => {
         from: vi.fn().mockReturnValue(query),
       });
     }
+
+    it('浏览器网络挂起导致项目列表查询失败时应保留本地项目且不告警', async () => {
+      const localProject = createProject({ id: 'proj-local', name: 'Local', syncSource: 'synced' });
+      (mockProjectState['setProjects'] as (projects: Project[]) => void)([localProject]);
+      vi.clearAllMocks();
+
+      const query = {
+        select: vi.fn().mockReturnThis(),
+        eq: vi.fn().mockReturnThis(),
+        is: vi.fn().mockReturnThis(),
+        order: vi.fn().mockResolvedValue({
+          data: null,
+          error: createBrowserNetworkSuspendedError(),
+        }),
+      };
+      mockSupabaseClientService.clientAsync.mockResolvedValue({
+        from: vi.fn().mockReturnValue(query),
+      });
+
+      const accessibleProjectIds = await (
+        service as unknown as {
+          syncProjectListMetadata: (userId: string) => Promise<Set<string>>;
+        }
+      ).syncProjectListMetadata('user-1');
+
+      expect([...accessibleProjectIds]).toEqual(['proj-local']);
+      expect(mockProjectState['setProjectsMetadataOnly']).not.toHaveBeenCalled();
+      expect(mockLoggerCategory.warn).not.toHaveBeenCalled();
+    });
 
     it('Supabase auth session 尚未切到当前用户时，应把空项目清单视为非权威结果', async () => {
       const localProject = createProject({ id: 'proj-local', name: 'Local', syncSource: 'synced' });

@@ -14,6 +14,11 @@ import { LoggerService } from '../../../../services/logger.service';
 import { RequestThrottleService } from '../../../../services/request-throttle.service';
 import { REQUEST_THROTTLE_CONFIG, SYNC_CONFIG, FIELD_SELECT_CONFIG } from '../../../../config';
 import type { SupabaseClient } from '@supabase/supabase-js';
+import {
+  createBrowserNetworkSuspendedError,
+  isBrowserNetworkSuspendedError,
+  isBrowserNetworkSuspendedWindow,
+} from '../../../../utils/browser-network-suspension';
 
 /**
  * Tombstone 缓存项
@@ -233,6 +238,33 @@ export class TombstoneService {
     this.localTombstones.delete(projectId);
     this.saveLocalTombstones();
   }
+
+  private rowsFromTaskTombstoneCache(cached: TombstoneCache): { task_id: string; deleted_at?: string | null }[] {
+    return Array.from(cached.ids).map(id => ({
+      task_id: id,
+      deleted_at: cached.taskDeletedAt?.has(id)
+        ? new Date(cached.taskDeletedAt.get(id)!).toISOString()
+        : undefined,
+    }));
+  }
+
+  private updateTaskTombstoneCache(
+    projectId: string,
+    rows: { task_id: string; deleted_at?: string | null }[],
+    timestamp: number,
+  ): void {
+    const ids = new Set<string>();
+    const taskDeletedAt = new Map<string, number>();
+    for (const row of rows) {
+      ids.add(row.task_id);
+      const deletedAt = this.parseTombstoneTimestamp(row.deleted_at);
+      if (deletedAt !== undefined) {
+        taskDeletedAt.set(row.task_id, deletedAt);
+      }
+    }
+    this.tombstoneCache.set(projectId, { ids, timestamp, taskDeletedAt });
+    this.logger.debug('更新 Tombstone 缓存', { projectId, count: ids.size });
+  }
   
   // ==================== 云端 Tombstone 缓存（流量优化）====================
   
@@ -256,15 +288,11 @@ export class TombstoneService {
         count: cached.ids.size,
         age: Math.round((now - cached.timestamp) / 1000) + 's'
       });
-      return { 
-        data: Array.from(cached.ids).map(id => ({
-          task_id: id,
-          deleted_at: cached.taskDeletedAt?.has(id)
-            ? new Date(cached.taskDeletedAt.get(id)!).toISOString()
-            : undefined,
-        })), 
-        error: null 
-      };
+      return { data: this.rowsFromTaskTombstoneCache(cached), error: null };
+    }
+
+    if (isBrowserNetworkSuspendedWindow()) {
+      return { data: null, error: createBrowserNetworkSuspendedError() };
     }
     
     // 缓存过期或不存在，查询云端
@@ -285,21 +313,15 @@ export class TombstoneService {
       
       // 更新缓存
       if (!result.error && result.data) {
-        const ids = new Set<string>();
-        const taskDeletedAt = new Map<string, number>();
-        for (const row of result.data) {
-          ids.add(row.task_id);
-          const deletedAt = this.parseTombstoneTimestamp(row.deleted_at);
-          if (deletedAt !== undefined) {
-            taskDeletedAt.set(row.task_id, deletedAt);
-          }
-        }
-        this.tombstoneCache.set(projectId, { ids, timestamp: now, taskDeletedAt });
-        this.logger.debug('更新 Tombstone 缓存', { projectId, count: ids.size });
+        this.updateTaskTombstoneCache(projectId, result.data, now);
       }
       
       return result;
     } catch (e) {
+      if (isBrowserNetworkSuspendedError(e) || isBrowserNetworkSuspendedWindow()) {
+        return { data: null, error: createBrowserNetworkSuspendedError() };
+      }
+
       return { data: null, error: e as Error };
     }
   }
@@ -382,6 +404,11 @@ export class TombstoneService {
       return true;
     }
 
+    if (isBrowserNetworkSuspendedWindow()) {
+      this.logger.debug('浏览器网络挂起，跳过批量 tombstone 预热', { projectCount: staleIds.length });
+      return false;
+    }
+
     try {
       const { data, error } = await this.throttle.execute(
         'batch-tombstones',
@@ -390,6 +417,11 @@ export class TombstoneService {
       );
 
       if (error) {
+        if (isBrowserNetworkSuspendedError(error) || isBrowserNetworkSuspendedWindow()) {
+          this.logger.debug('浏览器网络挂起，跳过批量 tombstone 预热', { projectCount: staleIds.length });
+          return false;
+        }
+
         this.logger.warn('批量 tombstone RPC 失败', { error: (error as Error).message ?? error });
         return false;
       }
@@ -451,6 +483,11 @@ export class TombstoneService {
       });
       return true;
     } catch (e) {
+      if (isBrowserNetworkSuspendedError(e) || isBrowserNetworkSuspendedWindow()) {
+        this.logger.debug('浏览器网络挂起，跳过批量 tombstone 预热', { projectCount: staleIds.length });
+        return false;
+      }
+
       this.logger.warn('批量 tombstone 预热异常', e);
       return false;
     }
