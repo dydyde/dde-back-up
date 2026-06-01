@@ -17,6 +17,7 @@ import { FOCUS_CONFIG } from '../config/focus.config';
 import { BlackBoxService } from './black-box.service';
 import { ProjectStateService } from './project-state.service';
 import { LoggerService } from './logger.service';
+import { resolveTaskCompletionTimestamp } from '../utils/task-completion-time';
 import {
   strataLayers,
   todayCompletedCount,
@@ -124,7 +125,7 @@ export class StrataService {
 
   /**
    * 获取指定日期已完成的任务
-    * 优先使用 completedAt，回退到 updatedAt/createdDate 兼容历史任务
+    * 优先使用 completedAt；旧数据只在 completed_at 字段上线前才把 updatedAt 当完成时间代理。
    */
   private getCompletedTasksForDate(date: string): StrataItem[] {
     return this.projectState.tasks()
@@ -171,9 +172,9 @@ export class StrataService {
     return `${entry.date}T00:00:00.000`;
   }
 
-  private getTaskCompletionTimestamp(task: { completedAt?: string | null; updatedAt?: string; createdDate: string }): string | undefined {
-    // completed_at 上线前的历史任务没有独立完成时间，只能在本地清洗/远端迁移前回退到旧时间戳。
-    return task.completedAt || task.updatedAt || task.createdDate;
+  private getTaskCompletionTimestamp(task: { completedAt?: string | null; updatedAt?: string; createdDate?: string | null }): string | undefined {
+    // completed_at 上线后的 updatedAt 是同步时钟，数据修复或重试会 bump，不能再驱动历史层日期。
+    return resolveTaskCompletionTimestamp(task) ?? undefined;
   }
 
   private compareItemsByCompletion(a: StrataItem, b: StrataItem): number {

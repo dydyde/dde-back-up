@@ -472,7 +472,7 @@ describe('validation — sanitizeTask', () => {
     expect(sanitizeTask({ id: 'x', status: 'archived' }).status).toBe('archived');
   });
 
-  it('completed 任务缺少 completedAt 时从更新时间回填稳定完成时间', () => {
+  it('completed 任务缺少 completedAt 时可从字段上线前的更新时间回填稳定完成时间', () => {
     const task = sanitizeTask({
       id: 'x',
       status: 'completed',
@@ -481,6 +481,17 @@ describe('validation — sanitizeTask', () => {
     });
 
     expect(task.completedAt).toBe('2026-04-20T10:00:00.000Z');
+  });
+
+  it('completed 任务缺少 completedAt 时不把字段上线后的同步更新时间固化为完成时间', () => {
+    const task = sanitizeTask({
+      id: 'x',
+      status: 'completed',
+      updatedAt: '2026-05-31T09:00:00.000Z',
+      createdDate: '2026-05-20T10:00:00.000Z',
+    });
+
+    expect(task.completedAt).toBe('2026-05-20T10:00:00.000Z');
   });
 
   it('非 completed 任务清空 completedAt', () => {

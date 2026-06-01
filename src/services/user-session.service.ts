@@ -28,6 +28,7 @@ import { FEATURE_FLAGS } from '../config/feature-flags.config';
 import { isFailure } from '../utils/result';
 import { mergeByLww, mergeByLwwWithTombstone } from '../utils/lww-merge';
 import { hasTaskContentMissingFromSource } from '../utils/task-content-guard';
+import { resolveTaskCompletionTimestamp } from '../utils/task-completion-time';
 import { ToastService } from './toast.service';
 import { pushStartupTrace } from '../utils/startup-trace';
 import { isValidUUID } from '../utils/validation';
@@ -3049,7 +3050,7 @@ export class UserSessionService {
         ...t,
         status,
         completedAt: status === 'completed'
-          ? (t.completedAt ?? t.updatedAt ?? t.createdDate ?? migrated.updatedAt)
+          ? resolveTaskCompletionTimestamp(t)
           : null,
         rank: t.rank ?? 10000,
         displayId: t.displayId || '?',

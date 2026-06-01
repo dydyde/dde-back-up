@@ -4,6 +4,7 @@ import { TASK_PRIORITY_LIST } from '../config/task.config';
 import { nowISO } from './date';
 import { sanitizePlannerFields } from './planner-fields';
 import { utilLogger } from './standalone-logger';
+import { resolveTaskCompletionTimestamp } from './task-completion-time';
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const MAX_ATTACHMENT_SIZE = ATTACHMENT_CONFIG.MAX_FILE_SIZE;
@@ -402,9 +403,10 @@ export function sanitizeTask(rawTask: unknown): Task {
         : 'active';
   const createdDate = typeof task.createdDate === 'string' ? task.createdDate : nowISO();
   const updatedAt = typeof task.updatedAt === 'string' ? task.updatedAt : undefined;
-  // 兼容 completed_at 字段上线前的本地缓存：首次清洗时固化旧完成任务的历史时间。
+  const rawCompletedAt = typeof task.completedAt === 'string' ? task.completedAt : null;
+  // 兼容 completed_at 字段上线前的本地缓存，同时避免把后续同步/修复时钟固化为完成时间。
   const completedAt = normalizedStatus === 'completed'
-    ? (typeof task.completedAt === 'string' ? task.completedAt : updatedAt ?? createdDate)
+    ? resolveTaskCompletionTimestamp({ completedAt: rawCompletedAt, updatedAt, createdDate })
     : null;
 
   const isNgDevMode = Boolean((globalThis as { ngDevMode?: boolean }).ngDevMode);

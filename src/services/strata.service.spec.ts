@@ -190,6 +190,64 @@ describe('StrataService', () => {
       expect(layers[0].date).toBe('2026-05-18');
       expect(service.getLayerLabel(layers[0].date)).toBe('5月18日');
     });
+
+    it('completedAt 缺失时不应把 5月31日 的 updatedAt 修复脉冲当作历史层日期', () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-05-31T12:00:00.000Z'));
+      mockProjectStateService.tasks.set([
+        {
+          id: 'legacy-completed-task',
+          title: '历史完成任务',
+          status: 'completed',
+          completedAt: null,
+          updatedAt: '2026-05-31T08:30:00.000Z',
+          createdDate: '2026-05-20T10:00:00.000Z',
+          deletedAt: null,
+        },
+      ]);
+
+      service.refresh();
+
+      const layers = strataLayers();
+      expect(layers.map(layer => layer.date)).not.toContain('2026-05-31');
+      expect(layers[0].date).toBe('2026-05-20');
+      expect(layers[0].items.map(item => item.id)).toEqual(['legacy-completed-task']);
+      expect(service.getLayerLabel(layers[0].date)).toBe('5月20日');
+    });
+
+    it('completedAt 缺失的历史任务不应随 updatedAt 后续变化重排跳动', () => {
+      mockProjectStateService.tasks.set([
+        {
+          id: 'legacy-earlier-task',
+          title: '较早完成任务',
+          status: 'completed',
+          completedAt: null,
+          updatedAt: '2026-05-20T12:00:00.000Z',
+          createdDate: '2026-05-20T09:00:00.000Z',
+          deletedAt: null,
+        },
+        {
+          id: 'legacy-later-task',
+          title: '较晚完成任务',
+          status: 'completed',
+          completedAt: null,
+          updatedAt: '2026-05-31T08:30:00.000Z',
+          createdDate: '2026-05-20T11:00:00.000Z',
+          deletedAt: null,
+        },
+      ]);
+      service.refresh();
+      const firstOrder = strataLayers()[0].items.map(item => item.id);
+
+      mockProjectStateService.tasks.update(tasks => tasks.map(task => task.id === 'legacy-earlier-task'
+        ? { ...task, updatedAt: '2026-05-31T09:00:00.000Z' }
+        : task));
+      service.refresh();
+
+      expect(strataLayers()[0].date).toBe('2026-05-20');
+      expect(strataLayers()[0].items.map(item => item.id)).toEqual(firstOrder);
+      expect(firstOrder).toEqual(['legacy-later-task', 'legacy-earlier-task']);
+    });
   });
 
   describe('addItem', () => {
