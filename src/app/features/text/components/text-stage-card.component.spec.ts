@@ -10,19 +10,19 @@ describe('TextStageCardComponent', () => {
     expect(source).toContain('[attr.aria-hidden]="!isExpanded()"');
   });
 
-  it('阶段任务列表应保留内层滚动并启用平滑交接', () => {
+  it('阶段任务列表应保留原生内外滚动链路', () => {
     const source = readFileSync(resolve(__dirname, 'text-stage-card.component.ts'), 'utf8');
 
     expect(source).toContain('overflow-y-auto');
     expect(source).toContain('max-h-[60vh]');
     expect(source).toContain('max-h-[40vh]');
-    expect(source).toContain('(wheel)="onTaskListWheel($event)"');
-    expect(source).toContain('(touchmove)="onTaskListTouchMove($event)"');
-    expect(source).toContain('NESTED_SCROLL_EDGE_THRESHOLD_PX');
-    expect(source).toContain('NESTED_SCROLL_PREVIEW_MAX_OUTER_SHARE');
-    expect(source).toContain('NESTED_SCROLL_BOUNDARY_EPSILON_PX');
-    expect(source).toContain('computeOuterPreviewDelta');
-    expect(source).toContain('getClampedScrollTop');
-    expect(source).not.toContain('requestedInnerDelta');
+    expect(source).toContain('overscroll-behavior-y: auto');
+    expect(source).toContain('-webkit-overflow-scrolling: touch');
+    expect(source).toContain('scrollbar-gutter: stable');
+    expect(source).not.toContain('(wheel)=');
+    expect(source).not.toContain('(touchmove)=');
+    expect(source).not.toContain('onTaskListWheel');
+    expect(source).not.toContain('onTaskListTouchMove');
+    expect(source).not.toContain('scrollTop =');
   });
 });

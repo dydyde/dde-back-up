@@ -1,17 +1,9 @@
-import { Component, ElementRef, inject, input, output, ChangeDetectionStrategy } from '@angular/core';
+import { Component, inject, input, output, ChangeDetectionStrategy } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { ProjectStateService } from '../../../../services/project-state.service';
 import { Task } from '../../../../models';
 import { StageData, DropTargetInfo, TaskTouchStartPayload } from './text-view.types';
 import { TextTaskCardComponent } from './text-task-card.component';
-
-const NESTED_SCROLL_EDGE_THRESHOLD_PX = 144;
-const NESTED_SCROLL_MIN_DELTA_PX = 0.5;
-const NESTED_SCROLL_PREVIEW_MAX_OUTER_SHARE = 0.42;
-const NESTED_SCROLL_BOUNDARY_EPSILON_PX = 1;
-const WHEEL_DELTA_LINE_MODE = 1;
-const WHEEL_DELTA_PAGE_MODE = 2;
-const WHEEL_DELTA_LINE_PX = 16;
 
 /**
  * 阶段卡片组件
@@ -60,11 +52,6 @@ const WHEEL_DELTA_LINE_PX = 16;
       <div class="flex-1 min-h-0 overflow-y-auto custom-scrollbar task-stack transition-all duration-150 ease-out"
            [attr.data-stage-task-list]="stage().stageNumber"
            [attr.inert]="!isExpanded() ? '' : null"
-           (wheel)="onTaskListWheel($event)"
-           (touchstart)="onTaskListTouchStart($event)"
-           (touchmove)="onTaskListTouchMove($event)"
-           (touchend)="resetTaskListTouch()"
-           (touchcancel)="resetTaskListTouch()"
            [ngClass]="{
              'space-y-2 px-3 pb-3 max-h-[60vh] opacity-100 animate-collapse-open': isExpanded() && !isMobile(),
              'space-y-1.5 px-2 pb-2 max-h-[40vh] opacity-100 animate-collapse-open': isExpanded() && isMobile(),
@@ -115,6 +102,7 @@ const WHEEL_DELTA_LINE_PX = 16;
       touch-action: pan-y;
       overscroll-behavior-y: auto;
       -webkit-overflow-scrolling: touch;
+      scrollbar-gutter: stable;
     }
 
     .animate-collapse-open { 
@@ -128,8 +116,6 @@ const WHEEL_DELTA_LINE_PX = 16;
 })
 export class TextStageCardComponent {
   private readonly projectState = inject(ProjectStateService);
-  private readonly hostElement = inject(ElementRef<HTMLElement>);
-  private taskListTouchLastY: number | null = null;
   
   readonly stage = input.required<StageData>();
   readonly isMobile = input(false);
@@ -164,170 +150,6 @@ export class TextStageCardComponent {
   readonly taskTouchMove = output<TouchEvent>();
   readonly taskTouchEnd = output<TouchEvent>();
   readonly taskTouchCancel = output<TouchEvent>();
-
-  onTaskListWheel(event: WheelEvent): void {
-    if (event.ctrlKey || this.shouldIgnoreScrollHandoff(event.target)) {
-      return;
-    }
-
-    const taskList = this.readCurrentTaskList(event.currentTarget);
-    const outerStageList = taskList ? this.findOuterStageList(taskList) : null;
-    if (!taskList || !outerStageList) {
-      return;
-    }
-
-    const shouldPreventDefault = this.applyNestedScrollHandoff(taskList, outerStageList, this.normalizeWheelDeltaY(event, taskList));
-    if (shouldPreventDefault && event.cancelable) {
-      event.preventDefault();
-    }
-  }
-
-  onTaskListTouchStart(event: TouchEvent): void {
-    if (event.touches.length !== 1 || this.shouldIgnoreScrollHandoff(event.target)) {
-      this.resetTaskListTouch();
-      return;
-    }
-
-    this.taskListTouchLastY = event.touches[0]?.clientY ?? null;
-  }
-
-  onTaskListTouchMove(event: TouchEvent): void {
-    if (event.touches.length !== 1 || this.taskListTouchLastY === null || this.shouldIgnoreScrollHandoff(event.target)) {
-      this.resetTaskListTouch();
-      return;
-    }
-
-    const currentY = event.touches[0]?.clientY ?? this.taskListTouchLastY;
-    const deltaY = this.taskListTouchLastY - currentY;
-    this.taskListTouchLastY = currentY;
-
-    const taskList = this.readCurrentTaskList(event.currentTarget);
-    const outerStageList = taskList ? this.findOuterStageList(taskList) : null;
-    if (!taskList || !outerStageList) {
-      return;
-    }
-
-    const shouldPreventDefault = this.applyNestedScrollHandoff(taskList, outerStageList, deltaY);
-    if (shouldPreventDefault && event.cancelable) {
-      event.preventDefault();
-    }
-  }
-
-  resetTaskListTouch(): void {
-    this.taskListTouchLastY = null;
-  }
-
-  // 保留原生内层滚动惯性；只在边缘预滚外层，并在真正跨界时接管一次。
-  private applyNestedScrollHandoff(taskList: HTMLElement, outerStageList: HTMLElement, deltaY: number): boolean {
-    if (!this.isExpanded() || Math.abs(deltaY) < NESTED_SCROLL_MIN_DELTA_PX) {
-      return false;
-    }
-
-    const innerRoom = this.getScrollRoom(taskList, deltaY);
-    const outerRoom = this.getScrollRoom(outerStageList, deltaY);
-    if (outerRoom <= NESTED_SCROLL_BOUNDARY_EPSILON_PX) {
-      return false;
-    }
-
-    if (innerRoom <= NESTED_SCROLL_BOUNDARY_EPSILON_PX) {
-      return Math.abs(this.applyScrollDelta(outerStageList, deltaY)) >= NESTED_SCROLL_MIN_DELTA_PX;
-    }
-
-    const deltaMagnitude = Math.abs(deltaY);
-    if (deltaMagnitude > innerRoom + NESTED_SCROLL_BOUNDARY_EPSILON_PX) {
-      const innerDelta = Math.sign(deltaY) * innerRoom;
-      const consumedInnerDelta = this.applyScrollDelta(taskList, innerDelta);
-      const consumedOuterDelta = this.applyScrollDelta(outerStageList, deltaY - consumedInnerDelta);
-      return Math.abs(consumedInnerDelta + consumedOuterDelta) >= NESTED_SCROLL_MIN_DELTA_PX;
-    }
-
-    this.applyScrollDelta(outerStageList, this.computeOuterPreviewDelta(taskList, outerStageList, deltaY, innerRoom));
-    return false;
-  }
-
-  private computeOuterPreviewDelta(
-    taskList: HTMLElement,
-    outerStageList: HTMLElement,
-    deltaY: number,
-    innerRoom: number,
-  ): number {
-    const outerRoom = this.getScrollRoom(outerStageList, deltaY);
-    if (outerRoom <= NESTED_SCROLL_BOUNDARY_EPSILON_PX) {
-      return 0;
-    }
-
-    const threshold = Math.min(NESTED_SCROLL_EDGE_THRESHOLD_PX, Math.max(48, taskList.clientHeight * 0.42));
-    if (innerRoom >= threshold) {
-      return 0;
-    }
-
-    const edgeProgress = 1 - innerRoom / threshold;
-    const easedProgress = edgeProgress * edgeProgress * (3 - 2 * edgeProgress);
-    const requestedDelta = deltaY * easedProgress * NESTED_SCROLL_PREVIEW_MAX_OUTER_SHARE;
-    return Math.sign(deltaY) * Math.min(Math.abs(requestedDelta), outerRoom);
-  }
-
-  private getScrollRoom(element: HTMLElement, deltaY: number): number {
-    const scrollTop = this.getClampedScrollTop(element);
-    if (deltaY > 0) {
-      return Math.max(0, this.getMaxScrollTop(element) - scrollTop);
-    }
-
-    return scrollTop;
-  }
-
-  private applyScrollDelta(element: HTMLElement, deltaY: number): number {
-    if (Math.abs(deltaY) < NESTED_SCROLL_MIN_DELTA_PX) {
-      return 0;
-    }
-
-    const previousScrollTop = this.getClampedScrollTop(element);
-    const maxScrollTop = this.getMaxScrollTop(element);
-    element.scrollTop = Math.min(maxScrollTop, Math.max(0, previousScrollTop + deltaY));
-    return this.getClampedScrollTop(element) - previousScrollTop;
-  }
-
-  private getMaxScrollTop(element: HTMLElement): number {
-    return Math.max(0, element.scrollHeight - element.clientHeight);
-  }
-
-  private getClampedScrollTop(element: HTMLElement): number {
-    return Math.min(this.getMaxScrollTop(element), Math.max(0, element.scrollTop));
-  }
-
-  private normalizeWheelDeltaY(event: WheelEvent, taskList: HTMLElement): number {
-    if (event.deltaMode === WHEEL_DELTA_LINE_MODE) {
-      return event.deltaY * WHEEL_DELTA_LINE_PX;
-    }
-
-    if (event.deltaMode === WHEEL_DELTA_PAGE_MODE) {
-      return event.deltaY * taskList.clientHeight;
-    }
-
-    return event.deltaY;
-  }
-
-  private readCurrentTaskList(currentTarget: EventTarget | null): HTMLElement | null {
-    return currentTarget instanceof HTMLElement ? currentTarget : null;
-  }
-
-  private findOuterStageList(taskList: HTMLElement): HTMLElement | null {
-    const closestStageList = taskList.closest('[data-stage-scroll-container]');
-    if (closestStageList instanceof HTMLElement) {
-      return closestStageList;
-    }
-
-    const hostParent = this.hostElement.nativeElement.parentElement;
-    return hostParent?.closest('[data-stage-scroll-container]') ?? null;
-  }
-
-  private shouldIgnoreScrollHandoff(target: EventTarget | null): boolean {
-    if (!(target instanceof Element)) {
-      return false;
-    }
-
-    return !!target.closest('input, textarea, select, [contenteditable="true"], [data-drag-handle], app-text-task-editor');
-  }
   
   getConnections(taskId: string) {
     return this.projectState.getTaskConnections(taskId);

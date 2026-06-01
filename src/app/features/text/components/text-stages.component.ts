@@ -167,10 +167,10 @@ import { TextStageCardComponent } from './text-stage-card.component';
 
     .stage-scroll-container {
       overscroll-behavior-y: contain;
-      scroll-behavior: smooth;
       scroll-padding-block: 0.75rem;
       touch-action: pan-y;
       -webkit-overflow-scrolling: touch;
+      scrollbar-gutter: stable;
     }
 
     .stage-scroll-item {
