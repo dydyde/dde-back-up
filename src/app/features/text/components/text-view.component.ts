@@ -40,7 +40,6 @@ import { TextViewTaskOpsService } from '../services/text-view-task-ops.service';
   template: `
     <div #scrollContainer class="flex flex-col h-full min-h-0 min-w-0 theme-bg overflow-y-auto overflow-x-hidden text-view-scroll-container"
          (click)="ops.onContainerClick($event)"
-         (touchmove)="onGlobalTouchMove($event)"
          (touchend)="onGlobalTouchEnd($event)"
          (touchcancel)="onGlobalTouchCancel($event)">
       
@@ -130,6 +129,7 @@ export class TextViewComponent implements OnInit, OnDestroy {
   private readonly logger = inject(LoggerService).category('TextView');
   
   /** 全局触摸事件监听器的绑定引用 */
+  private boundGlobalTouchMove = this.handleGlobalTouchMove.bind(this);
   private boundGlobalTouchEnd = this.handleGlobalTouchEnd.bind(this);
   private boundGlobalTouchCancel = this.handleGlobalTouchCancel.bind(this);
   /** pointer/click/自定义事件监听器绑定引用（必须复用同一函数引用，否则无法移除监听器） */
@@ -139,6 +139,7 @@ export class TextViewComponent implements OnInit, OnDestroy {
 
   /** 移动端视图切换追踪（用于切换时收起编辑态） */
   private lastMobileActiveView: 'text' | 'flow' | null = null;
+  private isGlobalTouchMoveListening = false;
   
   @ViewChild('scrollContainer', { static: true }) scrollContainerRef!: ElementRef<HTMLElement>;
   @ViewChild('stagesRef') stagesRef!: TextStagesComponent;
@@ -222,6 +223,7 @@ export class TextViewComponent implements OnInit, OnDestroy {
       getStagesRef: () => this.stagesRef,
       getUnassignedRef: () => this.unassignedRef,
     });
+    this.ops.attachNestedScrollHandoff(this.scrollContainerRef.nativeElement);
     
     // 在 document 上注册全局触摸事件监听器
     document.addEventListener('touchend', this.boundGlobalTouchEnd, { capture: true, passive: false });
@@ -282,6 +284,7 @@ export class TextViewComponent implements OnInit, OnDestroy {
     
     document.removeEventListener('touchend', this.boundGlobalTouchEnd, { capture: true } as EventListenerOptions);
     document.removeEventListener('touchcancel', this.boundGlobalTouchCancel, { capture: true } as EventListenerOptions);
+    this.removeGlobalTouchMoveListener();
     document.removeEventListener('pointerup', this.boundGlobalPointerUp, { capture: true } as EventListenerOptions);
     document.removeEventListener('pointercancel', this.boundGlobalPointerUp, { capture: true } as EventListenerOptions);
     document.removeEventListener('click', this.boundEmergencyCleanup, { capture: true } as EventListenerOptions);
@@ -432,6 +435,7 @@ export class TextViewComponent implements OnInit, OnDestroy {
     if (event.touches.length !== 1) return;
     const touch = event.touches[0];
     this.dragDropService.startTouchDrag(task, touch, () => {}, { gestureMode: data.gestureMode });
+    this.addGlobalTouchMoveListener();
   }
   
   onTaskTouchStart(data: TaskTouchStartPayload) {
@@ -440,6 +444,7 @@ export class TextViewComponent implements OnInit, OnDestroy {
     if (!task || this.selectedTaskId() === task.id) return;
     const touch = event.touches[0];
     this.dragDropService.startTouchDrag(task, touch, () => {}, { gestureMode: data.gestureMode });
+    this.addGlobalTouchMoveListener();
   }
   
   onTouchMove(event: TouchEvent) {
@@ -449,7 +454,12 @@ export class TextViewComponent implements OnInit, OnDestroy {
     const isDragging = this.dragDropService.handleTouchMove(touch);
     const isActiveDragging = isDragging || this.dragDropService.isTouchDragging;
     
-    if (!isActiveDragging) return;
+    if (!isActiveDragging) {
+      if (!this.dragDropService.touchDragTask) {
+        this.removeGlobalTouchMoveListener();
+      }
+      return;
+    }
     
     if (event.cancelable) event.preventDefault();
     let activeScrollStage: number | null = null;
@@ -560,6 +570,7 @@ export class TextViewComponent implements OnInit, OnDestroy {
   private cleanupTouchGestureState() {
     const touchEndResult = this.dragDropService.endTouchDrag();
     const mouseExpandedStages = this.dragDropService.endDrag();
+    this.removeGlobalTouchMoveListener();
     const { autoExpandedStages } = touchEndResult;
     this.ops.collapseAutoExpandedStages(autoExpandedStages, mouseExpandedStages);
     this.ops.restoreAutoCollapsedSourceStage();
@@ -631,5 +642,27 @@ export class TextViewComponent implements OnInit, OnDestroy {
     if (this.dragDropService.isDOMUpdating) return;
     if (!this.dragDropService.draggingTaskId() && !this.dragDropService.touchDragTask) return;
     this.ngZone.run(() => this.onTouchCancel(event));
+  }
+
+  private addGlobalTouchMoveListener(): void {
+    if (this.isGlobalTouchMoveListening) return;
+    document.addEventListener('touchmove', this.boundGlobalTouchMove, { capture: true, passive: false });
+    this.isGlobalTouchMoveListening = true;
+  }
+
+  private removeGlobalTouchMoveListener(): void {
+    if (!this.isGlobalTouchMoveListening) return;
+    document.removeEventListener('touchmove', this.boundGlobalTouchMove, { capture: true } as EventListenerOptions);
+    this.isGlobalTouchMoveListening = false;
+  }
+
+  /** document 级别 touchmove 只在拖拽准备/拖拽期间存在，普通滚动保持原生被动路径 */
+  private handleGlobalTouchMove(event: TouchEvent): void {
+    if (!this.dragDropService.draggingTaskId() && !this.dragDropService.touchDragTask) {
+      this.removeGlobalTouchMoveListener();
+      return;
+    }
+
+    this.ngZone.run(() => this.onTouchMove(event));
   }
 }

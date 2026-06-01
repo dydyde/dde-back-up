@@ -78,7 +78,7 @@ import { KnowledgeAnchorComponent } from '../../../shared/components/knowledge-a
           <div class="absolute top-1.5 right-1.5 z-10 flex gap-1">
             <button
               (click)="onPreviewToggleButtonClick($event)"
-              class="px-1.5 py-0.5 text-[9px] rounded transition-all opacity-70 hover:opacity-100"
+              class="px-1.5 py-0.5 text-[9px] rounded transition-[background-color,color,opacity] opacity-70 hover:opacity-100"
               [ngClass]="{
                 'bg-indigo-500 dark:bg-indigo-600 text-white': isPreview(),
                 'bg-stone-200 dark:bg-stone-600 text-stone-500 dark:text-stone-300 hover:bg-stone-300 dark:hover:bg-stone-500': !isPreview()
@@ -157,7 +157,7 @@ import { KnowledgeAnchorComponent } from '../../../shared/components/knowledge-a
               placeholder="输入待办内容，按回车添加...">
             <button
               (click)="addQuickTodo(quickTodoInput)"
-              class="flex-shrink-0 bg-retro-rust/10 hover:bg-retro-rust text-retro-rust hover:text-white rounded transition-all flex items-center justify-center"
+              class="flex-shrink-0 bg-retro-rust/10 hover:bg-retro-rust text-retro-rust hover:text-white rounded transition-colors flex items-center justify-center"
               [ngClass]="{'p-1.5 mr-0.5': !isMobile(), 'p-1 mr-0.5': isMobile()}"
               title="添加待办">
               <svg [ngClass]="{'w-3.5 h-3.5': !isMobile(), 'w-3 h-3': isMobile()}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
@@ -217,7 +217,7 @@ import { KnowledgeAnchorComponent } from '../../../shared/components/knowledge-a
                [ngClass]="{'gap-2 pt-2': !isMobile(), 'gap-1.5 pt-1.5': isMobile()}">
             <button
               (click)="addSibling.emit()"
-              class="flex-1 bg-retro-teal/10 hover:bg-retro-teal text-retro-teal hover:text-white border border-retro-teal/30 font-medium rounded-md flex items-center justify-center transition-all"
+              class="flex-1 bg-retro-teal/10 hover:bg-retro-teal text-retro-teal hover:text-white border border-retro-teal/30 font-medium rounded-md flex items-center justify-center transition-colors"
               [ngClass]="{'px-2 py-1 text-xs gap-1': !isMobile(), 'px-1.5 py-0.5 text-[10px] gap-0.5': isMobile()}"
               title="添加同级">
               <svg [ngClass]="{'w-3 h-3': !isMobile(), 'w-2.5 h-2.5': isMobile()}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -229,7 +229,7 @@ import { KnowledgeAnchorComponent } from '../../../shared/components/knowledge-a
             <button
               (click)="addChild.emit()"
               data-testid="add-child-task-btn"
-              class="flex-1 bg-retro-rust/10 hover:bg-retro-rust text-retro-rust hover:text-white border border-retro-rust/30 font-medium rounded-md flex items-center justify-center transition-all"
+              class="flex-1 bg-retro-rust/10 hover:bg-retro-rust text-retro-rust hover:text-white border border-retro-rust/30 font-medium rounded-md flex items-center justify-center transition-colors"
               [ngClass]="{'px-2 py-1 text-xs gap-1': !isMobile(), 'px-1.5 py-0.5 text-[10px] gap-0.5': isMobile()}"
               title="添加下级">
               <svg [ngClass]="{'w-3 h-3': !isMobile(), 'w-2.5 h-2.5': isMobile()}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -265,7 +265,7 @@ import { KnowledgeAnchorComponent } from '../../../shared/components/knowledge-a
             } -->
             <button
               (click)="parkTask.emit()"
-              class="flex-1 font-medium rounded-md flex items-center justify-center transition-all duration-200"
+              class="flex-1 font-medium rounded-md flex items-center justify-center transition-colors duration-200"
               [ngClass]="{
                 'px-2 py-1 text-xs gap-1': !isMobile(), 
                 'px-1.5 py-0.5 text-[10px] gap-0.5': isMobile(),
@@ -282,7 +282,7 @@ import { KnowledgeAnchorComponent } from '../../../shared/components/knowledge-a
             <button
               (click)="deleteTask.emit()"
               data-testid="delete-task-btn"
-              class="bg-stone-100 dark:bg-stone-700 hover:bg-red-500 text-stone-400 dark:text-stone-500 hover:text-white border border-stone-200 dark:border-stone-600 hover:border-red-500 font-medium rounded-md flex items-center justify-center transition-all"
+              class="bg-stone-100 dark:bg-stone-700 hover:bg-red-500 text-stone-400 dark:text-stone-500 hover:text-white border border-stone-200 dark:border-stone-600 hover:border-red-500 font-medium rounded-md flex items-center justify-center transition-colors"
               [ngClass]="{'px-2 py-1 text-xs': !isMobile(), 'px-1.5 py-0.5 text-[10px]': isMobile()}"
               title="删除任务">
               <svg [ngClass]="{'w-3 h-3': !isMobile(), 'w-2.5 h-2.5': isMobile()}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">

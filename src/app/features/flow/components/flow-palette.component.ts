@@ -118,10 +118,23 @@ import { readTaskDragPayload, writeTaskDragPayload } from '../../../../utils/tas
         <div class="shrink-0 px-3 py-2 border-b border-stone-100 dark:border-stone-800 bg-white dark:bg-stone-900">
           @if (projectState.activeProject(); as project) {
             <div class="flex items-start justify-between gap-2 mb-2">
-              <div class="overflow-hidden">
-                <h2 class="text-base font-bold text-stone-800 dark:text-stone-100 leading-tight truncate" [title]="project.name">
-                  {{ project.name || '未命名项目' }}
-                </h2>
+              <div class="min-w-0 flex-1 overflow-hidden">
+                <div class="flex items-center gap-1.5 min-w-0">
+                  <button
+                    type="button"
+                    class="flex h-[22px] w-[22px] items-center justify-center rounded-md border border-stone-200 bg-stone-50 text-stone-500 shadow-sm transition-colors hover:border-indigo-300 hover:bg-indigo-50 hover:text-indigo-600 dark:border-stone-700 dark:bg-stone-800 dark:text-stone-400 dark:hover:border-indigo-500/70 dark:hover:bg-indigo-950/40 dark:hover:text-indigo-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400 shrink-0"
+                    (click)="toggleSidebar()"
+                    [attr.aria-label]="isOpen() ? '收起侧边栏' : '展开侧边栏'"
+                    [attr.aria-expanded]="isOpen()"
+                    [title]="isOpen() ? '收起侧边栏' : '展开侧边栏'">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="w-3 h-3 transition-transform duration-300" [class.rotate-180]="isOpen()" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+                    </svg>
+                  </button>
+                  <h2 class="min-w-0 flex-1 text-base font-bold text-stone-800 dark:text-stone-100 leading-tight truncate" [title]="project.name">
+                    {{ project.name || '未命名项目' }}
+                  </h2>
+                </div>
                 <div class="flex items-center gap-2 mt-0.5">
                   <span class="text-[9px] text-stone-400 font-mono">{{ (project.updatedAt || project.createdDate) | date:'MM-dd HH:mm' }}</span>
                   <span class="text-[9px] px-1 py-0.5 rounded-full bg-stone-100 dark:bg-stone-800 text-stone-500 dark:text-stone-400 font-medium">

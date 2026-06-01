@@ -19,7 +19,7 @@ import { Task } from '../../../../models';
         'w-36': !isMobile && !isCollapsed(),
         'w-8': !isMobile && isCollapsed(),
         'border-t border-violet-100 pt-2 mt-2': isMobile
-      }" class="transition-all duration-200">
+      }" class="transition-[width,padding,border-color,background-color,color] duration-200">
         
         <!-- 标题栏：点击可折叠/展开 -->
         <div class="flex items-center gap-1 cursor-pointer select-none"
@@ -53,7 +53,7 @@ import { Task } from '../../../../models';
                 </div>
                 <div class="space-y-1">
                   @for (conn of connections.outgoing; track conn.targetId) {
-                    <div class="flex items-start gap-2 p-1.5 bg-violet-50/50 rounded-lg border border-violet-100 group cursor-pointer hover:bg-violet-100/50 transition-all"
+                    <div class="flex items-start gap-2 p-1.5 bg-violet-50/50 rounded-lg border border-violet-100 group cursor-pointer hover:bg-violet-100/50 transition-colors"
                          (click)="onOpenTask(conn.targetTask!, $event)">
                       <div class="flex-1 min-w-0">
                         <div class="flex items-center gap-1.5">
@@ -84,7 +84,7 @@ import { Task } from '../../../../models';
                 </div>
                 <div class="space-y-1">
                   @for (conn of connections.incoming; track conn.sourceId) {
-                    <div class="flex items-start gap-2 p-1.5 bg-indigo-50/50 rounded-lg border border-indigo-100 group cursor-pointer hover:bg-indigo-100/50 transition-all"
+                    <div class="flex items-start gap-2 p-1.5 bg-indigo-50/50 rounded-lg border border-indigo-100 group cursor-pointer hover:bg-indigo-100/50 transition-colors"
                          (click)="onOpenTask(conn.sourceTask!, $event)">
                       <div class="flex-1 min-w-0">
                         <div class="flex items-center gap-1.5">

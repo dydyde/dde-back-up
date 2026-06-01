@@ -29,11 +29,8 @@ import { KnowledgeAnchorComponent } from '../../../shared/components/knowledge-a
       (dragstart)="onDragStart($event)"
       (dragend)="onDragEnd()"
       (dragover)="onDragOver($event)"
-      (touchstart)="onTouchStart($event)"
-      (touchmove)="onTouchMove($event)"
-      (touchend)="onTouchEnd($event)"
-      (touchcancel)="onTouchCancel($event)"
-      class="text-task-card relative min-w-0 bg-canvas/80 dark:bg-stone-800/80 backdrop-blur-sm border rounded-lg cursor-pointer hover:shadow-md hover:-translate-y-0.5 transition-[transform,box-shadow,border-color] duration-150 group stack-card overflow-hidden"
+      (touchstart.passive)="onTouchStart($event)"
+      class="text-task-card relative min-w-0 bg-canvas/90 dark:bg-stone-800/90 border rounded-lg cursor-pointer hover:border-retro-muted/40 dark:hover:border-stone-600 transition-colors duration-150 group stack-card overflow-hidden"
       [ngClass]="cardClasses">
 
       <div class="flex min-w-0 items-start gap-2">
@@ -130,7 +127,7 @@ import { KnowledgeAnchorComponent } from '../../../shared/components/knowledge-a
             type="button"
             data-testid="task-drag-handle"
             data-drag-handle
-            class="text-task-drag-handle mt-0.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-retro-muted/25 bg-canvas/85 text-retro-muted/80 shadow-sm transition-all active:scale-95 active:border-retro-teal active:text-retro-teal dark:border-stone-600/70 dark:bg-stone-800/90 dark:text-stone-300/80"
+            class="text-task-drag-handle mt-0.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-retro-muted/25 bg-canvas/85 text-retro-muted/80 shadow-sm transition-[transform,border-color,color,background-color] active:scale-95 active:border-retro-teal active:text-retro-teal dark:border-stone-600/70 dark:bg-stone-800/90 dark:text-stone-300/80"
             aria-label="拖动任务"
             title="拖动任务"
             (click)="onDragHandleClick($event)"
@@ -150,7 +147,9 @@ import { KnowledgeAnchorComponent } from '../../../shared/components/knowledge-a
   `,
   styles: [`
     .text-task-card {
-      touch-action: pan-y;
+      touch-action: pan-y pinch-zoom;
+      contain: layout paint;
+      backface-visibility: hidden;
     }
 
     .text-task-drag-handle {

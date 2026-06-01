@@ -24,7 +24,7 @@ import { TextStageCardComponent } from './text-stage-card.component';
       class="flex-1 min-h-0 min-w-0 overflow-hidden flex flex-col"
       [ngClass]="{'px-4 pb-6': !isMobile, 'px-2 pb-4': isMobile}">
       <div 
-        class="rounded-xl bg-panel/40 border border-retro-muted/20 backdrop-blur-md px-2 py-2 shadow-inner w-full flex-1 min-h-0 min-w-0 flex flex-col overflow-hidden"
+        class="rounded-xl bg-panel/70 border border-retro-muted/20 px-2 py-2 shadow-inner w-full flex-1 min-h-0 min-w-0 flex flex-col overflow-hidden"
         [ngClass]="{'rounded-2xl px-4 py-3': !isMobile}">
         
         <!-- 筛选栏 -->
@@ -166,12 +166,13 @@ import { TextStageCardComponent } from './text-stage-card.component';
     }
 
     .stage-scroll-container {
-      overscroll-behavior-y: contain;
+      overscroll-behavior-y: auto;
       scroll-padding-block: 0.75rem;
-      touch-action: pan-y;
+      touch-action: pan-y pinch-zoom;
       -webkit-overflow-scrolling: touch;
       scrollbar-gutter: stable;
-      /* 将外层阶段列表提升为独立合成层，配合卡片层隔离获得更接近原生的滚动手感 */
+      overflow-anchor: none;
+      /* 将外层阶段列表提升为独立合成层，同时保留原生滚动链路的边界交接 */
       transform: translateZ(0);
     }
 
