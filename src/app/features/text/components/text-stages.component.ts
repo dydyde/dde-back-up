@@ -150,7 +150,7 @@ import { TextStageCardComponent } from './text-stage-card.component';
           <div class="flex items-center justify-center rounded-xl border-2 border-dashed border-stone-200 dark:border-stone-700 hover:border-stone-300 dark:hover:border-stone-600 transition-colors cursor-pointer min-h-[60px]"
                [ngClass]="{'py-6': !isMobile, 'py-4': isMobile}"
                (click)="addNewStage.emit()">
-            <span class="text-stone-400 dark:text-stone-400 hover:text-stone-600 dark:hover:text-stone-300 text-lg font-light">+ 新阶段</span>
+            <span class="text-stone-400 dark:text-stone-400 hover:text-stone-600 dark:hover:text-stone-300 text-lg font-light">{{ addStageLabel() }}</span>
           </div>
         </div>
       </div>
@@ -310,6 +310,14 @@ export class TextStagesComponent {
     }
     
     return stages;
+  });
+
+  readonly addStageLabel = computed(() => {
+    const stages = this.projectState.stages()
+      .filter(stage => stage.tasks.some(task => !task.deletedAt && task.status !== 'archived'));
+    return stages.length > 0 && stages.every(stage => stage.stageNumber !== 1)
+      ? '+ 补回阶段 1'
+      : '+ 新阶段';
   });
   
   constructor() {

@@ -678,6 +678,27 @@ export class TaskOperationAdapterService {
     this.recorder.setupSyncResultHandler(snapshot.id);
   }
 
+  /** 修复阶段 1 缺失导致的阶段链漂移。 */
+  repairMissingStageOne(): boolean {
+    if (this.blockLocalMutation('恢复阶段')) {
+      return false;
+    }
+
+    this.markEditing();
+    this.recorder.lastUpdateType = 'structure';
+    const snapshot = this.optimisticState.createTaskSnapshot('', '移动');
+    const repaired = this.core.repairMissingStageOne();
+
+    if (repaired) {
+      this.recorder.showUndoToast('已补回阶段 1');
+      this.recorder.setupSyncResultHandler(snapshot.id);
+    } else {
+      this.optimisticState.discardSnapshot(snapshot.id);
+    }
+
+    return repaired;
+  }
+
   // ========== 查询方法 ==========
 
   isStageRebalancing(stage: number): boolean {

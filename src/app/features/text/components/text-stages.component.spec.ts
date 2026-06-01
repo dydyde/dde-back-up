@@ -7,6 +7,7 @@ import { TextStagesComponent } from './text-stages.component';
 import { UiStateService } from '../../../../services/ui-state.service';
 import { ProjectStateService } from '../../../../services/project-state.service';
 import { LoggerService } from '../../../../services/logger.service';
+import type { Task } from '../../../../models';
 import type { StageData } from './text-view.types';
 
 describe('TextStagesComponent', () => {
@@ -32,6 +33,23 @@ describe('TextStagesComponent', () => {
   const mockLogger = {
     warn: vi.fn(),
   };
+
+  const createTask = (overrides: Partial<Task> = {}): Task => ({
+    id: overrides.id ?? 'task-1',
+    title: overrides.title ?? 'Task',
+    content: overrides.content ?? '',
+    stage: 'stage' in overrides ? overrides.stage! : 1,
+    parentId: overrides.parentId ?? null,
+    order: overrides.order ?? 1,
+    rank: overrides.rank ?? 1000,
+    status: overrides.status ?? 'active',
+    x: overrides.x ?? 0,
+    y: overrides.y ?? 0,
+    createdDate: overrides.createdDate ?? new Date().toISOString(),
+    updatedAt: overrides.updatedAt ?? new Date().toISOString(),
+    displayId: overrides.displayId ?? '1',
+    deletedAt: overrides.deletedAt ?? null,
+  });
 
   beforeEach(async () => {
     vi.clearAllMocks();
@@ -73,5 +91,21 @@ describe('TextStagesComponent', () => {
     const source = readFileSync(resolve(__dirname, 'text-stages.component.ts'), 'utf8');
 
     expect(source).toContain("@Output() openLinkedTask = new EventEmitter<{ taskId: string; event: Event }>();");
+  });
+
+  it('should label the add button as stage-one recovery when visible stages start after 1', () => {
+    stages.set([
+      { stageNumber: 2, tasks: [createTask({ id: 'stage-2-root', stage: 2 })] },
+    ]);
+
+    expect(fixture.componentInstance.addStageLabel()).toBe('+ 补回阶段 1');
+  });
+
+  it('should keep the normal add label when only archived later stages exist', () => {
+    stages.set([
+      { stageNumber: 2, tasks: [createTask({ id: 'archived-stage-2', stage: 2, status: 'archived' })] },
+    ]);
+
+    expect(fixture.componentInstance.addStageLabel()).toBe('+ 新阶段');
   });
 });

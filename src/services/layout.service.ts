@@ -116,6 +116,8 @@ export class LayoutService {
       }
     });
 
+    this.repairMissingStageOne(tasks, byId, isVisibleTask);
+
     const grouped = new Map<number, Task[]>();
     tasks.forEach(t => {
       if (t.stage !== null) {
@@ -283,6 +285,45 @@ export class LayoutService {
       });
 
     return { ...project, tasks };
+  }
+
+  /** 阶段 1 整层缺席时，将最早的可见阶段补回根层，避免后续阶段全部变成 O 系孤儿链。 */
+  private repairMissingStageOne(
+    tasks: Task[],
+    byId: Map<string, Task>,
+    isVisibleTask: (task: Task) => boolean
+  ): void {
+    const visibleAssignedTasks = tasks.filter(task => task.stage !== null && isVisibleTask(task));
+    if (visibleAssignedTasks.length === 0 || visibleAssignedTasks.some(task => task.stage === 1)) {
+      return;
+    }
+
+    const minVisibleStage = Math.min(...visibleAssignedTasks.map(task => task.stage ?? 1));
+    if (!Number.isFinite(minVisibleStage) || minVisibleStage <= 1) {
+      return;
+    }
+
+    const stageOffset = minVisibleStage - 1;
+    const visibleTaskIds = new Set(visibleAssignedTasks.map(task => task.id));
+
+    visibleAssignedTasks.forEach(task => {
+      if (task.parentId) {
+        const parent = byId.get(task.parentId);
+        const parentVisible = parent && visibleTaskIds.has(parent.id) && isVisibleTask(parent);
+        if (!parentVisible || parent?.stage === null) {
+          task.parentId = null;
+        }
+      }
+
+      task.stage = Math.max(1, (task.stage ?? minVisibleStage) - stageOffset);
+      if (Number.isFinite(task.rank)) {
+        task.rank = Math.max(LAYOUT_CONFIG.RANK_STEP, task.rank - stageOffset * LAYOUT_CONFIG.RANK_ROOT_BASE);
+      }
+      if (Number.isFinite(task.x)) {
+        task.x = task.x - stageOffset * LAYOUT_CONFIG.STAGE_SPACING;
+      }
+      task.displayId = '?';
+    });
   }
 
   /**

@@ -918,13 +918,14 @@ export class TextViewTaskOpsService {
       return;
     }
 
-    const maxStage = Math.max(...this.projectState.stages().map(s => s.stageNumber), 0);
-    const result = this.taskOpsAdapter.addTask('', '', maxStage + 1, null, false);
+    const stages = this.projectState.stages();
+    if (stages.length > 0 && stages.every(stage => stage.stageNumber !== 1) && stages.some(stage => stage.tasks.some(task => !task.deletedAt && task.status !== 'archived'))) { this.taskOpsAdapter.repairMissingStageOne(); this.uiState.setStageFilter('all'); return; }
+
+    const nextStage = Math.max(...stages.map(stage => stage.stageNumber), 0) + 1;
+    const result = this.taskOpsAdapter.addTask('', '', nextStage, null, false);
     if (isFailure(result)) {
       this.toast.error('创建阶段失败', getErrorMessage(result.error));
-    } else {
-      this.navigateToNewTask(result.value, maxStage + 1);
-    }
+    } else { this.navigateToNewTask(result.value, nextStage); }
   }
 
   navigateToNewTask(taskId: string, stage: number | null): void {

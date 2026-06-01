@@ -405,6 +405,22 @@ export class TaskOperationService {
   cleanupOldTrashItems(): number {
     return this.trashService.cleanupOldTrashItems();
   }
+
+  /** 阶段 1 缺失时触发布局补偿，将最早的可见阶段恢复为根层。 */
+  repairMissingStageOne(): boolean {
+    const activeP = this.getActiveProject();
+    if (!activeP) return false;
+
+    const visibleAssignedTasks = activeP.tasks.filter(task =>
+      task.stage !== null && !task.deletedAt && task.status !== 'archived'
+    );
+    if (visibleAssignedTasks.length === 0 || visibleAssignedTasks.some(task => task.stage === 1)) {
+      return false;
+    }
+
+    this.recordAndUpdate(project => this.layoutService.rebalance(project));
+    return true;
+  }
   
   // ========== 任务移动（委托给 TaskMoveService）==========
   

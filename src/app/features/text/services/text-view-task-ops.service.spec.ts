@@ -21,6 +21,7 @@ describe('TextViewTaskOpsService', () => {
   let stageTaskList: HTMLElement;
   const mockTaskOpsAdapter = {
     addTask: vi.fn(),
+    repairMissingStageOne: vi.fn(),
   };
   const mockToast = {
     info: vi.fn(),
@@ -58,6 +59,35 @@ describe('TextViewTaskOpsService', () => {
       height,
       toJSON: () => ({}),
     } as DOMRect);
+  };
+
+  const createTask = (overrides: Partial<Task> = {}): Task => ({
+    id: overrides.id ?? 'task-1',
+    title: overrides.title ?? 'Task',
+    content: overrides.content ?? '',
+    stage: 'stage' in overrides ? overrides.stage! : 1,
+    parentId: overrides.parentId ?? null,
+    order: overrides.order ?? 1,
+    rank: overrides.rank ?? 1000,
+    status: overrides.status ?? 'active',
+    x: overrides.x ?? 0,
+    y: overrides.y ?? 0,
+    createdDate: overrides.createdDate ?? new Date().toISOString(),
+    updatedAt: overrides.updatedAt ?? new Date().toISOString(),
+    displayId: overrides.displayId ?? '1',
+    deletedAt: overrides.deletedAt ?? null,
+  });
+
+  const initOpsContext = () => {
+    service.init({
+      selectedTaskId: signal<string | null>(null),
+      deleteConfirmTask: signal<Task | null>(null),
+      deleteKeepChildren: signal(false),
+      focusFlowNode: { emit: vi.fn() } as never,
+      isMobile: signal(false),
+      getStagesRef: () => undefined,
+      getUnassignedRef: () => undefined,
+    });
   };
 
   beforeEach(() => {
@@ -146,6 +176,7 @@ describe('TextViewTaskOpsService', () => {
   mockUiState.setStageFilter.mockClear();
     mockUserSession.isHintOnlyStartupPlaceholderVisible.mockReturnValue(false);
     mockTaskOpsAdapter.addTask.mockReset();
+    mockTaskOpsAdapter.repairMissingStageOne.mockReset();
     mockToast.info.mockReset();
     mockToast.warning.mockReset();
     mockToast.error.mockReset();
@@ -313,6 +344,61 @@ describe('TextViewTaskOpsService', () => {
 
     expect(mockTaskOpsAdapter.addTask).not.toHaveBeenCalled();
     expect(mockToast.info).toHaveBeenCalledWith('会话确认中', '创建任务暂不可用，owner 确认完成前保持只读');
+  });
+
+  it('should repair missing stage one instead of creating an extra stage', () => {
+    initOpsContext();
+    stageFilter.set(2);
+    mockProjectState.stages.mockReturnValue([
+      { stageNumber: 2, tasks: [createTask({ id: 'stage-2-root', stage: 2 })] },
+    ]);
+    mockTaskOpsAdapter.repairMissingStageOne.mockReturnValue(true);
+
+    service.onAddNewStage();
+
+    expect(mockTaskOpsAdapter.repairMissingStageOne).toHaveBeenCalledTimes(1);
+    expect(mockTaskOpsAdapter.addTask).not.toHaveBeenCalled();
+    expect(mockUiState.setStageFilter).toHaveBeenCalledWith('all');
+  });
+
+  it('should append a new stage when stage one is present', () => {
+    initOpsContext();
+    mockProjectState.stages.mockReturnValue([
+      { stageNumber: 1, tasks: [createTask({ id: 'stage-1-root', stage: 1 })] },
+      { stageNumber: 2, tasks: [createTask({ id: 'stage-2-child', stage: 2 })] },
+    ]);
+    mockTaskOpsAdapter.addTask.mockReturnValue({ ok: true, value: 'new-stage-task' });
+
+    service.onAddNewStage();
+
+    expect(mockTaskOpsAdapter.repairMissingStageOne).not.toHaveBeenCalled();
+    expect(mockTaskOpsAdapter.addTask).toHaveBeenCalledWith('', '', 3, null, false);
+  });
+
+  it('should ignore archived-only stages when deciding whether stage one is missing', () => {
+    initOpsContext();
+    mockProjectState.stages.mockReturnValue([
+      { stageNumber: 2, tasks: [createTask({ id: 'archived-stage-2', stage: 2, status: 'archived' })] },
+    ]);
+    mockTaskOpsAdapter.addTask.mockReturnValue({ ok: true, value: 'new-stage-task' });
+
+    service.onAddNewStage();
+
+    expect(mockTaskOpsAdapter.repairMissingStageOne).not.toHaveBeenCalled();
+    expect(mockTaskOpsAdapter.addTask).toHaveBeenCalledWith('', '', 3, null, false);
+  });
+
+  it('should not create a stage when missing-stage repair is unavailable', () => {
+    initOpsContext();
+    mockProjectState.stages.mockReturnValue([
+      { stageNumber: 2, tasks: [createTask({ id: 'stage-2-root', stage: 2 })] },
+    ]);
+    mockTaskOpsAdapter.repairMissingStageOne.mockReturnValue(false);
+
+    service.onAddNewStage();
+
+    expect(mockTaskOpsAdapter.repairMissingStageOne).toHaveBeenCalledTimes(1);
+    expect(mockTaskOpsAdapter.addTask).not.toHaveBeenCalled();
   });
 
   it('should clear browser text selection on the first blank-area click and deselect on the next click', () => {

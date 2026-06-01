@@ -193,6 +193,7 @@ describe('TaskTrashService', () => {
       // 子任务应提升到被删除任务的父级
       const childTask = currentProject.tasks.find(t => t.id === 'child');
       expect(childTask?.parentId).toBeNull();
+      expect(childTask?.stage).toBe(1);
     });
     
     it('删除任务应同时删除相关连接', () => {

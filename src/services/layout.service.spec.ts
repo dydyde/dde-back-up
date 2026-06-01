@@ -227,6 +227,37 @@ describe('LayoutService', () => {
       // Ranks should still be valid
       expect(result.tasks.every(t => t.rank > 0)).toBe(true);
     });
+
+    it('阶段 1 缺失时将最早可见阶段补回根层', () => {
+      const tasks = [
+        createTask({ id: 'root', stage: 2, parentId: null, rank: 20000, x: 520 }),
+        createTask({ id: 'child', stage: 3, parentId: 'root', rank: 20500, x: 920 }),
+      ];
+      const project = createProject(tasks);
+
+      const result = service.rebalance(project);
+      const root = result.tasks.find(task => task.id === 'root');
+      const child = result.tasks.find(task => task.id === 'child');
+
+      expect(root?.stage).toBe(1);
+      expect(root?.displayId).toBe('1');
+      expect(child?.stage).toBe(2);
+      expect(child?.displayId).toBe('1,a');
+    });
+
+    it('已有阶段 1 时保留中间阶段孤儿的 O 编号', () => {
+      const tasks = [
+        createTask({ id: 'stage-1-root', stage: 1, parentId: null, rank: 10000 }),
+        createTask({ id: 'orphan', stage: 3, parentId: null, rank: 30000 }),
+      ];
+      const project = createProject(tasks);
+
+      const result = service.rebalance(project);
+      const orphan = result.tasks.find(task => task.id === 'orphan');
+
+      expect(orphan?.stage).toBe(3);
+      expect(orphan?.displayId).toBe('O1');
+    });
   });
 
   describe('fixOrphanedTasks', () => {

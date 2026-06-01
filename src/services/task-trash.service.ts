@@ -191,6 +191,25 @@ export class TaskTrashService {
     };
   }
 
+  private resolvePromotedChildStage(task: Task, tasks: Task[]): number {
+    const parentTask = task.parentId
+      ? tasks.find(candidate => candidate.id === task.parentId) ?? null
+      : null;
+    return parentTask?.stage !== null && parentTask?.stage !== undefined
+      ? parentTask.stage + 1
+      : 1;
+  }
+
+  private createPromotedChildDraft(child: Task, deletedParent: Task, tasks: Task[], now: string): Task {
+    return {
+      ...child,
+      parentId: deletedParent.parentId,
+      stage: this.resolvePromotedChildStage(deletedParent, tasks),
+      displayId: '?',
+      updatedAt: now,
+    };
+  }
+
   private applyBatchSoftDeleteMutation(
     project: Project,
     idsToDelete: Set<string>,
@@ -259,11 +278,7 @@ export class TaskTrashService {
       tasks: p.tasks.map(t => {
         // 提升子任务到被删除任务的父级
         if (keepChildren && childrenToPromote.some(c => c.id === t.id)) {
-          return {
-            ...t,
-            parentId: task.parentId,
-            updatedAt: now,
-          };
+          return this.createPromotedChildDraft(t, task, activeP.tasks, now);
         }
         
         if (t.id === taskId) {
