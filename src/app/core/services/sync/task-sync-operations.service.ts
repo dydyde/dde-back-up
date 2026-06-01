@@ -39,6 +39,7 @@ import { SentryLazyLoaderService } from '../../../../services/sentry-lazy-loader
 import { SyncRpcClientService, type SyncRpcResult } from '../../../../services/sync-rpc-client.service';
 import {
   createBrowserNetworkSuspendedError,
+  isBrowserNetworkSuspendedError,
   isBrowserNetworkSuspendedWindow,
 } from '../../../../utils/browser-network-suspension';
 import {
