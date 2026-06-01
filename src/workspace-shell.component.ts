@@ -2440,6 +2440,7 @@ export class WorkspaceShellComponent implements OnInit, OnDestroy, AfterViewInit
     }
 
     this.focusModeIntentActivated.set(true);
+    void this.preloadFocusModeAssets('intent');
     this.dispatchFocusEntrySyncPulseIfReady();
     this.teardownFocusMountIntentListener();
     this.focusStartupProbe.checkGateForProjectEntry();

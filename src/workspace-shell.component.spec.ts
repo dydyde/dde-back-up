@@ -1289,12 +1289,14 @@ describe('WorkspaceShellComponent 输入事件处理', () => {
 
   it('手机端项目入口应立即触发 Focus 大门检查', () => {
     const set = vi.fn();
+    const preloadFocusModeAssets = vi.fn().mockResolvedValue(undefined);
     const dispatchFocusEntrySyncPulseIfReady = vi.fn();
     const teardownFocusMountIntentListener = vi.fn();
     const checkGateForProjectEntry = vi.fn();
     const context = {
       uiState: { isMobile: () => true },
       focusModeIntentActivated: { set },
+      preloadFocusModeAssets,
       dispatchFocusEntrySyncPulseIfReady,
       teardownFocusMountIntentListener,
       focusStartupProbe: { checkGateForProjectEntry },
@@ -1305,6 +1307,7 @@ describe('WorkspaceShellComponent 输入事件处理', () => {
     }).checkGateForMobileProjectEntry.call(context);
 
     expect(set).toHaveBeenCalledWith(true);
+    expect(preloadFocusModeAssets).toHaveBeenCalledWith('intent');
     expect(dispatchFocusEntrySyncPulseIfReady).toHaveBeenCalledTimes(1);
     expect(teardownFocusMountIntentListener).toHaveBeenCalledTimes(1);
     expect(checkGateForProjectEntry).toHaveBeenCalledTimes(1);
@@ -1312,12 +1315,14 @@ describe('WorkspaceShellComponent 输入事件处理', () => {
 
   it('桌面端项目入口不应触发手机 Gate 快速检查', () => {
     const set = vi.fn();
+    const preloadFocusModeAssets = vi.fn().mockResolvedValue(undefined);
     const dispatchFocusEntrySyncPulseIfReady = vi.fn();
     const teardownFocusMountIntentListener = vi.fn();
     const checkGateForProjectEntry = vi.fn();
     const context = {
       uiState: { isMobile: () => false },
       focusModeIntentActivated: { set },
+      preloadFocusModeAssets,
       dispatchFocusEntrySyncPulseIfReady,
       teardownFocusMountIntentListener,
       focusStartupProbe: { checkGateForProjectEntry },
@@ -1328,6 +1333,7 @@ describe('WorkspaceShellComponent 输入事件处理', () => {
     }).checkGateForMobileProjectEntry.call(context);
 
     expect(set).not.toHaveBeenCalled();
+    expect(preloadFocusModeAssets).not.toHaveBeenCalled();
     expect(dispatchFocusEntrySyncPulseIfReady).not.toHaveBeenCalled();
     expect(teardownFocusMountIntentListener).not.toHaveBeenCalled();
     expect(checkGateForProjectEntry).not.toHaveBeenCalled();

@@ -94,8 +94,8 @@
     }
 
     <!-- Focus Mode 覆盖层 -->
-    <!-- 二阶段策略：本地探针命中待处理 gate 或用户交互后再挂载 -->
-    @defer (when shouldMountFocusMode()) {
+    <!-- 二阶段策略：启动后立即预取覆盖层 chunk，本地探针命中待处理 gate 或用户交互后再挂载 -->
+    @defer (when shouldMountFocusMode(); prefetch on immediate) {
       <app-focus-mode></app-focus-mode>
     } @error {
       <!-- 专注模式 chunk 加载失败，静默降级（不阻塞主流程） -->
