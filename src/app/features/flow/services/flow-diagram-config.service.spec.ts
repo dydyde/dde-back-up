@@ -260,6 +260,46 @@ describe('FlowDiagramConfigService', () => {
     expectEmbeddedCrossTreeLinks(result.linkDataArray, 6);
   });
 
+  it('keeps link route inputs stable when task and connection arrays are rehydrated in a different order', () => {
+    const tasks = [
+      createTask({ id: 'root-a', title: 'Root A', stage: 1, rank: 10, displayId: '1' }),
+      createTask({ id: 'child-a', title: 'Child A', stage: 2, parentId: 'root-a', rank: 20, displayId: '1,1' }),
+      createTask({ id: 'root-b', title: 'Root B', stage: 1, rank: 30, displayId: '2' }),
+      createTask({ id: 'child-b', title: 'Child B', stage: 2, parentId: 'root-b', rank: 40, displayId: '2,1' }),
+    ];
+    const connections: Connection[] = [
+      { id: 'conn-b', source: 'root-b', target: 'child-a', title: 'B to A' },
+      { id: 'conn-a', source: 'root-a', target: 'child-b', title: 'A to B' },
+    ];
+
+    const first = service.buildDiagramData(
+      tasks,
+      createProject(tasks, connections),
+      '',
+      new Map<string, go.ObjectData>(),
+      { dockedTaskIds: new Set<string>(), focusedTaskId: null },
+    );
+    const second = service.buildDiagramData(
+      [...tasks].reverse(),
+      createProject([...tasks].reverse(), [...connections].reverse()),
+      '',
+      new Map<string, go.ObjectData>(),
+      { dockedTaskIds: new Set<string>(), focusedTaskId: null },
+    );
+
+    const toRouteInputs = (links: typeof first.linkDataArray) => links.map(link => ({
+      key: link.key,
+      from: link.from,
+      to: link.to,
+      isCrossTree: link.isCrossTree,
+      curviness: link.curviness,
+      labelSegmentFraction: link.labelSegmentFraction,
+    }));
+
+    expect(toRouteInputs(second.linkDataArray)).toEqual(toRouteInputs(first.linkDataArray));
+    expect(first.linkDataArray.every(link => typeof link.curviness === 'number')).toBe(true);
+  });
+
   it('keeps long-span edge-boundary relation blocks unique without lifting them away from the link', () => {
     const tasks = Array.from({ length: 2 }, (_, index) => [
       createTask({ id: `far-left-${index}`, title: `Far Left ${index}`, stage: 1, displayId: `${index + 1}` }),

@@ -33,7 +33,7 @@ import { KnowledgeAnchorComponent } from '../../../shared/components/knowledge-a
       (touchmove)="onTouchMove($event)"
       (touchend)="onTouchEnd($event)"
       (touchcancel)="onTouchCancel($event)"
-      class="text-task-card relative min-w-0 bg-canvas/80 dark:bg-stone-800/80 backdrop-blur-sm border rounded-lg cursor-pointer hover:shadow-md hover:-translate-y-0.5 transition-all group stack-card overflow-hidden"
+      class="text-task-card relative min-w-0 bg-canvas/80 dark:bg-stone-800/80 backdrop-blur-sm border rounded-lg cursor-pointer hover:shadow-md hover:-translate-y-0.5 transition-[transform,box-shadow,border-color] duration-150 group stack-card overflow-hidden"
       [ngClass]="cardClasses">
 
       <div class="flex min-w-0 items-start gap-2">

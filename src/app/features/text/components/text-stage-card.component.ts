@@ -17,7 +17,7 @@ import { TextTaskCardComponent } from './text-task-card.component';
   template: `
     <article 
       [attr.data-stage-number]="stage().stageNumber"
-      class="text-stage-card flex flex-col min-w-0 bg-retro-cream/70 dark:bg-stone-800/70 backdrop-blur border border-retro-muted/20 dark:border-stone-700/50 rounded-xl shadow-sm overflow-hidden transition-all flex-shrink-0"
+      class="text-stage-card flex flex-col min-w-0 bg-retro-cream/70 dark:bg-stone-800/70 backdrop-blur border border-retro-muted/20 dark:border-stone-700/50 rounded-xl shadow-sm overflow-hidden transition-colors duration-150 flex-shrink-0"
       [ngClass]="{
         'rounded-2xl': !isMobile(), 
         'w-full': isMobile(),
@@ -49,7 +49,7 @@ import { TextTaskCardComponent } from './text-task-card.component';
       </header>
 
       <!-- 任务列表 -->
-      <div class="flex-1 min-h-0 overflow-y-auto custom-scrollbar task-stack transition-all duration-150 ease-out"
+      <div class="flex-1 min-h-0 overflow-y-auto custom-scrollbar task-stack transition-[max-height,opacity] duration-150 ease-out"
            [attr.data-stage-task-list]="stage().stageNumber"
            [attr.inert]="!isExpanded() ? '' : null"
            [ngClass]="{
@@ -103,6 +103,13 @@ import { TextTaskCardComponent } from './text-task-card.component';
       overscroll-behavior-y: auto;
       -webkit-overflow-scrolling: touch;
       scrollbar-gutter: stable;
+      /* 隔离内层任务列表滚动产生的布局/重绘，避免拖慢外层阶段列表 */
+      contain: layout paint;
+    }
+
+    /* 阶段卡片整体作为独立合成层，降低 backdrop-blur 在外层滚动时的逐帧重算成本 */
+    .text-stage-card {
+      contain: layout paint;
     }
 
     .animate-collapse-open { 

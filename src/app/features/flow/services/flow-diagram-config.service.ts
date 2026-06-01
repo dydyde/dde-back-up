@@ -54,6 +54,8 @@ export interface GoJSLinkData {
   from: string;
   to: string;
   isCrossTree: boolean;
+  /** 稳定曲率：避免 GoJS 在刷新/重建后按自动曲率重新选择路径。 */
+  curviness?: number;
   /** 联系块标题（外显内容） */
   title?: string;
   /** 联系块详细描述 */
@@ -80,6 +82,12 @@ export interface GoJSLinkData {
    */
   labelSegmentOffsetY?: number;
 }
+
+const FLOW_LINK_ROUTE_CONFIG = {
+  PARENT_CHILD_CURVINESS: 20,
+  CROSS_TREE_CURVINESS: 18,
+  PARALLEL_CURVINESS_STEP: 12,
+} as const;
 
 /**
  * GoJS 图表数据
@@ -137,7 +145,6 @@ export class FlowDiagramConfigService {
   readonly linkConfig = {
     cornerRadius: 20,  // 增加圆角
     toShortLength: 5,  // 减小偏移量，让箭头更贴近目标节点（之前 10 太大会导致箭头角度计算问题）
-    curviness: NaN,    // NaN = 让 GoJS 自动计算最佳曲率，避免固定值导致控制点异常
     mobileStrokeWidth: 24,   // 移动端透明触控区域
     desktopStrokeWidth: 14,  // 桌面端透明触控区域
     visibleStrokeWidth: 6,   // 可见线条粗度：增加至6使其更明显
@@ -287,6 +294,8 @@ export class FlowDiagramConfigService {
     // 附近。此处按 (minStage, maxStage) 分组，给组内每条链接赋予不同的
     // 沿线位置 + 垂直偏移，空间层面把关联块分散开。
     this.assignCrossTreeLabelStagger(crossTreeLinksToStagger, taskStageMap, stageNodeCount);
+    this.assignStableLinkCurviness(linkDataArray);
+    linkDataArray.sort((a, b) => this.compareLinkData(a, b));
 
     // ========== 血缘追溯预处理 ==========
     // 在数据加载进 GoJS Model 之前，为每个节点和连线注入始祖信息和家族颜色
@@ -511,6 +520,44 @@ export class FlowDiagramConfigService {
       maxFraction,
       Math.max(minFraction, centeredBase + (slot - mid) * safeStep),
     );
+  }
+
+  private assignStableLinkCurviness(linkDataArray: GoJSLinkData[]): void {
+    const linksByEndpoint = new Map<string, GoJSLinkData[]>();
+
+    for (const link of linkDataArray) {
+      const bucketKey = `${link.from}->${link.to}|${link.category ?? ''}`;
+      const bucket = linksByEndpoint.get(bucketKey) ?? [];
+      bucket.push(link);
+      linksByEndpoint.set(bucketKey, bucket);
+    }
+
+    for (const bucket of linksByEndpoint.values()) {
+      bucket.sort((a, b) => this.compareLinkData(a, b));
+      if (bucket.length === 1) {
+        bucket[0].curviness = this.getBaseLinkCurviness(bucket[0]);
+        continue;
+      }
+
+      const middle = (bucket.length - 1) / 2;
+      bucket.forEach((link, index) => {
+        const spread = (index - middle) * FLOW_LINK_ROUTE_CONFIG.PARALLEL_CURVINESS_STEP;
+        link.curviness = spread === 0 ? this.getBaseLinkCurviness(link) : spread;
+      });
+    }
+  }
+
+  private getBaseLinkCurviness(link: GoJSLinkData): number {
+    return link.isCrossTree
+      ? FLOW_LINK_ROUTE_CONFIG.CROSS_TREE_CURVINESS
+      : FLOW_LINK_ROUTE_CONFIG.PARENT_CHILD_CURVINESS;
+  }
+
+  private compareLinkData(a: GoJSLinkData, b: GoJSLinkData): number {
+    const categoryCompare = Number(a.isCrossTree) - Number(b.isCrossTree);
+    if (categoryCompare !== 0) return categoryCompare;
+
+    return a.key.localeCompare(b.key);
   }
 
   /**

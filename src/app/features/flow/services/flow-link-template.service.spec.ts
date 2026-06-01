@@ -22,4 +22,13 @@ describe('flow-link-template.service.ts', () => {
     expect(source).toContain('toolExt.fromPort = null;');
     expect(source).toContain('toolExt.originalFromPort = null;');
   });
+
+  it('应绑定连接线 points 和稳定曲率，避免模型刷新后重新选择路径', () => {
+    const sourcePath = join(process.cwd(), 'src/app/features/flow/services/flow-link-template.service.ts');
+    const source = readFileSync(sourcePath, 'utf8');
+
+    expect(source).toContain('adjusting: go.Link.End');
+    expect(source).toContain('new go.Binding("curviness", "curviness")');
+    expect(source).toContain('new go.Binding("points").makeTwoWay()');
+  });
 });

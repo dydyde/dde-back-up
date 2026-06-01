@@ -147,7 +147,7 @@ import { TextStageCardComponent } from './text-stage-card.component';
           }
           
           <!-- 添加阶段按钮 -->
-          <div class="flex items-center justify-center rounded-xl border-2 border-dashed border-stone-200 dark:border-stone-700 hover:border-stone-300 dark:hover:border-stone-600 transition-all cursor-pointer min-h-[60px]"
+          <div class="flex items-center justify-center rounded-xl border-2 border-dashed border-stone-200 dark:border-stone-700 hover:border-stone-300 dark:hover:border-stone-600 transition-colors cursor-pointer min-h-[60px]"
                [ngClass]="{'py-6': !isMobile, 'py-4': isMobile}"
                (click)="addNewStage.emit()">
             <span class="text-stone-400 dark:text-stone-400 hover:text-stone-600 dark:hover:text-stone-300 text-lg font-light">+ 新阶段</span>
@@ -171,6 +171,8 @@ import { TextStageCardComponent } from './text-stage-card.component';
       touch-action: pan-y;
       -webkit-overflow-scrolling: touch;
       scrollbar-gutter: stable;
+      /* 将外层阶段列表提升为独立合成层，配合卡片层隔离获得更接近原生的滚动手感 */
+      transform: translateZ(0);
     }
 
     .stage-scroll-item {

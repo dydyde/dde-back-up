@@ -198,6 +198,7 @@ export class FlowLinkTemplateService {
         layerName: 'Links',
         routing: go.Link.Normal,
         curve: go.Link.Bezier,
+        adjusting: go.Link.End,
         getLinkPoint: freeAngleLinkPoint,
         toShortLength: this.configService.linkConfig.toShortLength,
         fromEndSegmentLength: 22,
@@ -231,6 +232,8 @@ export class FlowLinkTemplateService {
           )
         )
       },
+      new go.Binding("curviness", "curviness"),
+      new go.Binding("points").makeTwoWay(),
       // 【2026-02-25 性能优化】默认模板不含 label panel（仅用于父子链接）
       // 跨树链接使用 'crossTree' category 模板，含 label panel + tooltip
       ...this.configService.getLinkMainShapesConfig($, isMobile)
@@ -245,6 +248,7 @@ export class FlowLinkTemplateService {
         layerName: 'Links',
         routing: go.Link.Normal,
         curve: go.Link.Bezier,
+        adjusting: go.Link.End,
         getLinkPoint: freeAngleLinkPoint,
         toShortLength: this.configService.linkConfig.toShortLength,
         fromEndSegmentLength: 22,
@@ -278,6 +282,8 @@ export class FlowLinkTemplateService {
           )
         )
       },
+      new go.Binding("curviness", "curviness"),
+      new go.Binding("points").makeTwoWay(),
       ...this.configService.getLinkMainShapesConfig($, isMobile),
       this.createConnectionLabelPanel($)
     );

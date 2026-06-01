@@ -6,11 +6,17 @@ import { SyncCoordinatorService } from '../../../../services/sync-coordinator.se
 import { LoggerService } from '../../../../services/logger.service';
 import { ToastService } from '../../../../services/toast.service';
 import { DockEngineService } from '../../../../services/dock-engine.service';
-import { FlowDiagramConfigService } from './flow-diagram-config.service';
+import { FlowDiagramConfigService, type GoJSLinkData } from './flow-diagram-config.service';
 import { FlowZoomService } from './flow-zoom.service';
 import { Task } from '../../../../models';
 import * as go from 'gojs';
 import { SentryLazyLoaderService } from '../../../../services/sentry-lazy-loader.service';
+
+type FlowLinkDataWithPorts = GoJSLinkData & {
+  fromPortId: string;
+  toPortId: string;
+  points?: unknown;
+};
 
 /**
  * FlowDiagramDataService - 图表数据同步、导出与视图状态管理
@@ -254,6 +260,11 @@ export class FlowDiagramDataService {
         if (n.key) currentNodeMap.set(n.key as string, n);
       });
 
+      const currentLinkMap = new Map<string, go.ObjectData>();
+      (model.linkDataArray || []).forEach((link: go.ObjectData) => {
+        if (link.key) currentLinkMap.set(link.key as string, link);
+      });
+
       const hasStructuralChange = this.detectStructuralChange(currentNodeMap, activeTasks);
 
       if (lastUpdateType === 'position' && !forceRefresh && !hasStructuralChange) {
@@ -285,11 +296,11 @@ export class FlowDiagramDataService {
 
       model.mergeNodeDataArray(diagramData.nodeDataArray);
 
-      const linkDataWithPorts = diagramData.linkDataArray.map(link => ({
-        ...link,
-        fromPortId: "",
-        toPortId: ""
-      }));
+      const nextNodeMap = new Map<string, go.ObjectData>();
+      diagramData.nodeDataArray.forEach(node => nextNodeMap.set(node.key, node as go.ObjectData));
+      const linkDataWithPorts = diagramData.linkDataArray.map(link =>
+        this.buildLinkDataWithPorts(link, currentLinkMap, currentNodeMap, nextNodeMap)
+      );
 
       model.mergeLinkDataArray(linkDataWithPorts);
 
@@ -355,6 +366,50 @@ export class FlowDiagramDataService {
       this.logger.error('❌ 更新流程图失败', error);
       this.toast.error('流程图错误', '更新流程图失败。请刷新页面重试。');
     }
+  }
+
+  private buildLinkDataWithPorts(
+    link: GoJSLinkData,
+    currentLinkMap: ReadonlyMap<string, go.ObjectData>,
+    currentNodeMap: ReadonlyMap<string, go.ObjectData>,
+    nextNodeMap: ReadonlyMap<string, go.ObjectData>,
+  ): FlowLinkDataWithPorts {
+    const existingLink = currentLinkMap.get(link.key);
+    const points = this.shouldPreserveLinkPoints(link, existingLink, currentNodeMap, nextNodeMap)
+      ? existingLink?.points
+      : undefined;
+
+    return {
+      ...link,
+      points,
+      fromPortId: "",
+      toPortId: ""
+    };
+  }
+
+  private shouldPreserveLinkPoints(
+    nextLink: GoJSLinkData,
+    currentLink: go.ObjectData | undefined,
+    currentNodeMap: ReadonlyMap<string, go.ObjectData>,
+    nextNodeMap: ReadonlyMap<string, go.ObjectData>,
+  ): boolean {
+    if (currentLink?.points === undefined || currentLink.points === null) return false;
+    if (currentLink.from !== nextLink.from || currentLink.to !== nextLink.to) return false;
+    if (currentLink.category !== nextLink.category || currentLink.curviness !== nextLink.curviness) return false;
+
+    return this.hasStableNodeLoc(currentNodeMap, nextNodeMap, nextLink.from)
+      && this.hasStableNodeLoc(currentNodeMap, nextNodeMap, nextLink.to);
+  }
+
+  private hasStableNodeLoc(
+    currentNodeMap: ReadonlyMap<string, go.ObjectData>,
+    nextNodeMap: ReadonlyMap<string, go.ObjectData>,
+    key: string,
+  ): boolean {
+    const currentLoc = currentNodeMap.get(key)?.loc;
+    const nextLoc = nextNodeMap.get(key)?.loc;
+
+    return currentLoc !== undefined && nextLoc !== undefined && currentLoc === nextLoc;
   }
 
   // ========== 视图状态 ==========
