@@ -315,6 +315,19 @@ describe('BlackBoxService', () => {
         { immediate: true, widgetNotifyAction: 'read' },
       );
     });
+
+    it('已读但未完成的条目仍应计入黑匣子条目仓数量', () => {
+      const createResult = service.create({ content: '仍需处理' });
+      if (!createResult.ok) throw new Error('Create failed');
+
+      expect(service.pendingCount()).toBe(1);
+
+      const readResult = service.markAsRead(createResult.value.id);
+
+      expect(readResult.ok).toBe(true);
+      expect(service.pendingCount()).toBe(1);
+      expect(service.gatePendingCount()).toBe(0);
+    });
   });
 
   describe('markAsCompleted', () => {
@@ -333,6 +346,55 @@ describe('BlackBoxService', () => {
         expect.objectContaining({ id: createResult.value.id, isCompleted: true }),
         { immediate: true, widgetNotifyAction: 'complete' },
       );
+    });
+
+    it('完成后应从黑匣子条目仓数量中移除', () => {
+      const createResult = service.create({ content: '完成后移除' });
+      if (!createResult.ok) throw new Error('Create failed');
+
+      expect(service.pendingCount()).toBe(1);
+
+      const result = service.markAsCompleted(createResult.value.id);
+
+      expect(result.ok).toBe(true);
+      expect(service.pendingCount()).toBe(0);
+    });
+  });
+
+  describe('getEntriesByDate', () => {
+    it('应只返回条目仓可见条目，排除已完成条目', () => {
+      setBlackBoxEntries([
+        {
+          id: 'entry-open',
+          projectId: null,
+          userId: 'test-user',
+          content: '仍在条目仓',
+          date: '2026-04-21',
+          createdAt: '2026-04-21T01:00:00.000Z',
+          updatedAt: '2026-04-21T01:00:00.000Z',
+          isRead: true,
+          isCompleted: false,
+          isArchived: false,
+          deletedAt: null,
+          syncStatus: 'synced',
+        },
+        {
+          id: 'entry-completed',
+          projectId: null,
+          userId: 'test-user',
+          content: '已进入历史层',
+          date: '2026-04-21',
+          createdAt: '2026-04-21T02:00:00.000Z',
+          updatedAt: '2026-04-21T02:00:00.000Z',
+          isRead: true,
+          isCompleted: true,
+          isArchived: false,
+          deletedAt: null,
+          syncStatus: 'synced',
+        },
+      ]);
+
+      expect(service.getEntriesByDate('2026-04-21').map(entry => entry.id)).toEqual(['entry-open']);
     });
   });
 

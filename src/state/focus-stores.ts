@@ -152,21 +152,25 @@ export const blackBoxEntries = computed(() =>
     .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
 );
 
+/** 条目仓可见集合：已读仍保留，完成/归档后才离开条目仓。 */
+export const unresolvedBlackBoxEntries = computed(() =>
+  blackBoxEntries().filter(e => !e.isArchived && !e.isCompleted)
+);
+
+/** 条目仓 badge 计数，不复用 Gate 待处理队列。 */
+export const unresolvedBlackBoxCount = computed(() => unresolvedBlackBoxEntries().length);
+
 /**
  * 按日期分组的黑匣子条目
  */
 export const blackBoxEntriesGroupedByDate = computed<BlackBoxDateGroup[]>(() => {
-  const entries = blackBoxEntries();
+  const entries = unresolvedBlackBoxEntries();
   const groups = new Map<string, BlackBoxEntry[]>();
   
   for (const entry of entries) {
-    // 已归档和已完成的条目不显示在条目仓中
-    // 已完成条目会进入项目历史回顾
-    if (!entry.isArchived && !entry.isCompleted) {
-      const existing = groups.get(entry.date) || [];
-      existing.push(entry);
-      groups.set(entry.date, existing);
-    }
+    const existing = groups.get(entry.date) || [];
+    existing.push(entry);
+    groups.set(entry.date, existing);
   }
   
   return Array.from(groups.entries())

@@ -12,6 +12,7 @@ import {
   blackBoxEntriesMap,
   blackBoxEntriesGroupedByDate,
   pendingBlackBoxEntries,
+  unresolvedBlackBoxCount,
   updateBlackBoxEntry,
   getTodayDate
 } from '../state/focus-stores';
@@ -40,9 +41,14 @@ export class BlackBoxService {
   readonly entriesByDate = blackBoxEntriesGroupedByDate;
   
   /**
-   * 未读条目数量（暴露给组件）
+   * 条目仓未完成数量：已读不等于完成，仍应显示在黑匣子 badge 中。
    */
-  readonly pendingCount = computed(() => pendingBlackBoxEntries().length);
+  readonly pendingCount = unresolvedBlackBoxCount;
+
+  /**
+   * Gate 待处理队列数量：保留已读冷却/稍后提醒等提醒节奏语义。
+   */
+  readonly gatePendingCount = computed(() => pendingBlackBoxEntries().length);
   
   /**
    * 获取所有条目 Map
@@ -282,11 +288,11 @@ export class BlackBoxService {
   }
   
   /**
-   * 获取指定日期的条目
+   * 获取指定日期的条目仓可见条目
    */
   getEntriesByDate(date: string): BlackBoxEntry[] {
     return Array.from(blackBoxEntriesMap().values())
-      .filter(e => e.date === date && !e.deletedAt && !e.isArchived)
+      .filter(e => e.date === date && !e.deletedAt && !e.isArchived && !e.isCompleted)
       .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
   }
   
