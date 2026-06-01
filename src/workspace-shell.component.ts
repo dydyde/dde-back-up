@@ -2434,6 +2434,17 @@ export class WorkspaceShellComponent implements OnInit, OnDestroy, AfterViewInit
       });
   }
 
+  private checkGateForMobileProjectEntry(): void {
+    if (!FEATURE_FLAGS.FOCUS_STARTUP_THROTTLED_CHECK_V1 || !this.uiState.isMobile()) {
+      return;
+    }
+
+    this.focusModeIntentActivated.set(true);
+    this.dispatchFocusEntrySyncPulseIfReady();
+    this.teardownFocusMountIntentListener();
+    this.focusStartupProbe.checkGateForProjectEntry();
+  }
+
   private async triggerSyncPulse(
     reason: 'focus-entry' | 'manual' | 'focus' | 'visible' | 'pageshow' | 'online' | 'heartbeat'
   ): Promise<Awaited<ReturnType<EventDrivenSyncPulseLike['triggerNow']>> | null> {
@@ -2984,20 +2995,28 @@ async signOut() {
     this.authCoord.startRelogin();
   }
 
-  selectProject(id: string) { this.projectCoord.selectProject(id, this.isSidebarOpen); }
+  selectProject(id: string) {
+    this.projectCoord.selectProject(id, this.isSidebarOpen);
+    this.checkGateForMobileProjectEntry();
+  }
   onProjectCardClick(event: MouseEvent, projectId: string) { this.projectCoord.onProjectCardClick(event, projectId); }
   @HostListener('document:click', ['$event'])
   onGlobalClick(event: MouseEvent) { this.projectCoord.handleGlobalClick(event); }
-  enterProject(id: string) { this.projectCoord.enterProject(id, this.isSidebarOpen); }
+  enterProject(id: string) {
+    this.projectCoord.enterProject(id, this.isSidebarOpen);
+    this.checkGateForMobileProjectEntry();
+  }
   handleProjectDoubleClick(id: string, event: MouseEvent) {
     if (this.userSession.isHintOnlyStartupPlaceholderVisible()) {
       event.preventDefault();
       event.stopPropagation();
       this.projectCoord.enterProject(id, this.isSidebarOpen);
+      this.checkGateForMobileProjectEntry();
       return;
     }
 
     this.projectCoord.handleProjectDoubleClick(id, event, this.isSidebarOpen);
+    this.checkGateForMobileProjectEntry();
   }
   startProjectDescriptionEdit(event: Event) {
     event.stopPropagation();

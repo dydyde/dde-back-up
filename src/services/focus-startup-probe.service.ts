@@ -5,7 +5,7 @@ import { GateService } from './gate.service';
 import { LoggerService } from './logger.service';
 import { FEATURE_FLAGS } from '../config/feature-flags.config';
 
-type FocusProbeSource = 'startup' | 'resume-local' | 'resume-remote' | 'manual' | 'widget-open-workspace';
+type FocusProbeSource = 'startup' | 'resume-local' | 'resume-remote' | 'manual' | 'widget-open-workspace' | 'project-entry';
 
 @Injectable({ providedIn: 'root' })
 export class FocusStartupProbeService {
@@ -18,6 +18,7 @@ export class FocusStartupProbeService {
   private readonly pendingGateWorkSignal = signal(false);
 
   private probePromise: Promise<void> | null = null;
+  private projectEntryProbePromise: Promise<void> | null = null;
   private initializedForUser: string | null = null;
   private widgetWorkspaceRemoteFirst = false;
   /** 【修复 P1-06】版本号递增，异步完成后对比确保不写入过期用户数据 */
@@ -33,6 +34,34 @@ export class FocusStartupProbeService {
 
   hasPendingGateWork(): boolean {
     return this.pendingGateWorkSignal();
+  }
+
+  checkGateForProjectEntry(): void {
+    if (!FEATURE_FLAGS.FOCUS_STARTUP_THROTTLED_CHECK_V1) {
+      this.probeDoneSignal.set(true);
+      this.pendingGateWorkSignal.set(false);
+      return;
+    }
+
+    const hasProbeUser = this.resolveProbeUserId(true) !== null;
+
+    if (!this.projectEntryProbePromise) {
+      const projectEntryProbe = this.startProbe({
+        force: true,
+        reloadLocal: true,
+        source: 'project-entry',
+        localFirstWhileInFlight: true,
+      }).finally(() => {
+        if (this.projectEntryProbePromise === projectEntryProbe) {
+          this.projectEntryProbePromise = null;
+        }
+      });
+      this.projectEntryProbePromise = projectEntryProbe;
+    }
+
+    if (hasProbeUser) {
+      this.applyGateSnapshot('project-entry', 'memory');
+    }
   }
 
   async recheckGate(options: { reloadLocal?: boolean; source?: FocusProbeSource } = {}): Promise<void> {
@@ -51,6 +80,7 @@ export class FocusStartupProbeService {
     force: boolean;
     reloadLocal: boolean;
     source: FocusProbeSource;
+    localFirstWhileInFlight?: boolean;
   }): Promise<void> {
     if (!FEATURE_FLAGS.FOCUS_STARTUP_THROTTLED_CHECK_V1) {
       this.probeDoneSignal.set(true);
@@ -58,11 +88,7 @@ export class FocusStartupProbeService {
       return;
     }
 
-    const userId = this.auth.currentUserId() ?? (options.force
-      ? this.auth.peekPersistedSessionIdentity?.()?.userId
-        ?? this.auth.peekPersistedOwnerHint?.()
-        ?? this.initializedForUser
-      : null);
+    const userId = this.resolveProbeUserId(options.force);
     if (!userId) {
       this.initializedForUser = null;
       this.probeDoneSignal.set(false);
@@ -85,6 +111,10 @@ export class FocusStartupProbeService {
     this.pendingGateWorkSignal.set(false);
 
     if (this.probePromise) {
+      if (options.force && options.reloadLocal && options.localFirstWhileInFlight) {
+        await this.applyLocalGateSnapshotDuringInFlight(userId, options.source);
+      }
+
       await this.probePromise;
       if (!options.force) {
         return;
@@ -107,6 +137,32 @@ export class FocusStartupProbeService {
     });
 
     await this.probePromise;
+  }
+
+  private resolveProbeUserId(force: boolean): string | null {
+    return this.auth.currentUserId() ?? (force
+      ? this.auth.peekPersistedSessionIdentity?.()?.userId
+        ?? this.auth.peekPersistedOwnerHint?.()
+        ?? this.initializedForUser
+      : null);
+  }
+
+  private async applyLocalGateSnapshotDuringInFlight(userId: string, source: FocusProbeSource): Promise<void> {
+    try {
+      await this.blackBoxSync.loadFromLocal();
+
+      if (this.resolveProbeUserId(true) !== userId) {
+        this.logger.debug('项目入口本地 gate 快照已过期，忽略本次结果');
+        return;
+      }
+
+      this.applyGateSnapshot(source, 'local');
+    } catch (error) {
+      this.logger.warn('项目入口本地 gate 快照加载失败，等待常规探针继续', {
+        source,
+        error,
+      });
+    }
   }
 
   private async runProbe(
@@ -159,7 +215,7 @@ export class FocusStartupProbeService {
     }
   }
 
-  private applyGateSnapshot(source: FocusProbeSource, phase: 'local' | 'remote'): void {
+  private applyGateSnapshot(source: FocusProbeSource, phase: 'memory' | 'local' | 'remote'): void {
     this.gateService.checkGate({
       ignoreHandledToday: source === 'widget-open-workspace',
     });
