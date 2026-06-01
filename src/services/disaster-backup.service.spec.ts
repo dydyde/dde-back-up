@@ -17,6 +17,8 @@ import { ExternalSourceLinkService } from '../app/core/external-sources/external
 import { ExternalSourceCacheService } from '../app/core/external-sources/external-source-cache.service';
 import { resetBrowserNetworkSuspensionTrackingForTests } from '../utils/browser-network-suspension';
 
+const DISASTER_BACKUP_TEST_HOOK_TIMEOUT_MS = 5000;
+
 function createProject(): Project {
   return {
     id: 'project-1',
@@ -108,7 +110,7 @@ describe('DisasterBackupService', () => {
         request.onblocked = () => resolve();
       });
     }
-  });
+  }, DISASTER_BACKUP_TEST_HOOK_TIMEOUT_MS);
 
   afterEach(async () => {
     if (trackedConflictStorage) {
@@ -117,7 +119,7 @@ describe('DisasterBackupService', () => {
     }
 
     resetBrowserNetworkSuspensionTrackingForTests();
-  });
+  }, DISASTER_BACKUP_TEST_HOOK_TIMEOUT_MS);
 
   it('buildLocalPayload should include full v2 business data and localState coverage', async () => {
     localStorage.setItem('nanoflow.offline-cache-v2.user-1', JSON.stringify({

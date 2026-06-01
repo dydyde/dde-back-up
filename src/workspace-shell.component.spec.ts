@@ -2022,6 +2022,7 @@ describe('WorkspaceShellComponent 输入事件处理', () => {
   it('handleProjectDoubleClick 在 hint-only 期间应仅进入项目而不进入简介编辑态', () => {
     const enterProject = vi.fn();
     const handleProjectDoubleClick = vi.fn();
+    const checkGateForMobileProjectEntry = vi.fn();
     const preventDefault = vi.fn();
     const stopPropagation = vi.fn();
     const context = {
@@ -2033,6 +2034,7 @@ describe('WorkspaceShellComponent 输入事件处理', () => {
         handleProjectDoubleClick,
       },
       isSidebarOpen: signal(false),
+      checkGateForMobileProjectEntry,
     } as unknown as WorkspaceShellComponent;
 
     WorkspaceShellComponent.prototype.handleProjectDoubleClick.call(context, 'proj-1', {
@@ -2043,6 +2045,7 @@ describe('WorkspaceShellComponent 输入事件处理', () => {
     expect(preventDefault).toHaveBeenCalledTimes(1);
     expect(stopPropagation).toHaveBeenCalledTimes(1);
     expect(enterProject).toHaveBeenCalledWith('proj-1', context.isSidebarOpen);
+    expect(checkGateForMobileProjectEntry).toHaveBeenCalledTimes(1);
     expect(handleProjectDoubleClick).not.toHaveBeenCalled();
   });
 
