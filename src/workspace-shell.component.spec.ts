@@ -1295,11 +1295,13 @@ describe('WorkspaceShellComponent 输入事件处理', () => {
     const checkGateForProjectEntry = vi.fn();
     const context = {
       uiState: { isMobile: () => true },
+      currentUserId: () => 'user-1',
       focusModeIntentActivated: { set },
       preloadFocusModeAssets,
       dispatchFocusEntrySyncPulseIfReady,
       teardownFocusMountIntentListener,
       focusStartupProbe: { checkGateForProjectEntry },
+      pendingMobileProjectGateCheck: false,
     } as unknown as WorkspaceShellComponent;
 
     (WorkspaceShellComponent.prototype as unknown as {
@@ -1310,6 +1312,64 @@ describe('WorkspaceShellComponent 输入事件处理', () => {
     expect(preloadFocusModeAssets).toHaveBeenCalledWith('intent');
     expect(dispatchFocusEntrySyncPulseIfReady).toHaveBeenCalledTimes(1);
     expect(teardownFocusMountIntentListener).toHaveBeenCalledTimes(1);
+    expect(checkGateForProjectEntry).toHaveBeenCalledTimes(1);
+    expect((context as unknown as { pendingMobileProjectGateCheck: boolean }).pendingMobileProjectGateCheck).toBe(false);
+  });
+
+  it('手机端启动应预热项目入口 Gate 本地快照', () => {
+    const warmProjectEntryGateSnapshot = vi.fn();
+    const context = {
+      uiState: { isMobile: () => true },
+      focusStartupProbe: { warmProjectEntryGateSnapshot },
+    } as unknown as WorkspaceShellComponent;
+
+    (WorkspaceShellComponent.prototype as unknown as {
+      warmMobileProjectGateSnapshot: (this: WorkspaceShellComponent) => void;
+    }).warmMobileProjectGateSnapshot.call(context);
+
+    expect(warmProjectEntryGateSnapshot).toHaveBeenCalledTimes(1);
+  });
+
+  it('手机端项目入口在用户未确认时应挂起 Gate 检查', () => {
+    const context = {
+      uiState: { isMobile: () => true },
+      currentUserId: () => null,
+      focusModeIntentActivated: { set: vi.fn() },
+      preloadFocusModeAssets: vi.fn().mockResolvedValue(undefined),
+      dispatchFocusEntrySyncPulseIfReady: vi.fn(),
+      teardownFocusMountIntentListener: vi.fn(),
+      focusStartupProbe: { checkGateForProjectEntry: vi.fn() },
+      pendingMobileProjectGateCheck: false,
+    } as {
+      pendingMobileProjectGateCheck: boolean;
+      focusStartupProbe: { checkGateForProjectEntry: ReturnType<typeof vi.fn> };
+    } & Record<string, unknown>;
+
+    (WorkspaceShellComponent.prototype as unknown as {
+      checkGateForMobileProjectEntry: (this: WorkspaceShellComponent) => void;
+    }).checkGateForMobileProjectEntry.call(context as unknown as WorkspaceShellComponent);
+
+    expect(context.pendingMobileProjectGateCheck).toBe(true);
+    expect(context.focusStartupProbe.checkGateForProjectEntry).not.toHaveBeenCalled();
+  });
+
+  it('手机端用户确认后应补跑挂起的项目入口 Gate 检查', () => {
+    const checkGateForProjectEntry = vi.fn();
+    const context = {
+      uiState: { isMobile: () => true },
+      currentUserId: () => 'user-1',
+      focusStartupProbe: { checkGateForProjectEntry },
+      pendingMobileProjectGateCheck: true,
+    } as {
+      pendingMobileProjectGateCheck: boolean;
+      focusStartupProbe: { checkGateForProjectEntry: ReturnType<typeof vi.fn> };
+    } & Record<string, unknown>;
+
+    (WorkspaceShellComponent.prototype as unknown as {
+      flushPendingMobileProjectGateCheck: (this: WorkspaceShellComponent) => void;
+    }).flushPendingMobileProjectGateCheck.call(context as unknown as WorkspaceShellComponent);
+
+    expect(context.pendingMobileProjectGateCheck).toBe(false);
     expect(checkGateForProjectEntry).toHaveBeenCalledTimes(1);
   });
 

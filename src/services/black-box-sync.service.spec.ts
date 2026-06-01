@@ -1900,6 +1900,36 @@ describe('BlackBoxSyncService', () => {
     }));
   });
 
+  it('loadFromLocal 在 expectedUserId 要求 current user 时不应提交 auth settling 期间的持久化 hint 快照', async () => {
+    const ownEntry = createEntry({ id: 'entry-own', content: 'own' });
+    const transaction = vi.fn(() => ({
+      objectStore: vi.fn(() => ({
+        getAll: () => {
+          const request = {
+            result: [ownEntry],
+            onsuccess: null as ((this: IDBRequest<unknown[]>, ev: Event) => unknown) | null,
+            onerror: null as ((this: IDBRequest<unknown[]>, ev: Event) => unknown) | null,
+          };
+          queueMicrotask(() => {
+            authSignals.currentUserId.set(null);
+            authSignals.runtimeState.set('pending');
+            request.onsuccess?.call(request as unknown as IDBRequest<unknown[]>, new Event('success'));
+          });
+          return request;
+        },
+      })),
+    }));
+    (service as unknown as { db: unknown }).db = { transaction };
+
+    const entries = await service.loadFromLocal({
+      expectedUserId: 'user-1',
+      requireCurrentUser: true,
+    });
+
+    expect(entries).toEqual([]);
+    expect(blackBoxEntriesMap().has('entry-own')).toBe(false);
+  });
+
   it('loadFromLocal 应把历史本地模式 pending 条目归一为本地已保存', async () => {
     authSignals.currentUserId.set(null);
     localStorage.setItem(AUTH_CONFIG.LOCAL_MODE_CACHE_KEY, 'true');

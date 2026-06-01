@@ -935,6 +935,7 @@ export class WorkspaceShellComponent implements OnInit, OnDestroy, AfterViewInit
   private focusEntryPulseDispatched = false;
   private focusEntryPulsePending = false;
   private focusEntryPulseRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  private pendingMobileProjectGateCheck = false;
   private interactionWarmupDone = false;
   private syncHydrationDone = false;
   private remoteCallbacksInitialized = false;
@@ -1091,6 +1092,7 @@ export class WorkspaceShellComponent implements OnInit, OnDestroy, AfterViewInit
       this.preloadSidebarTools('startup');
     }
     this.setupFocusMountIntentListener();
+    this.warmMobileProjectGateSnapshot();
     this.recordStartupPreloadBreadcrumb();
     this.recordModulePreloadModeBreadcrumb();
     this.setupFlowRestoreBreadcrumbListener();
@@ -2009,6 +2011,8 @@ export class WorkspaceShellComponent implements OnInit, OnDestroy, AfterViewInit
       }
 
       this.flushWidgetWorkspaceGateRecheck();
+      this.warmMobileProjectGateSnapshot();
+      this.flushPendingMobileProjectGateCheck();
 
       if (!this.coreDataLoaded()) return;
       if (this.focusProbeInitializedForUser === userId) return;
@@ -2443,6 +2447,29 @@ export class WorkspaceShellComponent implements OnInit, OnDestroy, AfterViewInit
     void this.preloadFocusModeAssets('intent');
     this.dispatchFocusEntrySyncPulseIfReady();
     this.teardownFocusMountIntentListener();
+    if (!this.currentUserId()) {
+      this.pendingMobileProjectGateCheck = true;
+      return;
+    }
+
+    this.pendingMobileProjectGateCheck = false;
+    this.focusStartupProbe.checkGateForProjectEntry();
+  }
+
+  private warmMobileProjectGateSnapshot(): void {
+    if (!FEATURE_FLAGS.FOCUS_STARTUP_THROTTLED_CHECK_V1 || !this.uiState.isMobile()) {
+      return;
+    }
+
+    this.focusStartupProbe.warmProjectEntryGateSnapshot();
+  }
+
+  private flushPendingMobileProjectGateCheck(): void {
+    if (!this.pendingMobileProjectGateCheck || !this.uiState.isMobile() || !this.currentUserId()) {
+      return;
+    }
+
+    this.pendingMobileProjectGateCheck = false;
     this.focusStartupProbe.checkGateForProjectEntry();
   }
 

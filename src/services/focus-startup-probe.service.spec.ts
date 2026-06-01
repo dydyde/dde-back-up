@@ -102,6 +102,90 @@ describe('FocusStartupProbeService', () => {
     expect(service.isProbeDone()).toBe(true);
   });
 
+  it('项目入口本地预热只水合快照，不直接弹出大门', async () => {
+    const loadFromLocal = vi.fn().mockResolvedValue([]);
+    const checkGate = vi.fn(() => gateState.set('reviewing'));
+    const pullChanges = vi.fn().mockResolvedValue(undefined);
+    const userIdSignal = signal<string | null>('user-1');
+
+    const injector = Injector.create({
+      providers: [
+        { provide: FocusStartupProbeService, useClass: FocusStartupProbeService },
+        { provide: AuthService, useValue: { currentUserId: userIdSignal } },
+        { provide: BlackBoxSyncService, useValue: { loadFromLocal, pullChanges } },
+        { provide: GateService, useValue: { checkGate, state: gateState } },
+        {
+          provide: LoggerService,
+          useValue: {
+            category: () => ({
+              debug: vi.fn(),
+              warn: vi.fn(),
+              info: vi.fn(),
+              error: vi.fn(),
+            }),
+          },
+        },
+      ],
+    });
+
+    const service = injector.get(FocusStartupProbeService);
+    service.warmProjectEntryGateSnapshot();
+    await flushPromises();
+
+    expect(loadFromLocal).toHaveBeenCalledTimes(1);
+    expect(loadFromLocal).toHaveBeenCalledWith({
+      expectedUserId: 'user-1',
+      requireCurrentUser: true,
+    });
+    expect(pullChanges).not.toHaveBeenCalled();
+    expect(checkGate).not.toHaveBeenCalled();
+    expect(service.hasPendingGateWork()).toBe(false);
+  });
+
+  it('项目入口预热在 currentUserId 未确认前不应读取本地快照', async () => {
+    const loadFromLocal = vi.fn().mockResolvedValue([]);
+    const checkGate = vi.fn(() => gateState.set('reviewing'));
+    const pullChanges = vi.fn().mockResolvedValue(undefined);
+    const userIdSignal = signal<string | null>(null);
+
+    const injector = Injector.create({
+      providers: [
+        { provide: FocusStartupProbeService, useClass: FocusStartupProbeService },
+        {
+          provide: AuthService,
+          useValue: {
+            currentUserId: userIdSignal,
+            peekPersistedSessionIdentity: () => ({ userId: 'user-1' }),
+            peekPersistedOwnerHint: () => 'user-1',
+          },
+        },
+        { provide: BlackBoxSyncService, useValue: { loadFromLocal, pullChanges } },
+        { provide: GateService, useValue: { checkGate, state: gateState } },
+        {
+          provide: LoggerService,
+          useValue: {
+            category: () => ({
+              debug: vi.fn(),
+              warn: vi.fn(),
+              info: vi.fn(),
+              error: vi.fn(),
+            }),
+          },
+        },
+      ],
+    });
+
+    const service = injector.get(FocusStartupProbeService);
+    service.warmProjectEntryGateSnapshot();
+    service.checkGateForProjectEntry();
+    await flushPromises();
+
+    expect(loadFromLocal).not.toHaveBeenCalled();
+    expect(pullChanges).not.toHaveBeenCalled();
+    expect(checkGate).not.toHaveBeenCalled();
+    expect(service.hasPendingGateWork()).toBe(false);
+  });
+
   it('项目入口探针在远端复核进行中应避免重复强制拉取', async () => {
     let resolvePull = (): void => undefined;
     const loadFromLocal = vi.fn().mockResolvedValue([]);

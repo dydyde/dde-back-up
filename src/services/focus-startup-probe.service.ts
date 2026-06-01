@@ -19,6 +19,9 @@ export class FocusStartupProbeService {
 
   private probePromise: Promise<void> | null = null;
   private projectEntryProbePromise: Promise<void> | null = null;
+  private projectEntryWarmupPromise: Promise<void> | null = null;
+  private projectEntryWarmupUserId: string | null = null;
+  private projectEntryWarmupHydratedUserId: string | null = null;
   private initializedForUser: string | null = null;
   private widgetWorkspaceRemoteFirst = false;
   /** 【修复 P1-06】版本号递增，异步完成后对比确保不写入过期用户数据 */
@@ -36,6 +39,43 @@ export class FocusStartupProbeService {
     return this.pendingGateWorkSignal();
   }
 
+  warmProjectEntryGateSnapshot(): void {
+    if (!FEATURE_FLAGS.FOCUS_STARTUP_THROTTLED_CHECK_V1 || this.projectEntryWarmupPromise) {
+      return;
+    }
+
+    const userId = this.auth.currentUserId();
+    if (!userId) {
+      return;
+    }
+
+    this.projectEntryWarmupUserId = userId;
+    const warmup = this.blackBoxSync.loadFromLocal({
+      expectedUserId: userId,
+      requireCurrentUser: true,
+    })
+      .then(() => {
+        if (this.auth.currentUserId() !== userId) {
+          this.logger.debug('项目入口 gate 预热结果已过期，忽略本次本地快照');
+          return;
+        }
+        this.projectEntryWarmupHydratedUserId = userId;
+      })
+      .catch((error) => {
+        this.logger.warn('项目入口 gate 本地快照预热失败，等待点击时按需加载', {
+          error,
+        });
+      })
+      .finally(() => {
+        if (this.projectEntryWarmupPromise === warmup) {
+          this.projectEntryWarmupPromise = null;
+          this.projectEntryWarmupUserId = null;
+        }
+      });
+
+    this.projectEntryWarmupPromise = warmup;
+  }
+
   checkGateForProjectEntry(): void {
     if (!FEATURE_FLAGS.FOCUS_STARTUP_THROTTLED_CHECK_V1) {
       this.probeDoneSignal.set(true);
@@ -43,15 +83,28 @@ export class FocusStartupProbeService {
       return;
     }
 
-    const hasProbeUser = this.resolveProbeUserId(true) !== null;
+    const projectEntryUserId = this.auth.currentUserId();
+    if (!projectEntryUserId) {
+      this.probeDoneSignal.set(false);
+      this.pendingGateWorkSignal.set(false);
+      return;
+    }
+
+    const warmupForCurrentUser = this.projectEntryWarmupUserId === projectEntryUserId
+      ? this.projectEntryWarmupPromise
+      : null;
 
     if (!this.projectEntryProbePromise) {
-      const projectEntryProbe = this.startProbe({
+      const runProjectEntryProbe = () => this.startProbe({
         force: true,
-        reloadLocal: true,
+        reloadLocal: this.projectEntryWarmupHydratedUserId !== projectEntryUserId,
         source: 'project-entry',
-        localFirstWhileInFlight: true,
-      }).finally(() => {
+        localFirstWhileInFlight: this.projectEntryWarmupHydratedUserId !== projectEntryUserId,
+      });
+      const projectEntryProbe = (warmupForCurrentUser
+        ? warmupForCurrentUser.then(runProjectEntryProbe)
+        : runProjectEntryProbe()
+      ).finally(() => {
         if (this.projectEntryProbePromise === projectEntryProbe) {
           this.projectEntryProbePromise = null;
         }
@@ -59,8 +112,14 @@ export class FocusStartupProbeService {
       this.projectEntryProbePromise = projectEntryProbe;
     }
 
-    if (hasProbeUser) {
-      this.applyGateSnapshot('project-entry', 'memory');
+    this.applyGateSnapshot('project-entry', 'memory');
+
+    if (warmupForCurrentUser) {
+      void warmupForCurrentUser.then(() => {
+        if (this.auth.currentUserId() === projectEntryUserId) {
+          this.applyGateSnapshot('project-entry', 'local');
+        }
+      });
     }
   }
 
@@ -149,9 +208,9 @@ export class FocusStartupProbeService {
 
   private async applyLocalGateSnapshotDuringInFlight(userId: string, source: FocusProbeSource): Promise<void> {
     try {
-      await this.blackBoxSync.loadFromLocal();
+      await this.loadLocalSnapshotForProbe(userId, source);
 
-      if (this.resolveProbeUserId(true) !== userId) {
+      if (!this.isProbeUserStillValid(userId, source)) {
         this.logger.debug('项目入口本地 gate 快照已过期，忽略本次结果');
         return;
       }
@@ -174,12 +233,17 @@ export class FocusStartupProbeService {
 
     try {
       if (options.reloadLocal) {
-        await this.blackBoxSync.loadFromLocal();
+        await this.loadLocalSnapshotForProbe(userId, options.source);
       }
 
       // 【修复 P1-06】探测期间用户已切换，版本号不匹配则放弃本次结果
       if (version !== this.probeVersion) {
         this.logger.debug('探测被中止（用户已切换，版本号不匹配）');
+        return;
+      }
+
+      if (!this.isProbeUserStillValid(userId, options.source)) {
+        this.logger.debug('探测被中止（用户作用域已变化）');
         return;
       }
 
@@ -199,6 +263,11 @@ export class FocusStartupProbeService {
         return;
       }
 
+      if (!this.isProbeUserStillValid(userId, options.source)) {
+        this.logger.debug('远端 gate 复核结果用户作用域已变化，忽略本次结果');
+        return;
+      }
+
       this.applyGateSnapshot(options.source, 'remote');
     } catch (error) {
       this.logger.warn('Focus 大门探针失败', {
@@ -215,6 +284,17 @@ export class FocusStartupProbeService {
     }
   }
 
+  private loadLocalSnapshotForProbe(userId: string, source: FocusProbeSource): Promise<unknown> {
+    if (source !== 'project-entry') {
+      return this.blackBoxSync.loadFromLocal();
+    }
+
+    return this.blackBoxSync.loadFromLocal({
+      expectedUserId: userId,
+      requireCurrentUser: true,
+    });
+  }
+
   private applyGateSnapshot(source: FocusProbeSource, phase: 'memory' | 'local' | 'remote'): void {
     this.gateService.checkGate({
       ignoreHandledToday: source === 'widget-open-workspace',
@@ -226,5 +306,13 @@ export class FocusStartupProbeService {
       phase,
       pendingGateWork: this.pendingGateWorkSignal(),
     });
+  }
+
+  private isProbeUserStillValid(userId: string, source: FocusProbeSource): boolean {
+    if (source === 'project-entry') {
+      return this.auth.currentUserId() === userId;
+    }
+
+    return this.resolveProbeUserId(true) === userId;
   }
 }

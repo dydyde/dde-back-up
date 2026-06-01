@@ -87,6 +87,11 @@ export interface ScheduleBlackBoxSyncOptions {
   widgetNotifyAction?: BlackBoxWidgetNotifyAction;
 }
 
+export interface LoadBlackBoxLocalOptions {
+  expectedUserId?: string;
+  requireCurrentUser?: boolean;
+}
+
 @Injectable({
   providedIn: 'root'
 })
@@ -1722,7 +1727,7 @@ export class BlackBoxSyncService {
   /**
    * 从本地 IndexedDB 加载
    */
-  async loadFromLocal(): Promise<BlackBoxEntry[]> {
+  async loadFromLocal(options: LoadBlackBoxLocalOptions = {}): Promise<BlackBoxEntry[]> {
     if (!this.db) {
       await this.initIndexedDB();
     }
@@ -1744,6 +1749,11 @@ export class BlackBoxSyncService {
           const { _localVersion, ...entry } = e;
           return entry;
         });
+
+        if (!this.canCommitLocalHydrationForVisibleUser(visibleUserId, options)) {
+          resolve(this.resolveExpectedUserMemorySnapshot(options));
+          return;
+        }
 
         if (!visibleUserId) {
           // root fix: auth 恢复窗口内 owner 可能暂时不可见；此时保留当前内存快照，
@@ -1824,6 +1834,42 @@ export class BlackBoxSyncService {
 
       request.onerror = () => reject(request.error);
     });
+  }
+
+  private canCommitLocalHydrationForVisibleUser(
+    visibleUserId: string | null,
+    options: LoadBlackBoxLocalOptions,
+  ): boolean {
+    if (!options.expectedUserId) {
+      return true;
+    }
+
+    if (visibleUserId !== options.expectedUserId) {
+      this.logger.info('黑匣子本地水合跳过：可见用户与期望用户不一致', {
+        expectedUserId: options.expectedUserId,
+        visibleUserId,
+      });
+      return false;
+    }
+
+    if (options.requireCurrentUser && this.auth.currentUserId() !== options.expectedUserId) {
+      this.logger.info('黑匣子本地水合跳过：当前用户已变化或尚未确认', {
+        expectedUserId: options.expectedUserId,
+        currentUserId: this.auth.currentUserId(),
+      });
+      return false;
+    }
+
+    return true;
+  }
+
+  private resolveExpectedUserMemorySnapshot(options: LoadBlackBoxLocalOptions): BlackBoxEntry[] {
+    const entries = Array.from(blackBoxEntriesMap().values());
+    if (!options.expectedUserId) {
+      return entries;
+    }
+
+    return entries.filter(entry => entry.userId === options.expectedUserId);
   }
 
   private resolveVisibleUserId(): string | null {
