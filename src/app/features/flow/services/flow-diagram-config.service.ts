@@ -45,7 +45,7 @@ export interface GoJSNodeData {
   hasSiyuanLink?: boolean;
   /** 用于流程图节点徽标 hover/click 预览的首个思源锚点 */
   siyuanLink?: ExternalSourceLink;
-  /** 当前项目可见思源锚点的全局序号（1-based） */
+  /** 当前流程图可见思源徽标的连续序号（1-based） */
   siyuanLinkBadgeIndex?: number;
 }
 
@@ -585,7 +585,8 @@ export class FlowDiagramConfigService {
         ?.activeLinksForTask(task.id)
         .filter(link => link.sourceType === 'siyuan-block') ?? [];
       linksByTask.set(task.id, links);
-      projectLinks.push(...links);
+      const flowVisibleLink = links[0];
+      if (flowVisibleLink) projectLinks.push(flowVisibleLink);
     });
 
     projectLinks

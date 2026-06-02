@@ -433,6 +433,45 @@ describe('FlowDiagramConfigService', () => {
     expect(result.nodeDataArray.find(node => node.key === secondTask.id)?.siyuanLinkBadgeIndex).toBe(2);
   });
 
+  it('numbers only flow-visible SiYuan badges so hidden task links do not create gaps', () => {
+    const firstTask = createTask({ id: 'task-with-two-siyuan-links', title: 'Two Links', stage: 1, displayId: '1' });
+    const secondTask = createTask({ id: 'task-with-visible-second-badge', title: 'Second Badge', stage: 1, displayId: '2' });
+    activeLinksByTask.set(firstTask.id, [
+      createSiyuanLink({
+        id: 'visible-link-first-task',
+        taskId: firstTask.id,
+        targetId: '20260426123456-abc1234',
+        createdAt: '2026-05-28T12:00:00.000Z',
+      }),
+      createSiyuanLink({
+        id: 'hidden-link-first-task',
+        taskId: firstTask.id,
+        targetId: '20260426123456-def5678',
+        sortOrder: 1,
+        createdAt: '2026-05-28T12:01:00.000Z',
+      }),
+    ]);
+    activeLinksByTask.set(secondTask.id, [
+      createSiyuanLink({
+        id: 'visible-link-second-task',
+        taskId: secondTask.id,
+        targetId: '20260426123456-ghi9012',
+        createdAt: '2026-05-28T12:02:00.000Z',
+      }),
+    ]);
+
+    const result = service.buildDiagramData(
+      [firstTask, secondTask],
+      createProject([firstTask, secondTask]),
+      '',
+      new Map<string, go.ObjectData>(),
+      { dockedTaskIds: new Set<string>(), focusedTaskId: null },
+    );
+
+    expect(result.nodeDataArray.find(node => node.key === firstTask.id)?.siyuanLinkBadgeIndex).toBe(1);
+    expect(result.nodeDataArray.find(node => node.key === secondTask.id)?.siyuanLinkBadgeIndex).toBe(2);
+  });
+
   it('normalizes linked-at timestamps before assigning project-level SiYuan badge order', () => {
     const firstTask = createTask({ id: 'timezone-first-task', title: 'Timezone First', stage: 1, displayId: '1' });
     const secondTask = createTask({ id: 'timezone-second-task', title: 'Timezone Second', stage: 1, displayId: '2' });
