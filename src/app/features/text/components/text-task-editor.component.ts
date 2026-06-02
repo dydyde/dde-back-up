@@ -134,6 +134,7 @@ import { KnowledgeAnchorComponent } from '../../../shared/components/knowledge-a
           [taskId]="task().id"
           [isMobile]="isMobile()"
           [editable]="!isPreview()"
+          [manageable]="isPreview()"
           [compact]="isPreview()">
         </app-knowledge-anchor>
 

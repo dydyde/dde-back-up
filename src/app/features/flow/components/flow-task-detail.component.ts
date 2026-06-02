@@ -248,6 +248,7 @@ const IGNORE_PREVIEW_CLICK_AFTER_TASK_SWITCH_MS = 180;
              [taskId]="task.id"
              [isMobile]="false"
              [editable]="isEditMode()"
+             [manageable]="!isEditMode()"
              [compact]="!isEditMode()">
            </app-knowledge-anchor>
 
@@ -434,6 +435,7 @@ const IGNORE_PREVIEW_CLICK_AFTER_TASK_SWITCH_MS = 180;
         [taskId]="task.id"
         [isMobile]="true"
         [editable]="isEditMode()"
+        [manageable]="!isEditMode()"
         [compact]="!isEditMode()">
       </app-knowledge-anchor>
        

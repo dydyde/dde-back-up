@@ -37,41 +37,47 @@ function loadPopoverModule(): Promise<typeof import('./knowledge-anchor-popover.
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="knowledge-anchor" [class.knowledge-anchor--compact]="compact()">
-      @if (firstLink(); as link) {
-        <div class="knowledge-anchor-row">
-          <button
-            type="button"
-            data-testid="knowledge-anchor-chip"
-            class="knowledge-anchor-chip"
-            [attr.aria-label]="'思源锚点：' + displayLabel(link)"
-            (mouseenter)="onMouseEnter($event, link)"
-            (mouseleave)="onMouseLeave()"
-            (focus)="onFocus($event, link)"
-            (blur)="onMouseLeave()"
-            (contextmenu)="onContextMenu($event, link)"
-            (pointerdown)="onPointerDown($event, link)"
-            (pointermove)="onPointerMove($event)"
-            (pointerup)="onPointerEnd()"
-            (pointercancel)="onPointerEnd()"
-            (click)="onChipClick($event, link)">
-            <span aria-hidden="true">📎</span>
-            <span class="truncate">思源 {{ displayLabel(link) }}</span>
-          </button>
-          @if (editable()) {
-            <button
-              type="button"
-              data-testid="knowledge-anchor-edit"
-              class="anchor-inline-action"
-              [attr.aria-label]="'修改思源关联：' + displayLabel(link)"
-              (click)="startEdit(link, $event)">修改</button>
-            <button
-              type="button"
-              data-testid="knowledge-anchor-remove"
-              class="anchor-inline-action anchor-inline-danger"
-              [attr.aria-label]="'删除思源关联：' + displayLabel(link)"
-              (click)="removeInline(link, $event)">删除</button>
-          }
-        </div>
+      @if (visibleLinks(); as activeLinks) {
+        @if (activeLinks.length) {
+          <div class="knowledge-anchor-list">
+            @for (link of activeLinks; track link.id) {
+              <div class="knowledge-anchor-row">
+                <button
+                  type="button"
+                  data-testid="knowledge-anchor-chip"
+                  class="knowledge-anchor-chip"
+                  [attr.aria-label]="'思源锚点：' + displayLabel(link)"
+                  (mouseenter)="onMouseEnter($event, link)"
+                  (mouseleave)="onMouseLeave()"
+                  (focus)="onFocus($event, link)"
+                  (blur)="onMouseLeave()"
+                  (contextmenu)="onContextMenu($event, link)"
+                  (pointerdown)="onPointerDown($event, link)"
+                  (pointermove)="onPointerMove($event)"
+                  (pointerup)="onPointerEnd()"
+                  (pointercancel)="onPointerEnd()"
+                  (click)="onChipClick($event, link)">
+                  <span aria-hidden="true">📎</span>
+                  <span class="truncate">思源 {{ displayLabel(link) }}</span>
+                </button>
+                @if (canManage()) {
+                  <button
+                    type="button"
+                    data-testid="knowledge-anchor-edit"
+                    class="anchor-inline-action"
+                    [attr.aria-label]="'修改思源关联：' + displayLabel(link)"
+                    (click)="startEdit(link, $event)">修改</button>
+                  <button
+                    type="button"
+                    data-testid="knowledge-anchor-remove"
+                    class="anchor-inline-action anchor-inline-danger"
+                    [attr.aria-label]="'删除思源关联：' + displayLabel(link)"
+                    (click)="removeInline(link, $event)">删除</button>
+                }
+              </div>
+            }
+          </div>
+        }
       }
 
       @if (showEditorForm()) {
@@ -129,8 +135,8 @@ function loadPopoverModule(): Promise<typeof import('./knowledge-anchor-popover.
           <div class="mt-4 grid grid-cols-2 gap-2">
             <button type="button" class="sheet-action" (click)="open(link)">打开思源</button>
             <button type="button" class="sheet-action" (click)="refreshSheet(link)">刷新缓存</button>
-            @if (editable()) { <button type="button" class="sheet-action" (click)="editFromSheet(link)">修改关联</button> }
-            @if (editable()) { <button type="button" class="sheet-action sheet-action-danger" (click)="remove(link)">解除关联</button> }
+            @if (canManage()) { <button type="button" class="sheet-action" (click)="editFromSheet(link)">修改关联</button> }
+            @if (canManage()) { <button type="button" class="sheet-action sheet-action-danger" (click)="remove(link)">解除关联</button> }
           </div>
         </section>
       }
@@ -150,7 +156,7 @@ function loadPopoverModule(): Promise<typeof import('./knowledge-anchor-popover.
           @if (previewMode() === 'full') {
             <button type="button" class="menu-action" (click)="refreshFromMenu(link)">刷新缓存</button>
           }
-          @if (editable()) {
+          @if (canManage()) {
             <button type="button" class="menu-action" (click)="editFromMenu(link)">修改关联</button>
             <button type="button" class="menu-action menu-action-danger" (click)="removeFromMenu(link)">解除关联</button>
           }
@@ -159,6 +165,7 @@ function loadPopoverModule(): Promise<typeof import('./knowledge-anchor-popover.
     </div>
   `,
   styles: [`
+    .knowledge-anchor-list { display: flex; min-width: 0; max-width: 100%; flex-direction: column; align-items: flex-start; gap: .25rem; }
     .knowledge-anchor-row { display: flex; min-width: 0; max-width: 100%; flex-wrap: wrap; align-items: center; gap: .25rem; }
     .knowledge-anchor-chip { display: inline-flex; max-width: 100%; align-items: center; gap: 0.25rem; border-radius: 999px; border: 1px solid rgba(99,102,241,.18); background: rgba(99,102,241,.06); padding: .18rem .45rem; font-size: 10px; color: rgb(79 70 229); transition: box-shadow .15s ease, border-color .15s ease, background .15s ease; }
     .knowledge-anchor-chip:hover, .knowledge-anchor-chip:focus-visible { border-color: rgba(99,102,241,.45); background: rgba(99,102,241,.1); box-shadow: 0 4px 14px rgba(79,70,229,.12); outline: none; }
@@ -189,6 +196,7 @@ export class KnowledgeAnchorComponent implements OnDestroy {
   readonly taskId = input<string | null>(null);
   readonly isMobile = input(false);
   readonly editable = input(false);
+  readonly manageable = input(false);
   readonly compact = input(false);
   readonly previewMode = input<KnowledgeAnchorPreviewMode>('full');
   readonly linksVersion = this.linkService.links;
@@ -198,6 +206,12 @@ export class KnowledgeAnchorComponent implements OnDestroy {
     return taskId ? this.linkService.activeLinksForTask(taskId) : [];
   });
   readonly firstLink = computed(() => this.links()[0] ?? null);
+  readonly canManage = computed(() => this.editable() || this.manageable());
+  readonly visibleLinks = computed(() => {
+    if (this.canManage()) return this.links();
+    const link = this.firstLink();
+    return link ? [link] : [];
+  });
   readonly sheetOpen = signal(false);
   readonly activeLink = signal<ExternalSourceLink | null>(null);
   readonly sheetResult = signal<SiyuanPreviewResult>({ status: 'loading' });
@@ -209,7 +223,7 @@ export class KnowledgeAnchorComponent implements OnDestroy {
     return linkId ? this.links().find(link => link.id === linkId) ?? null : null;
   });
   readonly isReplacing = computed(() => this.editingLink() !== null);
-  readonly showEditorForm = computed(() => this.editable());
+  readonly showEditorForm = computed(() => this.editable() || (this.canManage() && this.isReplacing()));
   pendingInput = '';
   /**
    * 触发底部 sheet 的元素引用，关闭后将焦点 restore 回原位，符合 dialog/aria-modal 规范。

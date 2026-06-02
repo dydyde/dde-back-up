@@ -28,6 +28,7 @@ describe('ExternalSourceLinkService', () => {
   let authUser = signal('00000000-0000-0000-0000-000000000001');
   let shouldFailUpsert = false;
   let upsertError: { code?: string; status?: number; message: string } | Error | null = null;
+  let upsertErrorQueue: Array<{ code?: string; status?: number; message: string } | Error> = [];
   let remoteRows: unknown[] = [];
   let clientAsyncMock: ReturnType<typeof vi.fn>;
   let loggerCategoryMock: {
@@ -48,6 +49,7 @@ describe('ExternalSourceLinkService', () => {
     authUser = signal('00000000-0000-0000-0000-000000000001');
     shouldFailUpsert = false;
     upsertError = null;
+    upsertErrorQueue = [];
     remoteRows = [];
     loggerCategoryMock = { warn: vi.fn(), info: vi.fn(), debug: vi.fn(), error: vi.fn() };
     const from = vi.fn((table: string) => ({
@@ -59,6 +61,8 @@ describe('ExternalSourceLinkService', () => {
       })),
       upsert: vi.fn(async (payload: unknown) => {
         upsertCallCount += 1;
+        const queuedError = upsertErrorQueue.shift();
+        if (queuedError) return { error: queuedError };
         if (upsertError) return { error: upsertError };
         if (shouldFailUpsert) return { error: new Error('offline') };
         upsertPayloads.push({ table, payload });
@@ -182,6 +186,49 @@ describe('ExternalSourceLinkService', () => {
     expect(result?.id).toBe(second!.id);
     expect(service.activeLinksForTask('task-1').map(link => link.id)).toEqual([second!.id]);
     expect(service.links().find(link => link.id === first!.id)?.deletedAt).toBeTruthy();
+  });
+
+  it('reconciles stale remote duplicate conflicts by switching to remote truth', async () => {
+    const service = TestBed.inject(ExternalSourceLinkService);
+    const first = await service.bindSiyuanBlock('task-1', '20260426123456-abc1234');
+    await service.flushPendingLinks();
+    upsertPayloads = [];
+    const now = new Date().toISOString();
+    remoteRows = [
+      {
+        id: 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee',
+        user_id: '00000000-0000-0000-0000-000000000001',
+        task_id: 'task-1',
+        source_type: 'siyuan-block',
+        target_id: '20260426123456-def5678',
+        uri: 'siyuan://blocks/20260426123456-def5678?focus=1',
+        label: '远端已有锚点',
+        hpath: null,
+        role: null,
+        sort_order: 0,
+        deleted_at: null,
+        created_at: now,
+        updated_at: now,
+      },
+    ];
+    upsertErrorQueue.push({ code: '23505', message: 'duplicate key value violates unique constraint' });
+
+    await service.replaceSiyuanBlock(first!.id, '20260426123456-def5678');
+    await service.flushPendingLinks();
+
+    expect(service.activeLinksForTask('task-1').map(link => link.id)).toEqual([
+      'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee',
+    ]);
+    expect(service.links().find(link => link.id === first!.id)?.deletedAt).toBeTruthy();
+    expect(upsertPayloads).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          id: first!.id,
+          target_id: '20260426123456-def5678',
+          deleted_at: expect.any(String),
+        }),
+      }),
+    ]));
   });
 
   it('drops pending push on unique-violation (23505) instead of looping forever', async () => {

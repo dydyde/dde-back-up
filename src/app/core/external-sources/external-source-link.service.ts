@@ -483,12 +483,7 @@ export class ExternalSourceLinkService {
         // 23505 = Postgres unique_violation：另一端已绑定同一 (task, target)。
         // 不再重试，丢弃 pending 项让下一次 ensureLoaded 重新拉远端真相。
         if (errorCode === POSTGRES_UNIQUE_VIOLATION) {
-          this.logger.info("思源锚点唯一冲突，丢弃本机 pending", {
-            linkId: this.safeId(link.id),
-          });
-          // 透明告知用户：另一端已绑定同一锚点，本机这条不会再重试。
-          this.toast.info("思源锚点已在其他设备建立，已合并");
-          return { outcome: "drop", reason: "duplicate" };
+          return this.handleUniqueConflict(link, userId, client);
         }
         throw error;
       }
@@ -508,6 +503,61 @@ export class ExternalSourceLinkService {
         message: error instanceof Error ? error.message : "unknown",
       });
       return { outcome: "retry", errorCode };
+    }
+  }
+
+  private async handleUniqueConflict(
+    link: ExternalSourceLink,
+    userId: string,
+    client: ExternalSourceSupabaseClient,
+  ): Promise<{ outcome: "success" } | { outcome: "drop"; reason: "duplicate" }> {
+    this.logger.info("思源锚点唯一冲突，丢弃本机 pending", {
+      linkId: this.safeId(link.id),
+    });
+    if (await this.resolveUniqueConflict(link, userId, client)) {
+      return { outcome: "success" };
+    }
+    return { outcome: "drop", reason: "duplicate" };
+  }
+
+  private async resolveUniqueConflict(
+    link: ExternalSourceLink,
+    userId: string,
+    client: ExternalSourceSupabaseClient,
+  ): Promise<boolean> {
+    const now = new Date().toISOString();
+    const tombstone = this.normalizeLink({
+      ...link,
+      deletedAt: now,
+      updatedAt: now,
+    });
+    try {
+      const { error } = await client
+        .from("external_source_links")
+        .upsert(this.linkToRow(tombstone, userId) as unknown as never, {
+          onConflict: "id",
+        });
+      if (error) throw error;
+
+      await this.persistLocal(tombstone);
+      await this.cache.deletePreviewsForLink(tombstone.id);
+      const remotePull = await this.pullRemoteLinks();
+      if (!remotePull.deferredBySuspension) {
+        this.lastPullAt = Date.now();
+        const localLinks = await this.cache.loadLinks();
+        const merged = this.mergeLinks(localLinks, remotePull.links);
+        this.store.replaceAll(merged);
+        await this.cache.saveLinks(merged);
+      }
+      this.toast.info("思源锚点已在其他设备建立，已切换到已有关联");
+      return true;
+    } catch (error) {
+      this.logger.warn("思源锚点唯一冲突收敛失败，等待下次刷新", {
+        linkId: this.safeId(link.id),
+        message: error instanceof Error ? error.message : "unknown",
+      });
+      this.toast.info("思源锚点已在其他设备建立，稍后自动刷新合并");
+      return false;
     }
   }
 

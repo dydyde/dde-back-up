@@ -27,10 +27,14 @@ describe('KnowledgeAnchorComponent', () => {
   let preview: ReturnType<typeof vi.fn>;
   let removeLink: ReturnType<typeof vi.fn>;
   let replaceSiyuanBlock: ReturnType<typeof vi.fn>;
+  let activeLinks: ExternalSourceLink[];
   let editableInput: WritableSignal<boolean>;
+  let manageableInput: WritableSignal<boolean>;
+  let linksVersion: WritableSignal<number>;
   let previewModeInput: WritableSignal<'full' | 'deep-link-only'>;
 
   beforeEach(async () => {
+    activeLinks = [link];
     bindSiyuanBlock = vi.fn().mockResolvedValue(link);
     openLink = vi.fn();
     removeLink = vi.fn().mockResolvedValue(undefined);
@@ -39,6 +43,7 @@ describe('KnowledgeAnchorComponent', () => {
       targetId: '20260426123456-def5678',
       uri: 'siyuan://blocks/20260426123456-def5678?focus=1',
     });
+    linksVersion = signal(0);
     preview = vi.fn().mockResolvedValue({
       status: 'ready',
       preview: {
@@ -56,8 +61,8 @@ describe('KnowledgeAnchorComponent', () => {
         {
           provide: ExternalSourceLinkService,
           useValue: {
-            links: signal(0),
-            activeLinksForTask: vi.fn().mockReturnValue([link]),
+            links: linksVersion,
+            activeLinksForTask: vi.fn().mockImplementation(() => activeLinks),
             bindSiyuanBlock,
             openLink,
             removeLink,
@@ -71,11 +76,13 @@ describe('KnowledgeAnchorComponent', () => {
 
     fixture = TestBed.createComponent(KnowledgeAnchorComponent);
     editableInput = signal(false);
+    manageableInput = signal(false);
     previewModeInput = signal<'full' | 'deep-link-only'>('full');
     Object.assign(fixture.componentInstance as unknown as Record<string, unknown>, {
       taskId: signal('task-1'),
       isMobile: signal(true),
       editable: editableInput,
+      manageable: manageableInput,
       compact: signal(false),
       previewMode: previewModeInput,
     });
@@ -159,6 +166,48 @@ describe('KnowledgeAnchorComponent', () => {
     await fixture.whenStable();
 
     expect(removeLink).toHaveBeenCalledWith(link.id);
+  });
+
+  it('shows every active anchor with management actions only when editable', () => {
+    activeLinks = [
+      link,
+      {
+        ...link,
+        id: 'link-2',
+        targetId: '20260426123456-def5678',
+        uri: 'siyuan://blocks/20260426123456-def5678?focus=1',
+        label: '思源 def5678',
+        sortOrder: 1,
+      },
+    ];
+    linksVersion.set(1);
+    fixture.detectChanges();
+
+    expect(fixture.nativeElement.querySelectorAll('[data-testid="knowledge-anchor-chip"]')).toHaveLength(1);
+
+    editableInput.set(true);
+    fixture.detectChanges();
+
+    expect(fixture.nativeElement.querySelectorAll('[data-testid="knowledge-anchor-chip"]')).toHaveLength(2);
+    expect(fixture.nativeElement.querySelectorAll('[data-testid="knowledge-anchor-edit"]')).toHaveLength(2);
+    expect(fixture.nativeElement.querySelectorAll('[data-testid="knowledge-anchor-remove"]')).toHaveLength(2);
+  });
+
+  it('allows preview management without exposing the add-link form', async () => {
+    manageableInput.set(true);
+    fixture.detectChanges();
+
+    expect(fixture.nativeElement.querySelector('[data-testid="knowledge-anchor-edit"]')).not.toBeNull();
+    expect(fixture.nativeElement.querySelector('[data-testid="knowledge-anchor-remove"]')).not.toBeNull();
+    expect(fixture.nativeElement.querySelector('[data-testid="knowledge-anchor-input"]')).toBeNull();
+
+    const editButton = fixture.nativeElement.querySelector('[data-testid="knowledge-anchor-edit"]') as HTMLButtonElement;
+    editButton.click();
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.detectChanges();
+
+    expect(fixture.nativeElement.querySelector('[data-testid="knowledge-anchor-input"]')).not.toBeNull();
   });
 
   it('keeps the editable form as an add-link path until edit mode is selected', async () => {
