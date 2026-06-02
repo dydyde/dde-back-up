@@ -134,6 +134,7 @@ export class GateService {
   private deferredMutation: DeferredGateMutation | null = null;
   private reviewSyncTimerId: ReturnType<typeof setInterval> | null = null;
   private reviewSyncInFlight = false;
+  private remoteEmptyQueueConfirmations = 0;
   /** 【修复 L-21/M-08】matchMedia 监听器引用，用于销毁时移除 */
   private reducedMotionMediaQuery: MediaQueryList | null = null;
   private reducedMotionHandler: ((e: MediaQueryListEvent) => void) | null = null;
@@ -276,15 +277,35 @@ export class GateService {
     // 手机端恢复/远端拉取过程中，signal 可能短暂归零；若此时丢掉 current，大门会在
     // 用户未点击已读/完成的情况下 completeGateSession('queue-empty')。但 authoritative
     // remote 刷新若确认当前条目已被别处完成/删除，则不应继续保留 ghost 卡片。
-    const preserveCurrentDuringTransientEmpty =
-      source !== 'remote'
+    const remoteEmptyNeedsConfirmation =
+      source === 'remote'
       && latestPending.length === 0
       && safeIndex < currentItems.length;
+    const remoteEmptyBlockedByLocalAction = remoteEmptyNeedsConfirmation
+      && (!!this.actionInFlight || !!this.deferredMutation);
+    const firstRemoteEmptyProbe = remoteEmptyNeedsConfirmation
+      && !remoteEmptyBlockedByLocalAction
+      && this.remoteEmptyQueueConfirmations === 0;
+    const confirmedRemoteEmpty = remoteEmptyNeedsConfirmation
+      && !remoteEmptyBlockedByLocalAction
+      && this.remoteEmptyQueueConfirmations > 0;
+    const preserveCurrentDuringTransientEmpty =
+      latestPending.length === 0
+      && safeIndex < currentItems.length
+      && (
+        source !== 'remote'
+        || firstRemoteEmptyProbe
+      );
     const currentReviewItemCount = safeIndex < currentItems.length
       && (this.actionInFlight !== null || preserveCurrentDuringTransientEmpty)
       ? 1
       : 0;
-    const preserveCount = Math.min(safeIndex + currentReviewItemCount, currentItems.length);
+    const preserveFullQueue = firstRemoteEmptyProbe || remoteEmptyBlockedByLocalAction;
+    const preserveCount = preserveFullQueue
+      ? currentItems.length
+      : confirmedRemoteEmpty
+        ? 0
+      : Math.min(safeIndex + currentReviewItemCount, currentItems.length);
     const preservedPrefix = currentItems.slice(0, preserveCount);
     const preservedIds = new Set(preservedPrefix.map(item => item.id));
     const nextUnprocessed = latestPending.filter(item => !preservedIds.has(item.id));
@@ -298,8 +319,18 @@ export class GateService {
         handled: safeIndex,
         currentPreserved: currentReviewItemCount === 1,
         preserveCurrentDuringTransientEmpty,
+        firstRemoteEmptyProbe,
+        confirmedRemoteEmpty,
+        remoteEmptyBlockedByLocalAction,
+        remoteEmptyConfirmations: this.remoteEmptyQueueConfirmations,
         inFlight: this.actionInFlight !== null
       });
+    }
+
+    if (latestPending.length > 0) {
+      this.remoteEmptyQueueConfirmations = 0;
+    } else if (firstRemoteEmptyProbe) {
+      this.remoteEmptyQueueConfirmations += 1;
     }
 
     // 仅当队列彻底空（没有保留项也没有未处理项）时才判定完成，
@@ -335,6 +366,7 @@ export class GateService {
     this.cardAnimation.set('idle');
     this.actionInFlight = null;
     this.deferredMutation = null;
+    this.remoteEmptyQueueConfirmations = 0;
     this.clearAnimationTimeout();
     this.stopReviewingRemoteSync();
 
@@ -535,6 +567,7 @@ export class GateService {
     this.showCompletionMessage.set(false);
     this.actionInFlight = null;
     this.deferredMutation = null;
+    this.remoteEmptyQueueConfirmations = 0;
 
     const preferences = focusPreferences();
 
@@ -554,6 +587,7 @@ export class GateService {
       gatePendingItems.set(pending);
       gateCurrentIndex.set(0);
       gateState.set('reviewing');
+      this.remoteEmptyQueueConfirmations = 0;
       this.setCardAnimationWithTimeout('entering', () => this.onEnteringComplete());
       this.logger.info('Gate', `Gate activated with ${pending.length} pending items`);
       return;
@@ -632,6 +666,7 @@ export class GateService {
    * 启动动作动画并在结束后推进到下一条
    */
   private startActionTransition(state: 'heave_read' | 'heavy_drop'): void {
+    this.remoteEmptyQueueConfirmations = 0;
     this.actionInFlight = state;
     this.setCardAnimationWithTimeout(state, () => this.finalizeActionTransition(state));
   }
@@ -765,6 +800,7 @@ export class GateService {
   forceBypass(): void {
     this.devForceActive.set(false);
     this.deferredMutation = null;
+    this.remoteEmptyQueueConfirmations = 0;
     this.stopReviewingRemoteSync();
     gateState.set('bypassed');
     this.persistGateHandledToday();
@@ -777,6 +813,7 @@ export class GateService {
     this.showCompletionMessage.set(false);
     this.actionInFlight = null;
     this.deferredMutation = null;
+    this.remoteEmptyQueueConfirmations = 0;
     this.stopReviewingRemoteSync();
     this.clearAnimationTimeout();
     this.cardAnimation.set('idle');

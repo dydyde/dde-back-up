@@ -397,14 +397,28 @@ describe('GateService', () => {
       expect(mockBlackBoxService.markAsCompleted).not.toHaveBeenCalled();
     });
 
-    it('远端确认当前条目已解决时不应保留 ghost 卡片', () => {
+    it('首次远端空队列不应让刚出现的大门闪退，连续确认后才关闭', () => {
       const entry = createMockEntry({
         id: 'remote-cleared-entry',
         date: getDateOffset(-1),
       });
-      setBlackBoxEntries([entry]);
+      const second = createMockEntry({
+        id: 'remote-cleared-second-entry',
+        date: getDateOffset(-2),
+      });
+      setBlackBoxEntries([entry, second]);
 
       service.checkGate();
+
+      (service as unknown as {
+        syncReviewingQueueWithPending: (pending: BlackBoxEntry[], source: 'checkGate' | 'signal' | 'remote') => void;
+      }).syncReviewingQueueWithPending([], 'remote');
+
+      expect(gateState()).toBe('reviewing');
+      expect(gatePendingItems().map(item => item.id)).toEqual([
+        'remote-cleared-entry',
+        'remote-cleared-second-entry',
+      ]);
 
       (service as unknown as {
         syncReviewingQueueWithPending: (pending: BlackBoxEntry[], source: 'checkGate' | 'signal' | 'remote') => void;
@@ -414,6 +428,143 @@ describe('GateService', () => {
       expect(gatePendingItems()).toEqual([]);
       expect(mockBlackBoxService.markAsRead).not.toHaveBeenCalled();
       expect(mockBlackBoxService.markAsCompleted).not.toHaveBeenCalled();
+    });
+
+    it('首次远端空队列后处理当前卡片不应漏掉后续卡片', () => {
+      const entry = createMockEntry({
+        id: 'remote-empty-action-current',
+        date: getDateOffset(-1),
+      });
+      const second = createMockEntry({
+        id: 'remote-empty-action-next',
+        date: getDateOffset(-2),
+      });
+      setBlackBoxEntries([entry, second]);
+
+      service.checkGate();
+
+      (service as unknown as {
+        syncReviewingQueueWithPending: (pending: BlackBoxEntry[], source: 'checkGate' | 'signal' | 'remote') => void;
+      }).syncReviewingQueueWithPending([], 'remote');
+
+      service.markAsRead();
+      service.onHeaveReadComplete();
+
+      expect(gateState()).toBe('reviewing');
+      expect(gateCurrentIndex()).toBe(1);
+      expect(gatePendingItems().map(item => item.id)).toEqual([
+        'remote-empty-action-current',
+        'remote-empty-action-next',
+      ]);
+    });
+
+    it('当前索引已前进时，第二次远端空确认应直接完成而不是留下 handled 前缀', () => {
+      const first = createMockEntry({
+        id: 'remote-empty-index-first',
+        date: getDateOffset(-1),
+      });
+      const second = createMockEntry({
+        id: 'remote-empty-index-second',
+        date: getDateOffset(-2),
+      });
+      setBlackBoxEntries([first, second]);
+
+      service.checkGate();
+      gateCurrentIndex.set(1);
+
+      (service as unknown as {
+        syncReviewingQueueWithPending: (pending: BlackBoxEntry[], source: 'checkGate' | 'signal' | 'remote') => void;
+      }).syncReviewingQueueWithPending([], 'remote');
+      (service as unknown as {
+        syncReviewingQueueWithPending: (pending: BlackBoxEntry[], source: 'checkGate' | 'signal' | 'remote') => void;
+      }).syncReviewingQueueWithPending([], 'remote');
+
+      expect(gateState()).toBe('completed');
+      expect(gatePendingItems()).toEqual([]);
+    });
+
+    it('动作进行中远端空队列不应裁掉后续卡片', () => {
+      const first = createMockEntry({
+        id: 'remote-empty-inflight-first',
+        date: getDateOffset(-1),
+      });
+      const second = createMockEntry({
+        id: 'remote-empty-inflight-second',
+        date: getDateOffset(-2),
+      });
+      setBlackBoxEntries([first, second]);
+
+      service.checkGate();
+      service.markAsRead();
+
+      (service as unknown as {
+        syncReviewingQueueWithPending: (pending: BlackBoxEntry[], source: 'checkGate' | 'signal' | 'remote') => void;
+      }).syncReviewingQueueWithPending([], 'remote');
+      service.onHeaveReadComplete();
+
+      expect(gateState()).toBe('reviewing');
+      expect(gateCurrentIndex()).toBe(1);
+      expect(gatePendingItems().map(item => item.id)).toEqual([
+        'remote-empty-inflight-first',
+        'remote-empty-inflight-second',
+      ]);
+    });
+
+    it('settling 延迟提交期间远端空队列不应裁掉后续卡片', () => {
+      const first = createMockEntry({
+        id: 'remote-empty-settling-first',
+        date: getDateOffset(-1),
+      });
+      const second = createMockEntry({
+        id: 'remote-empty-settling-second',
+        date: getDateOffset(-2),
+      });
+      setBlackBoxEntries([first, second]);
+
+      service.checkGate();
+      service.markAsRead();
+      service.onHeaveReadComplete();
+
+      (service as unknown as {
+        syncReviewingQueueWithPending: (pending: BlackBoxEntry[], source: 'checkGate' | 'signal' | 'remote') => void;
+      }).syncReviewingQueueWithPending([], 'remote');
+
+      expect(gateState()).toBe('reviewing');
+      expect(gateCurrentIndex()).toBe(1);
+      expect(gatePendingItems().map(item => item.id)).toEqual([
+        'remote-empty-settling-first',
+        'remote-empty-settling-second',
+      ]);
+    });
+
+    it('远端非空队列应重置空队列确认计数', () => {
+      const first = createMockEntry({
+        id: 'remote-empty-reset-first',
+        date: getDateOffset(-1),
+      });
+      const second = createMockEntry({
+        id: 'remote-empty-reset-second',
+        date: getDateOffset(-2),
+      });
+      setBlackBoxEntries([first, second]);
+
+      service.checkGate();
+
+      (service as unknown as {
+        syncReviewingQueueWithPending: (pending: BlackBoxEntry[], source: 'checkGate' | 'signal' | 'remote') => void;
+      }).syncReviewingQueueWithPending([], 'remote');
+      (service as unknown as {
+        syncReviewingQueueWithPending: (pending: BlackBoxEntry[], source: 'checkGate' | 'signal' | 'remote') => void;
+      }).syncReviewingQueueWithPending([first, second], 'remote');
+      (service as unknown as {
+        syncReviewingQueueWithPending: (pending: BlackBoxEntry[], source: 'checkGate' | 'signal' | 'remote') => void;
+      }).syncReviewingQueueWithPending([], 'remote');
+
+      expect(gateState()).toBe('reviewing');
+      expect(gatePendingItems().map(item => item.id)).toEqual([
+        'remote-empty-reset-first',
+        'remote-empty-reset-second',
+      ]);
     });
 
     it('settling 期间不应接受下一次动作，避免覆盖上一个 deferred mutation', () => {
