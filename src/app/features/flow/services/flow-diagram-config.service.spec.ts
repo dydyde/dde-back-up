@@ -1,9 +1,12 @@
 import { Injector } from '@angular/core';
 import * as go from 'gojs';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { getFlowStyles } from '../../../../config/flow-styles';
 import { LineageColorService } from '../../../../services/lineage-color.service';
+import { LayoutService } from '../../../../services/layout.service';
+import { LoggerService } from '../../../../services/logger.service';
 import { ThemeService } from '../../../../services/theme.service';
+import { ToastService } from '../../../../services/toast.service';
 import { Connection, Project, Task } from '../../../../models';
 import { ExternalSourceLinkService } from '../../../core/external-sources/external-source-link.service';
 import type { ExternalSourceLink } from '../../../core/external-sources/external-source.model';
@@ -64,7 +67,15 @@ describe('FlowDiagramConfigService', () => {
     const injector = Injector.create({
       providers: [
         { provide: FlowDiagramConfigService, useClass: FlowDiagramConfigService },
+        { provide: LayoutService, useClass: LayoutService },
         { provide: LineageColorService, useClass: LineageColorService },
+        {
+          provide: LoggerService,
+          useValue: {
+            category: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() }),
+          },
+        },
+        { provide: ToastService, useValue: { warning: vi.fn(), error: vi.fn() } },
         {
           provide: ExternalSourceLinkService,
           useValue: {
@@ -121,19 +132,52 @@ describe('FlowDiagramConfigService', () => {
     expect(unassignedNode?.displayIdColor).toBe(styles.text.displayIdColor);
   });
 
-  it('falls back to a visible placeholder when an assigned task has no displayId yet', () => {
-    const task = createTask({ id: 'missing-display-id', title: 'Missing Number', stage: 1, displayId: '' });
+  it('renumbers assigned task blocks when displayId is missing', () => {
+    const root = createTask({ id: 'missing-root-display-id', title: 'Missing Root Number', stage: 1, displayId: '' });
+    const child = createTask({
+      id: 'missing-child-display-id',
+      title: 'Missing Child Number',
+      stage: 2,
+      parentId: root.id,
+      rank: 200,
+      displayId: '',
+    });
     const result = service.buildDiagramData(
-      [task],
-      createProject([task]),
+      [root, child],
+      createProject([root, child]),
+      '',
+      new Map<string, go.ObjectData>(),
+      { dockedTaskIds: new Set<string>(), focusedTaskId: null },
+    );
+    const rootNode = result.nodeDataArray.find(node => node.key === root.id);
+    const childNode = result.nodeDataArray.find(node => node.key === child.id);
+
+    expect(rootNode?.displayId).toBe('1');
+    expect(childNode?.displayId).toBe('1,a');
+    expect(rootNode?.parentId).toBeNull();
+    expect(rootNode?.status).toBe('active');
+  });
+
+  it('renumbers assigned task blocks when displayId is still the placeholder', () => {
+    const root = createTask({ id: 'placeholder-root-display-id', title: 'Placeholder Root Number', stage: 1, displayId: '?' });
+    const child = createTask({
+      id: 'placeholder-child-display-id',
+      title: 'Placeholder Child Number',
+      stage: 2,
+      parentId: root.id,
+      rank: 200,
+      displayId: '?',
+    });
+    const result = service.buildDiagramData(
+      [root, child],
+      createProject([root, child]),
       '',
       new Map<string, go.ObjectData>(),
       { dockedTaskIds: new Set<string>(), focusedTaskId: null },
     );
 
-    expect(result.nodeDataArray[0]?.displayId).toBe('?');
-    expect(result.nodeDataArray[0]?.parentId).toBeNull();
-    expect(result.nodeDataArray[0]?.status).toBe('active');
+    expect(result.nodeDataArray.find(node => node.key === root.id)?.displayId).toBe('1');
+    expect(result.nodeDataArray.find(node => node.key === child.id)?.displayId).toBe('1,a');
   });
 
   it('keeps cross-tree relation blocks embedded by staggering repeated stage-boundary links along the line', () => {

@@ -4,6 +4,7 @@ import { getFlowStyles, FlowStyleConfig, FlowTheme } from '../../../../config/fl
 import { GOJS_CONFIG, SUPERSCRIPT_DIGITS } from '../../../../config';
 import { LAYOUT_CONFIG } from '../../../../config/layout.config';
 import { Task, Project } from '../../../../models';
+import { LayoutService } from '../../../../services/layout.service';
 import { LineageColorService } from '../../../../services/lineage-color.service';
 import { ExternalSourceLinkService } from '../../../core/external-sources/external-source-link.service';
 import type { ExternalSourceLink } from '../../../core/external-sources/external-source.model';
@@ -119,6 +120,7 @@ export class FlowDiagramConfigService {
   private readonly themeService = inject(ThemeService);
   private readonly lineageColorService = inject(LineageColorService);
   private readonly externalSourceLinks = inject(ExternalSourceLinkService, { optional: true });
+  private readonly layoutService = inject(LayoutService);
 
   /** 当前主题样式配置（响应式） */
   readonly currentStyles = computed(() => {
@@ -174,6 +176,7 @@ export class FlowDiagramConfigService {
     const styles = this.currentStyles();
     const nodeDataArray: GoJSNodeData[] = [];
     const linkDataArray: GoJSLinkData[] = [];
+    const resolvedDisplayIds = this.createDisplayIdLookup(tasks, project);
 
     // 构建父子关系集合
     const parentChildPairs = new Set<string>();
@@ -214,7 +217,7 @@ export class FlowDiagramConfigService {
       nodeDataArray.push({
         key: task.id,
         title: task.title || '未命名任务',
-        displayId: this.compressDisplayId(this.resolveDisplayId(task)),
+        displayId: this.compressDisplayId(this.resolveDisplayId(task, resolvedDisplayIds)),
         stage: task.stage,
         parentId: task.parentId,
         status: task.status,
@@ -650,8 +653,27 @@ export class FlowDiagramConfigService {
   /**
    * 压缩 displayId 显示（如 A,A,A,A,A → A⁵）
    */
-  private resolveDisplayId(task: Task): string {
-    return task.displayId || '?';
+  private createDisplayIdLookup(tasks: Task[], project: Project): ReadonlyMap<string, string> {
+    const needsNumbering = tasks.some(task => this.needsDisplayIdRenumbering(task));
+    if (!needsNumbering) {
+      return new Map();
+    }
+
+    const rebalancedProject = this.layoutService.rebalance({ ...project, tasks });
+    return new Map(rebalancedProject.tasks.map(task => [task.id, task.displayId]));
+  }
+
+  private needsDisplayIdRenumbering(task: Task): boolean {
+    if (task.stage === null) {
+      return false;
+    }
+
+    const displayId = (task.displayId ?? '').trim();
+    return displayId === '' || displayId === '?';
+  }
+
+  private resolveDisplayId(task: Task, resolvedDisplayIds: ReadonlyMap<string, string>): string {
+    return resolvedDisplayIds.get(task.id) ?? task.displayId;
   }
 
   private compressDisplayId(displayId: string): string {
