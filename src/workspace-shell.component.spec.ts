@@ -660,7 +660,7 @@ describe('WorkspaceShellComponent Android widget bootstrap', () => {
             ok: true,
             value: {
               callbackUrl: 'nanoflow-widget://bootstrap?widgetToken=android-token',
-              callbackIntentUrl: 'intent://bootstrap?widgetToken=android-token#Intent;scheme=nanoflow-widget;end',
+              callbackIntentUrl: 'intent://bootstrap?widgetToken=android-token#Intent;scheme=nanoflow-widget;package=app.nanoflow.twa;end',
             },
           }),
         },
@@ -762,7 +762,7 @@ describe('WorkspaceShellComponent Android widget bootstrap', () => {
             ok: true,
             value: {
               callbackUrl: 'nanoflow-widget://bootstrap?widgetToken=android-token',
-              callbackIntentUrl: 'intent://bootstrap?widgetToken=android-token#Intent;scheme=nanoflow-widget;end',
+              callbackIntentUrl: 'intent://bootstrap?widgetToken=android-token#Intent;scheme=nanoflow-widget;package=app.nanoflow.twa;end',
             },
           }),
         },
@@ -873,7 +873,7 @@ describe('WorkspaceShellComponent Android widget bootstrap', () => {
             ok: true,
             value: {
               callbackUrl: 'nanoflow-widget://bootstrap?widgetToken=android-token',
-              callbackIntentUrl: 'intent://bootstrap?widgetToken=android-token#Intent;scheme=nanoflow-widget;end',
+              callbackIntentUrl: 'intent://bootstrap?widgetToken=android-token#Intent;scheme=nanoflow-widget;package=app.nanoflow.twa;end',
             },
           }),
         },
@@ -920,7 +920,7 @@ describe('WorkspaceShellComponent Android widget bootstrap', () => {
       expect(persistDeferredStartupEntryIntentToStorage).toHaveBeenCalledWith(null);
       expect(setPendingManualCallback).toHaveBeenCalledWith({
         callbackUrl: 'nanoflow-widget://bootstrap?widgetToken=android-token',
-        callbackIntentUrl: 'intent://bootstrap?widgetToken=android-token#Intent;scheme=nanoflow-widget;end',
+        callbackIntentUrl: 'intent://bootstrap?widgetToken=android-token#Intent;scheme=nanoflow-widget;package=app.nanoflow.twa;end',
       });
       expect(assign).not.toHaveBeenCalled();
       expect(replace).not.toHaveBeenCalled();
@@ -937,9 +937,8 @@ describe('WorkspaceShellComponent Android widget bootstrap', () => {
     }
   });
 
-  it('显式 callback 回跳前应先尝试 custom scheme，并在页面仍可见时自动补 intent fallback', () => {
+  it('显式 callback 回跳应在用户手势内直接使用 package-scoped intent URL', () => {
     const originalLocation = window.location;
-    const originalVisibilityState = Object.getOwnPropertyDescriptor(document, 'visibilityState');
     const assign = vi.fn();
     const replace = vi.fn();
     const suppressNextConfirmation = vi.fn();
@@ -947,7 +946,7 @@ describe('WorkspaceShellComponent Android widget bootstrap', () => {
     const pendingAndroidWidgetManualCallback = Object.assign(
       vi.fn(() => ({
         callbackUrl: 'nanoflow-widget://bootstrap?widgetToken=android-token',
-        callbackIntentUrl: 'intent://bootstrap?widgetToken=android-token#Intent;scheme=nanoflow-widget;end',
+        callbackIntentUrl: 'intent://bootstrap?widgetToken=android-token#Intent;scheme=nanoflow-widget;package=app.nanoflow.twa;end',
       })),
       { set: setPendingManualCallback },
     );
@@ -956,98 +955,25 @@ describe('WorkspaceShellComponent Android widget bootstrap', () => {
       configurable: true,
       value: { ...originalLocation, assign, replace } as Location,
     });
-    Object.defineProperty(document, 'visibilityState', {
-      configurable: true,
-      get: () => 'visible',
-    });
-    vi.useFakeTimers();
 
     try {
       const context = {
         pendingAndroidWidgetManualCallback,
         beforeUnloadManager: { suppressNextConfirmation },
         logger: { warn: vi.fn() },
-        androidWidgetManualCallbackFallbackTimer: null,
-        scheduleAndroidWidgetManualCallbackIntentFallback:
-          (WorkspaceShellComponent.prototype as unknown as Record<string, unknown>)['scheduleAndroidWidgetManualCallbackIntentFallback'],
-        clearAndroidWidgetManualCallbackFallbackTimer:
-          (WorkspaceShellComponent.prototype as unknown as Record<string, unknown>)['clearAndroidWidgetManualCallbackFallbackTimer'],
       } as unknown as WorkspaceShellComponent;
 
       WorkspaceShellComponent.prototype.continueAndroidWidgetManualCallback.call(context);
 
       expect(suppressNextConfirmation).toHaveBeenCalledTimes(1);
       expect(setPendingManualCallback).toHaveBeenCalledWith(null);
-      expect(assign).toHaveBeenCalledWith('nanoflow-widget://bootstrap?widgetToken=android-token');
+      expect(assign).toHaveBeenCalledWith('intent://bootstrap?widgetToken=android-token#Intent;scheme=nanoflow-widget;package=app.nanoflow.twa;end');
       expect(replace).not.toHaveBeenCalled();
-
-      vi.advanceTimersByTime(800);
-
-      expect(suppressNextConfirmation).toHaveBeenCalledTimes(2);
-      expect(replace).toHaveBeenCalledWith('intent://bootstrap?widgetToken=android-token#Intent;scheme=nanoflow-widget;end');
     } finally {
-      restoreDocumentProperty('visibilityState', originalVisibilityState);
       Object.defineProperty(window, 'location', {
         configurable: true,
         value: originalLocation,
       });
-      vi.useRealTimers();
-    }
-  });
-
-  it('显式 callback 回跳后若页面已隐藏，则不应再触发 intent fallback', () => {
-    const originalLocation = window.location;
-    const originalVisibilityState = Object.getOwnPropertyDescriptor(document, 'visibilityState');
-    const assign = vi.fn();
-    const replace = vi.fn();
-    const suppressNextConfirmation = vi.fn();
-    const setPendingManualCallback = vi.fn();
-    let visibilityState: DocumentVisibilityState = 'visible';
-    const pendingAndroidWidgetManualCallback = Object.assign(
-      vi.fn(() => ({
-        callbackUrl: 'nanoflow-widget://bootstrap?widgetToken=android-token',
-        callbackIntentUrl: 'intent://bootstrap?widgetToken=android-token#Intent;scheme=nanoflow-widget;end',
-      })),
-      { set: setPendingManualCallback },
-    );
-
-    Object.defineProperty(window, 'location', {
-      configurable: true,
-      value: { ...originalLocation, assign, replace } as Location,
-    });
-    Object.defineProperty(document, 'visibilityState', {
-      configurable: true,
-      get: () => visibilityState,
-    });
-    vi.useFakeTimers();
-
-    try {
-      const context = {
-        pendingAndroidWidgetManualCallback,
-        beforeUnloadManager: { suppressNextConfirmation },
-        logger: { warn: vi.fn() },
-        androidWidgetManualCallbackFallbackTimer: null,
-        scheduleAndroidWidgetManualCallbackIntentFallback:
-          (WorkspaceShellComponent.prototype as unknown as Record<string, unknown>)['scheduleAndroidWidgetManualCallbackIntentFallback'],
-        clearAndroidWidgetManualCallbackFallbackTimer:
-          (WorkspaceShellComponent.prototype as unknown as Record<string, unknown>)['clearAndroidWidgetManualCallbackFallbackTimer'],
-      } as unknown as WorkspaceShellComponent;
-
-      WorkspaceShellComponent.prototype.continueAndroidWidgetManualCallback.call(context);
-
-      visibilityState = 'hidden';
-      vi.advanceTimersByTime(800);
-
-      expect(suppressNextConfirmation).toHaveBeenCalledTimes(1);
-      expect(assign).toHaveBeenCalledWith('nanoflow-widget://bootstrap?widgetToken=android-token');
-      expect(replace).not.toHaveBeenCalled();
-    } finally {
-      restoreDocumentProperty('visibilityState', originalVisibilityState);
-      Object.defineProperty(window, 'location', {
-        configurable: true,
-        value: originalLocation,
-      });
-      vi.useRealTimers();
     }
   });
 
@@ -1059,7 +985,7 @@ describe('WorkspaceShellComponent Android widget bootstrap', () => {
     const pendingAndroidWidgetManualCallback = Object.assign(
       vi.fn(() => ({
         callbackUrl: 'nanoflow-widget://bootstrap?widgetToken=android-token',
-        callbackIntentUrl: 'intent://bootstrap?widgetToken=android-token#Intent;scheme=nanoflow-widget;end',
+        callbackIntentUrl: 'intent://bootstrap?widgetToken=android-token#Intent;scheme=nanoflow-widget;package=app.nanoflow.twa;end',
       })),
       { set: setPendingManualCallback },
     );
@@ -1074,16 +1000,13 @@ describe('WorkspaceShellComponent Android widget bootstrap', () => {
         pendingAndroidWidgetManualCallback,
         beforeUnloadManager: { suppressNextConfirmation },
         logger: { warn: vi.fn() },
-        androidWidgetManualCallbackFallbackTimer: null,
-        clearAndroidWidgetManualCallbackFallbackTimer:
-          (WorkspaceShellComponent.prototype as unknown as Record<string, unknown>)['clearAndroidWidgetManualCallbackFallbackTimer'],
       } as unknown as WorkspaceShellComponent;
 
       WorkspaceShellComponent.prototype.useAndroidWidgetIntentFallback.call(context);
 
       expect(suppressNextConfirmation).toHaveBeenCalledTimes(1);
       expect(setPendingManualCallback).toHaveBeenCalledWith(null);
-      expect(replace).toHaveBeenCalledWith('intent://bootstrap?widgetToken=android-token#Intent;scheme=nanoflow-widget;end');
+      expect(replace).toHaveBeenCalledWith('intent://bootstrap?widgetToken=android-token#Intent;scheme=nanoflow-widget;package=app.nanoflow.twa;end');
     } finally {
       Object.defineProperty(window, 'location', {
         configurable: true,

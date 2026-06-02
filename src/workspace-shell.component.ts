@@ -954,9 +954,6 @@ export class WorkspaceShellComponent implements OnInit, OnDestroy, AfterViewInit
   private readonly pendingAndroidWidgetBootstrap = signal<AndroidWidgetBootstrapRequest | null>(null);
   readonly pendingAndroidWidgetManualCallback = signal<AndroidWidgetBootstrapCallbackResult | null>(null);
   private readonly deferredStartupEntryIntent = signal<StartupEntryIntent | null>(null);
-  /** Android Widget 主回跳未接管时，切换 intent fallback 的等待时间 */
-  private readonly ANDROID_WIDGET_CALLBACK_FALLBACK_MS = 800;
-  private androidWidgetManualCallbackFallbackTimer: ReturnType<typeof setTimeout> | null = null;
   private swUpdateInitialCheckTimer: ReturnType<typeof setTimeout> | null = null;
   private swUpdatePollTimer: ReturnType<typeof setInterval> | null = null;
   private swUpdateCheckInFlight = false;
@@ -1745,8 +1742,7 @@ export class WorkspaceShellComponent implements OnInit, OnDestroy, AfterViewInit
     this.logger.warn('Android widget callback 使用显式确认回跳');
     this.pendingAndroidWidgetManualCallback.set(null);
     this.beforeUnloadManager.suppressNextConfirmation();
-    this.scheduleAndroidWidgetManualCallbackIntentFallback(callback);
-    window.location.assign(callback.callbackUrl);
+    window.location.assign(callback.callbackIntentUrl);
   }
 
   useAndroidWidgetIntentFallback(): void {
@@ -1758,41 +1754,11 @@ export class WorkspaceShellComponent implements OnInit, OnDestroy, AfterViewInit
     this.logger.warn('Android widget callback 使用显式 intent fallback');
     this.pendingAndroidWidgetManualCallback.set(null);
     this.beforeUnloadManager.suppressNextConfirmation();
-    this.clearAndroidWidgetManualCallbackFallbackTimer();
     window.location.replace(callback.callbackIntentUrl);
   }
 
   dismissAndroidWidgetManualCallback(): void {
-    this.clearAndroidWidgetManualCallbackFallbackTimer();
     this.pendingAndroidWidgetManualCallback.set(null);
-  }
-
-  private scheduleAndroidWidgetManualCallbackIntentFallback(
-    callback: AndroidWidgetBootstrapCallbackResult,
-  ): void {
-    this.clearAndroidWidgetManualCallbackFallbackTimer();
-
-    this.androidWidgetManualCallbackFallbackTimer = setTimeout(() => {
-      this.androidWidgetManualCallbackFallbackTimer = null;
-      if (typeof window === 'undefined') {
-        return;
-      }
-
-      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
-        return;
-      }
-
-      this.logger.warn('Android widget callback 主回跳未接管，自动切换 intent fallback');
-      this.beforeUnloadManager.suppressNextConfirmation();
-      window.location.replace(callback.callbackIntentUrl);
-    }, this.ANDROID_WIDGET_CALLBACK_FALLBACK_MS);
-  }
-
-  private clearAndroidWidgetManualCallbackFallbackTimer(): void {
-    if (this.androidWidgetManualCallbackFallbackTimer) {
-      clearTimeout(this.androidWidgetManualCallbackFallbackTimer);
-      this.androidWidgetManualCallbackFallbackTimer = null;
-    }
   }
 
   private restorePendingAndroidWidgetBootstrapFromStorage(): void {
@@ -2302,7 +2268,6 @@ export class WorkspaceShellComponent implements OnInit, OnDestroy, AfterViewInit
       clearTimeout(this.resizeDebounceTimer);
       this.resizeDebounceTimer = null;
     }
-    this.clearAndroidWidgetManualCallbackFallbackTimer();
   }
 
   private scheduleStartupFontInitialization(): void {

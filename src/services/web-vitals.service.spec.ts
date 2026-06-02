@@ -15,6 +15,7 @@ import { LoggerService } from './logger.service';
 import { SentryLazyLoaderService } from './sentry-lazy-loader.service';
 import { mockSentryLazyLoaderService } from '../test-setup.mocks';
 import { isDevMode } from '@angular/core';
+import type { Metric } from 'web-vitals';
 
 vi.mock('@angular/core', async () => {
   const actual = await vi.importActual<typeof import('@angular/core')>('@angular/core');
@@ -248,6 +249,25 @@ describe('WebVitalsService - TTFB 优化测试', () => {
     beforeEach(async () => {
       // Mock 生产环境
       isDevModeMock.mockReturnValue(false);
+    });
+
+    it('开发环境 poor 指标只记录 measurement，不发送 Sentry 告警', () => {
+      isDevModeMock.mockReturnValue(true);
+
+      const clsMetric = {
+        name: 'CLS',
+        value: 0.3,
+        id: 'test-id',
+        delta: 0.3,
+        navigationType: 'navigate',
+        entries: [],
+      } as unknown as Metric;
+
+      // @ts-ignore
+      service['reportToSentry'](clsMetric, 'poor');
+
+      expect(mockSentryLazyLoaderService.setMeasurement).toHaveBeenCalledWith('CLS', 0.3, '');
+      expect(mockSentryLazyLoaderService.captureMessage).not.toHaveBeenCalled();
     });
 
     it('3G 网络下的 poor TTFB 不应该触发告警', () => {

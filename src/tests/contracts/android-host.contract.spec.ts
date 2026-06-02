@@ -119,6 +119,8 @@ describe('android host contract', () => {
     expect(bindingService).toContain("platform: 'android-widget'");
     expect(bindingService).toContain('persistRuntimeBinding: false');
     expect(bindingService).toContain('callbackIntentUrl');
+    expect(bindingService).toContain("ANDROID_WIDGET_HOST_PACKAGE = 'app.nanoflow.twa'");
+    expect(bindingService).toContain('package=${ANDROID_WIDGET_HOST_PACKAGE}');
     expect(workspaceShell).toContain('resolveAndroidWidgetBootstrapRequest');
     expect(workspaceShell).toContain('completeAndroidWidgetBootstrap');
   });

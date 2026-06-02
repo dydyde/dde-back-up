@@ -52,6 +52,65 @@ const logError = (msg: string, err?: unknown) => {
   console.error(`[NanoFlow +${elapsed}ms] ❌ ${msg}`, err || '');
 };
 
+interface StartupSentryReporter {
+  captureException(error: unknown, context?: Record<string, unknown>): void;
+  isInitialized?: () => boolean;
+}
+
+interface StartupSentryEvent {
+  error: unknown;
+  context: Record<string, unknown>;
+}
+
+const STARTUP_SENTRY_QUEUE_MAX = 20;
+const startupSentryQueue: StartupSentryEvent[] = [];
+let startupSentryReporter: StartupSentryReporter | null = null;
+
+function toSentryError(value: unknown, fallbackMessage: string): Error {
+  if (value instanceof Error) return value;
+  return new Error(fallbackMessage);
+}
+
+function captureStartupSentryError(error: unknown, context: Record<string, unknown>): void {
+  if (startupSentryReporter) {
+    if (startupSentryReporter.isInitialized?.()) {
+      return;
+    }
+    startupSentryReporter.captureException(error, context);
+    return;
+  }
+
+  if (startupSentryQueue.length >= STARTUP_SENTRY_QUEUE_MAX) {
+    startupSentryQueue.shift();
+  }
+  startupSentryQueue.push({ error, context });
+}
+
+function flushStartupSentryQueue(reporter: StartupSentryReporter): void {
+  startupSentryReporter = reporter;
+  const queuedEvents = startupSentryQueue.splice(0);
+  for (const event of queuedEvents) {
+    reporter.captureException(event.error, {
+      ...event.context,
+      delayedCapture: true,
+      captureDelay: Date.now() - START_TIME,
+    });
+  }
+}
+
+async function flushStartupSentryQueueWithoutInjector(): Promise<void> {
+  if (startupSentryReporter) {
+    return;
+  }
+
+  try {
+    const module = await import('./src/services/sentry-lazy-loader.service');
+    flushStartupSentryQueue(new module.SentryLazyLoaderService());
+  } catch (error) {
+    logError('启动失败错误上报初始化失败', error);
+  }
+}
+
 function isBrowserNetworkSuspendedReason(reason: unknown): boolean {
   const record = reason as { name?: unknown; message?: unknown } | null | undefined;
   const name = typeof record?.name === 'string' ? record.name : '';
@@ -261,6 +320,16 @@ window.onerror = (message, source, lineno, colno, error) => {
   }
 
   logError(`全局错误: ${message}`, { source, lineno, colno, error });
+  captureStartupSentryError(
+    toSentryError(error, messageText || 'window.onerror'),
+    {
+      component: 'main',
+      mechanism: 'window.onerror',
+      source,
+      lineno,
+      colno,
+    },
+  );
   return false; // 继续默认处理
 };
 
@@ -300,6 +369,13 @@ window.addEventListener('unhandledrejection', (event) => {
   }
 
   logError('未处理的 Promise 拒绝', event.reason);
+  captureStartupSentryError(
+    toSentryError(reason, reasonText || 'Unhandled promise rejection'),
+    {
+      component: 'main',
+      mechanism: 'unhandledrejection',
+    },
+  );
 });
 
 // ========== Supabase SDK 预热（启动壳优先） ==========
@@ -394,6 +470,11 @@ async function startApplication() {
   // 添加启动超时保护（15秒）
   const startupTimeout = setTimeout(() => {
     logError('Angular 启动超时！');
+    captureStartupSentryError(new Error('Startup timeout'), {
+      component: 'main',
+      mechanism: 'startup-timeout',
+      isFatal: true,
+    });
     showStartupError('启动超时', '应用启动时间过长，可能是缓存问题导致。', new Error('Startup timeout'));
   }, 15000);
   
@@ -464,6 +545,7 @@ async function startApplication() {
     });
     
     clearTimeout(startupTimeout);
+    flushStartupSentryQueue(appRef.injector.get(SentryLazyLoaderService));
     
     const elapsed = Date.now() - START_TIME;
     log('✅ Angular 启动成功! 耗时: ' + elapsed + 'ms');
@@ -481,6 +563,10 @@ async function startApplication() {
       });
     } catch (e) {
       logError('Zone.js 运行时检查失败', e);
+      captureStartupSentryError(toSentryError(e, 'Zone.js runtime check failed'), {
+        component: 'main',
+        mechanism: 'zone-runtime-check',
+      });
     }
 
     const initWebVitals = () => {
@@ -491,6 +577,10 @@ async function startApplication() {
         })
         .catch((error) => {
           logError('Web Vitals 延迟初始化失败', error);
+          captureStartupSentryError(toSentryError(error, 'Web Vitals lazy init failed'), {
+            component: 'main',
+            mechanism: 'web-vitals-lazy-init',
+          });
         });
     };
     const webVitalsIdleBootEnabled = readBootFlag('WEB_VITALS_IDLE_BOOT_V2', true);
@@ -508,6 +598,12 @@ async function startApplication() {
   } catch (err: unknown) {
     clearTimeout(startupTimeout);
     logError('❌ 启动失败', err);
+    captureStartupSentryError(toSentryError(err, 'Bootstrap failed'), {
+      component: 'main',
+      mechanism: 'bootstrap-failed',
+      isFatal: true,
+    });
+    void flushStartupSentryQueueWithoutInjector();
     pushStartupTrace('app.bootstrap_failed', {
       message: err instanceof Error ? err.message : String(err),
     });

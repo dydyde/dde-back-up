@@ -15,6 +15,8 @@ import { withTimeout } from '../utils/timeout';
 import { LoggerService } from './logger.service';
 import { SupabaseClientService } from './supabase-client.service';
 
+const ANDROID_WIDGET_HOST_PACKAGE = 'app.nanoflow.twa';
+
 export interface WidgetRevokeAllResult {
   revokedCount: number;
 }
@@ -247,7 +249,7 @@ export class WidgetBindingService {
       ? callbackBaseUrl.pathname
       : '';
     const queryString = callbackParams.toString();
-    return `intent://${callbackBaseUrl.host}${callbackPath}${queryString ? `?${queryString}` : ''}#Intent;scheme=${callbackScheme};end`;
+    return `intent://${callbackBaseUrl.host}${callbackPath}${queryString ? `?${queryString}` : ''}#Intent;scheme=${callbackScheme};package=${ANDROID_WIDGET_HOST_PACKAGE};end`;
   }
 
   private normalizeOptionalText(value: string | null | undefined, maxLength = 256): string | null {

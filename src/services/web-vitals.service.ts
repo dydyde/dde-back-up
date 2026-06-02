@@ -290,9 +290,8 @@ export class WebVitalsService {
     // 使用 Sentry 的 transaction 记录性能指标
     this.sentryLazyLoader.setMeasurement(metric.name, metric.value, metric.name === 'CLS' ? '' : 'millisecond');
 
-    // 开发环境下不对 TTFB 发送告警
-    // TTFB 是服务器响应时间，开发环境的网络延迟是正常的
-    if (metric.name === 'TTFB' && isDevMode()) {
+    // 开发环境只保留 measurement，不创建 warning issue，避免 localhost/Electron 指标污染 Sentry 告警。
+    if (isDevMode()) {
       return;
     }
 
