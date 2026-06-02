@@ -30,7 +30,17 @@ const NETWORK_RESUME_RETRY_BUFFER_MS = 50;
 type RemotePullResult = {
   links: ExternalSourceLink[];
   deferredBySuspension: boolean;
+  failed?: boolean;
 };
+
+type PushLinkResult =
+  | { outcome: "success" }
+  | { outcome: "drop"; reason: "local-mode" | "no-client" | "duplicate" }
+  | { outcome: "retry"; errorCode: string; deferredBySuspension?: boolean; retryLink?: ExternalSourceLink };
+
+type UniqueConflictResolution =
+  | { resolved: true }
+  | { resolved: false; retryLink: ExternalSourceLink };
 
 interface ExternalSourceLinkRow {
   id: string;
@@ -120,7 +130,7 @@ export class ExternalSourceLinkService {
     const merged = this.mergeLinks(localLinks, remotePull.links);
     this.store.replaceAll(merged);
     await this.cache.saveLinks(merged);
-    if (!remotePull.deferredBySuspension) {
+    if (!remotePull.deferredBySuspension && !remotePull.failed) {
       this.lastPullAt = Date.now();
       await this.pushLocalNewerLinks(merged, remotePull.links);
       void this.flushPendingLinks();
@@ -148,7 +158,7 @@ export class ExternalSourceLinkService {
   private async runRefresh(): Promise<void> {
     const localLinks = await this.cache.loadLinks();
     const remotePull = await this.pullRemoteLinks();
-    if (remotePull.deferredBySuspension) {
+    if (remotePull.deferredBySuspension || remotePull.failed) {
       return;
     }
 
@@ -364,7 +374,11 @@ export class ExternalSourceLinkService {
       } else if (result.deferredBySuspension) {
         return;
       } else {
-        await this.cache.recordPendingFailure(entry.link.id, result.errorCode);
+        const retryLink = result.retryLink ?? entry.link;
+        if (result.retryLink) {
+          await this.cache.upsertPendingLink(retryLink, { resetRetryCount: false });
+        }
+        await this.cache.recordPendingFailure(retryLink.id, result.errorCode);
       }
     }
   }
@@ -377,16 +391,16 @@ export class ExternalSourceLinkService {
   private async pullRemoteLinks(): Promise<RemotePullResult> {
     const userId = this.currentUserId();
     if (userId === AUTH_CONFIG.LOCAL_MODE_USER_ID) {
-      return { links: [], deferredBySuspension: false };
+      return { links: [], deferredBySuspension: false, failed: false };
     }
 
     if (this.deferRemoteWorkForSuspension("浏览器网络挂起，延后拉取思源锚点", { userId })) {
-      return { links: [], deferredBySuspension: true };
+      return { links: [], deferredBySuspension: true, failed: false };
     }
 
     const client = await this.getClient();
     if (!client) {
-      return { links: [], deferredBySuspension: false };
+      return { links: [], deferredBySuspension: false, failed: true };
     }
 
     try {
@@ -400,17 +414,18 @@ export class ExternalSourceLinkService {
       return {
         links: (data ?? []).map((row) => this.rowToLink(row)),
         deferredBySuspension: false,
+        failed: false,
       };
     } catch (error) {
       if (isBrowserNetworkSuspendedError(error) || isBrowserNetworkSuspendedWindow()) {
         this.logSuspensionDeferral("浏览器网络挂起，延后拉取思源锚点", { userId });
-        return { links: [], deferredBySuspension: true };
+        return { links: [], deferredBySuspension: true, failed: false };
       }
 
       this.logger.warn("拉取思源锚点失败，保留本地状态", {
         message: error instanceof Error ? error.message : "unknown",
       });
-      return { links: [], deferredBySuspension: false };
+      return { links: [], deferredBySuspension: false, failed: true };
     }
   }
 
@@ -443,7 +458,7 @@ export class ExternalSourceLinkService {
       // 推送失败时再走 pending + retry 路径。
       const result = await this.pushLink(local);
       if (result.outcome !== "success" && result.outcome !== "drop") {
-        await this.cache.upsertPendingLink(local, { resetRetryCount: !result.deferredBySuspension });
+        await this.cache.upsertPendingLink(result.retryLink ?? local, { resetRetryCount: !result.deferredBySuspension });
         if (result.deferredBySuspension) {
           for (const deferred of localsToPush.slice(index + 1)) {
             await this.cache.upsertPendingLink(deferred, { resetRetryCount: false });
@@ -456,11 +471,7 @@ export class ExternalSourceLinkService {
 
   private async pushLink(
     link: ExternalSourceLink,
-  ): Promise<
-    | { outcome: "success" }
-    | { outcome: "drop"; reason: "local-mode" | "no-client" | "duplicate" }
-    | { outcome: "retry"; errorCode: string; deferredBySuspension?: boolean }
-  > {
+  ): Promise<PushLinkResult> {
     const userId = this.currentUserId();
     if (this.deferRemoteWorkForSuspension("浏览器网络挂起，延后推送思源锚点", {
       linkId: this.safeId(link.id),
@@ -468,10 +479,10 @@ export class ExternalSourceLinkService {
       return { outcome: "retry", errorCode: "browser-network-suspended", deferredBySuspension: true };
     }
 
-    const client = await this.getClient();
-    if (!client) return { outcome: "drop", reason: "no-client" };
     if (userId === AUTH_CONFIG.LOCAL_MODE_USER_ID)
       return { outcome: "drop", reason: "local-mode" };
+    const client = await this.getClient();
+    if (!client) return { outcome: "retry", errorCode: "no-client" };
     try {
       const { error } = await client
         .from("external_source_links")
@@ -510,21 +521,26 @@ export class ExternalSourceLinkService {
     link: ExternalSourceLink,
     userId: string,
     client: ExternalSourceSupabaseClient,
-  ): Promise<{ outcome: "success" } | { outcome: "drop"; reason: "duplicate" }> {
-    this.logger.info("思源锚点唯一冲突，丢弃本机 pending", {
+  ): Promise<PushLinkResult> {
+    this.logger.info("思源锚点唯一冲突，尝试切换到远端已有关联", {
       linkId: this.safeId(link.id),
     });
-    if (await this.resolveUniqueConflict(link, userId, client)) {
+    const resolution = await this.resolveUniqueConflict(link, userId, client);
+    if (resolution.resolved) {
       return { outcome: "success" };
     }
-    return { outcome: "drop", reason: "duplicate" };
+    return {
+      outcome: "retry",
+      errorCode: POSTGRES_UNIQUE_VIOLATION,
+      retryLink: resolution.retryLink,
+    };
   }
 
   private async resolveUniqueConflict(
     link: ExternalSourceLink,
     userId: string,
     client: ExternalSourceSupabaseClient,
-  ): Promise<boolean> {
+  ): Promise<UniqueConflictResolution> {
     const now = new Date().toISOString();
     const tombstone = this.normalizeLink({
       ...link,
@@ -542,6 +558,9 @@ export class ExternalSourceLinkService {
       await this.persistLocal(tombstone);
       await this.cache.deletePreviewsForLink(tombstone.id);
       const remotePull = await this.pullRemoteLinks();
+      if (remotePull.deferredBySuspension || remotePull.failed) {
+        throw new Error("remote pull unavailable after unique conflict");
+      }
       if (!remotePull.deferredBySuspension) {
         this.lastPullAt = Date.now();
         const localLinks = await this.cache.loadLinks();
@@ -550,14 +569,24 @@ export class ExternalSourceLinkService {
         await this.cache.saveLinks(merged);
       }
       this.toast.info("思源锚点已在其他设备建立，已切换到已有关联");
-      return true;
+      return { resolved: true };
     } catch (error) {
+      try {
+        await this.persistLocal(tombstone);
+        await this.cache.deletePreviewsForLink(tombstone.id);
+        await this.cache.upsertPendingLink(tombstone, { resetRetryCount: false });
+      } catch (localError) {
+        this.logger.warn("思源锚点唯一冲突本地墓碑保留失败", {
+          linkId: this.safeId(link.id),
+          message: localError instanceof Error ? localError.message : "unknown",
+        });
+      }
       this.logger.warn("思源锚点唯一冲突收敛失败，等待下次刷新", {
         linkId: this.safeId(link.id),
         message: error instanceof Error ? error.message : "unknown",
       });
       this.toast.info("思源锚点已在其他设备建立，稍后自动刷新合并");
-      return false;
+      return { resolved: false, retryLink: tombstone };
     }
   }
 

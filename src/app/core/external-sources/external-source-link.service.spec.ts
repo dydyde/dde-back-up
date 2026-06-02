@@ -29,6 +29,7 @@ describe('ExternalSourceLinkService', () => {
   let shouldFailUpsert = false;
   let upsertError: { code?: string; status?: number; message: string } | Error | null = null;
   let upsertErrorQueue: Array<{ code?: string; status?: number; message: string } | Error> = [];
+  let selectError: Error | null = null;
   let remoteRows: unknown[] = [];
   let clientAsyncMock: ReturnType<typeof vi.fn>;
   let loggerCategoryMock: {
@@ -50,12 +51,14 @@ describe('ExternalSourceLinkService', () => {
     shouldFailUpsert = false;
     upsertError = null;
     upsertErrorQueue = [];
+    selectError = null;
     remoteRows = [];
     loggerCategoryMock = { warn: vi.fn(), info: vi.fn(), debug: vi.fn(), error: vi.fn() };
     const from = vi.fn((table: string) => ({
       select: vi.fn(() => ({
         eq: vi.fn(async () => {
           selectCallCount += 1;
+          if (selectError) return { data: null, error: selectError };
           return { data: remoteRows, error: null };
         }),
       })),
@@ -130,6 +133,20 @@ describe('ExternalSourceLinkService', () => {
     await service.flushPendingLinks();
 
     expect(upsertPayloads).toHaveLength(1);
+  });
+
+  it('keeps authenticated link pushes pending when the Supabase client is unavailable', async () => {
+    clientAsyncMock.mockImplementation(async () => null);
+    const service = TestBed.inject(ExternalSourceLinkService);
+    const cache = TestBed.inject(ExternalSourceCacheService);
+
+    await service.bindSiyuanBlock('task-1', '20260426123456-abc1234');
+    await service.flushPendingLinks();
+
+    const pending = await cache.loadPendingLinks();
+    expect(pending).toHaveLength(1);
+    expect(pending[0].link.targetId).toBe('20260426123456-abc1234');
+    expect(pending[0].lastErrorCode).toBe('no-client');
   });
 
   it('reloads local links when the current owner changes', async () => {
@@ -231,16 +248,88 @@ describe('ExternalSourceLinkService', () => {
     ]));
   });
 
-  it('drops pending push on unique-violation (23505) instead of looping forever', async () => {
+  it('resolves unique-violation (23505) with a tombstone instead of looping forever', async () => {
     const service = TestBed.inject(ExternalSourceLinkService);
     const cache = TestBed.inject(ExternalSourceCacheService);
 
-    upsertError = { code: '23505', message: 'duplicate key value violates unique constraint' };
+    upsertErrorQueue.push({ code: '23505', message: 'duplicate key value violates unique constraint' });
     await service.bindSiyuanBlock('task-1', '20260426123456-abc1234');
     await service.flushPendingLinks();
 
     expect(await cache.loadPendingLinks()).toHaveLength(0);
     expect(await cache.loadDeadLetters()).toHaveLength(0);
+  });
+
+  it('keeps a tombstone pending when unique-conflict reconciliation fails', async () => {
+    const service = TestBed.inject(ExternalSourceLinkService);
+    const cache = TestBed.inject(ExternalSourceCacheService);
+    const link = await service.bindSiyuanBlock('task-1', '20260426123456-abc1234');
+    await service.flushPendingLinks();
+    upsertErrorQueue.push(
+      { code: '23505', message: 'duplicate key value violates unique constraint' },
+      new Error('tombstone offline'),
+    );
+
+    await service.replaceSiyuanBlock(link!.id, '20260426123456-def5678');
+    await service.flushPendingLinks();
+
+    expect(service.firstActiveLinkForTask('task-1')).toBeNull();
+    const pending = await cache.loadPendingLinks();
+    expect(pending).toHaveLength(1);
+    expect(pending[0].link.id).toBe(link!.id);
+    expect(pending[0].link.targetId).toBe('20260426123456-def5678');
+    expect(pending[0].link.deletedAt).toBeTruthy();
+    expect(pending[0].retryCount).toBe(1);
+  });
+
+  it('keeps a tombstone pending when unique-conflict remote refresh fails', async () => {
+    const service = TestBed.inject(ExternalSourceLinkService);
+    const cache = TestBed.inject(ExternalSourceCacheService);
+    const link = await service.bindSiyuanBlock('task-1', '20260426123456-abc1234');
+    await service.flushPendingLinks();
+    upsertErrorQueue.push({ code: '23505', message: 'duplicate key value violates unique constraint' });
+    selectError = new Error('pull failed');
+
+    await service.replaceSiyuanBlock(link!.id, '20260426123456-def5678');
+    await service.flushPendingLinks();
+
+    expect(service.firstActiveLinkForTask('task-1')).toBeNull();
+    const pending = await cache.loadPendingLinks();
+    expect(pending).toHaveLength(1);
+    expect(pending[0].link.id).toBe(link!.id);
+    expect(pending[0].link.deletedAt).toBeTruthy();
+    expect(pending[0].retryCount).toBe(1);
+  });
+
+  it('pushLocalNewerLinks preserves tombstone pending after unique-conflict fallback', async () => {
+    const service = TestBed.inject(ExternalSourceLinkService) as unknown as {
+      pushLocalNewerLinks(localLinks: Array<Record<string, unknown>>, remoteLinks: Array<Record<string, unknown>>): Promise<void>;
+    };
+    const cache = TestBed.inject(ExternalSourceCacheService);
+    const now = new Date().toISOString();
+    const link = {
+      id: 'ffffffff-ffff-ffff-ffff-ffffffffffff',
+      taskId: 'task-1',
+      sourceType: 'siyuan-block' as const,
+      targetId: '20260426123456-def5678',
+      uri: 'siyuan://blocks/20260426123456-def5678?focus=1',
+      sortOrder: 0,
+      deletedAt: null,
+      createdAt: now,
+      updatedAt: now,
+    };
+    upsertErrorQueue.push(
+      { code: '23505', message: 'duplicate key value violates unique constraint' },
+      new Error('tombstone offline'),
+    );
+
+    await service.pushLocalNewerLinks([link], []);
+
+    const pending = await cache.loadPendingLinks();
+    expect(pending).toHaveLength(1);
+    expect(pending[0].link.id).toBe(link.id);
+    expect(pending[0].link.deletedAt).toBeTruthy();
+    expect(pending[0].link.targetId).toBe('20260426123456-def5678');
   });
 
   it('keeps retry counter so transient failures eventually move to dead letter', async () => {
@@ -266,6 +355,31 @@ describe('ExternalSourceLinkService', () => {
 
     // 3 个 caller 只触发一次远端 pull（getClient 调用）；不再每次都重新 pullRemoteLinks。
     expect(after - before).toBe(1);
+  });
+
+  it('does not push local links when the initial remote pull fails', async () => {
+    const cache = TestBed.inject(ExternalSourceCacheService);
+    const now = new Date().toISOString();
+    await cache.saveLinks([
+      {
+        id: '99999999-9999-4999-8999-999999999999',
+        taskId: 'task-local',
+        sourceType: 'siyuan-block',
+        targetId: '20260426123456-abc1234',
+        uri: 'siyuan://blocks/20260426123456-abc1234?focus=1',
+        sortOrder: 0,
+        deletedAt: null,
+        createdAt: now,
+        updatedAt: now,
+      },
+    ]);
+    selectError = new Error('pull failed');
+
+    const service = TestBed.inject(ExternalSourceLinkService);
+    await service.ensureLoaded();
+
+    expect(service.firstActiveLinkForTask('task-local')?.id).toBe('99999999-9999-4999-8999-999999999999');
+    expect(upsertCallCount).toBe(0);
   });
 
   it('drops links whose deletedAt is older than the tombstone retention window', async () => {
@@ -353,6 +467,18 @@ describe('ExternalSourceLinkService', () => {
     expect(service.firstActiveLinkForTask('task-remote')?.id).toBe(
       'cccccccc-cccc-cccc-cccc-cccccccccccc',
     );
+  });
+
+  it('refreshIfStale does not push local links when the remote pull fails', async () => {
+    const service = TestBed.inject(ExternalSourceLinkService);
+    await service.bindSiyuanBlock('task-1', '20260426123456-abc1234');
+    await service.flushPendingLinks();
+    upsertCallCount = 0;
+    selectError = new Error('pull failed');
+
+    await service.refreshIfStale(true);
+
+    expect(upsertCallCount).toBe(0);
   });
 
   it('浏览器恢复保护期内应延后 remote pull，并在保护期结束后自动补拉', async () => {
