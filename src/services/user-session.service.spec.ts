@@ -2690,6 +2690,31 @@ describe('UserSessionService', () => {
       // 注意：loadSingleProjectFromCloud 可能会被后台空壳项目加载调用，
       // 但不应用于已降级为 local-only 的项目
     });
+
+    it('刚创建的 synced pending 项目暂未进入远端清单时，不应被不可访问复核移除', async () => {
+      userIdSignal.set('user-1');
+      const pendingProject = createProject({
+        id: 'proj-new-pending',
+        name: 'New Pending',
+        syncSource: 'synced',
+        pendingSync: true,
+      });
+      (mockProjectState['setProjects'] as (...args: unknown[]) => void)([pendingProject]);
+      (mockProjectState['setActiveProjectId'] as (projectId: string | null) => void)('proj-new-pending');
+      vi.clearAllMocks();
+
+      const result = await (
+        service as unknown as {
+          reconcileInaccessibleActiveProject: (projectId: string, userId: string) => Promise<string | null>;
+        }
+      ).reconcileInaccessibleActiveProject('proj-new-pending', 'user-1');
+
+      expect(result).toBe('proj-new-pending');
+      expect(mockProjectState['setActiveProjectId']).not.toHaveBeenCalledWith(null);
+      expect(mockProjectState['setProjects']).not.toHaveBeenCalledWith([]);
+      expect(mockToastService['info']).not.toHaveBeenCalledWith('当前项目不可访问，已自动切换');
+      expect(service.isProjectAuthoritativelyAccessible('proj-new-pending')).toBe(true);
+    });
   });
 
   describe('syncProjectListMetadata', () => {
@@ -2859,6 +2884,37 @@ describe('UserSessionService', () => {
         .toHaveBeenCalledWith([], 'user-1');
     });
 
+    it('服务端暂未返回 pendingSync 的 synced 项目时应保留本地项目', async () => {
+      userIdSignal.set('user-1');
+      const pendingProject = createProject({
+        id: 'proj-new-pending',
+        name: 'New Pending',
+        syncSource: 'synced',
+        pendingSync: true,
+      });
+      (mockProjectState['projects'] as ReturnType<typeof vi.fn>).mockReturnValue([pendingProject]);
+      (mockProjectState['getProject'] as ReturnType<typeof vi.fn>).mockImplementation((id: string) => (
+        id === pendingProject.id ? pendingProject : undefined
+      ));
+      (mockProjectState['activeProjectId'] as ReturnType<typeof vi.fn>).mockReturnValue(null);
+      (mockSyncCoordinator['hasPendingChangesForProject'] as ReturnType<typeof vi.fn>).mockReturnValue(false);
+      (mockSyncCoordinator['core'] as { saveOfflineSnapshot: ReturnType<typeof vi.fn> }).saveOfflineSnapshot.mockClear();
+
+      setupSupabaseQuery([]);
+
+      const result = await (
+        service as unknown as {
+          syncProjectListMetadata: (userId: string) => Promise<Set<string>>;
+        }
+      ).syncProjectListMetadata('user-1');
+
+      expect([...result]).toEqual([]);
+      expect(mockProjectState['setProjectsMetadataOnly']).not.toHaveBeenCalledWith([]);
+      expect((mockSyncCoordinator['core'] as { saveOfflineSnapshot: ReturnType<typeof vi.fn> }).saveOfflineSnapshot)
+        .not.toHaveBeenCalledWith([], 'user-1');
+      expect(service.isProjectAuthoritativelyAccessible('proj-new-pending')).toBe(true);
+    });
+
     it('服务端项目数显著少于本地时仍应裁剪缺失的 synced 项目', async () => {
       const localProjects = [
         createProject({ id: 'p1', name: 'P1' }),
@@ -3023,6 +3079,24 @@ describe('UserSessionService', () => {
       ).syncProjectListMetadata('user-1');
 
       expect(service.isProjectAuthoritativelyAccessible('proj-local-only')).toBe(true);
+    });
+
+    it('远端清单尚未包含新建项目时，pendingSync 的 synced 项目仍应被视为可访问', () => {
+      const pendingProject = createProject({
+        id: 'proj-new-pending',
+        name: 'New Pending',
+        syncSource: 'synced',
+        pendingSync: true,
+      });
+      userIdSignal.set('user-1');
+      (mockProjectState['projects'] as ReturnType<typeof vi.fn>).mockReturnValue([pendingProject]);
+      (mockProjectState['getProject'] as ReturnType<typeof vi.fn>).mockImplementation((id: string) => (
+        id === pendingProject.id ? pendingProject : undefined
+      ));
+      (mockSyncCoordinator['hasPendingChangesForProject'] as ReturnType<typeof vi.fn>).mockReturnValue(false);
+      (mockChangeTracker['hasProjectChanges'] as ReturnType<typeof vi.fn>).mockReturnValue(false);
+
+      expect(service.isProjectAuthoritativelyAccessible('proj-new-pending')).toBe(true);
     });
 
     it('匿名或 local-user 模式下缺失项目不应被视为可访问', () => {

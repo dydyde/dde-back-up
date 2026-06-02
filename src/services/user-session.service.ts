@@ -148,7 +148,8 @@ export class UserSessionService {
     }
 
     const guestDraftProjectIds = this.getPersistedGuestDraftProjectIds();
-    return this.isProtectedLocalOnlyProject(localProject, guestDraftProjectIds)
+    return this.isPendingSyncedProject(localProject)
+      || this.isProtectedLocalOnlyProject(localProject, guestDraftProjectIds)
       || this.hasRealLocalChanges(normalizedProjectId);
   }
 
@@ -1938,6 +1939,10 @@ export class UserSessionService {
     return this.hasRealLocalChanges(project.id);
   }
 
+  private isPendingSyncedProject(project: Project | null | undefined): boolean {
+    return project?.syncSource === 'synced' && project.pendingSync === true;
+  }
+
   private isLocalOnlyProject(projectId: string | null | undefined): boolean {
     if (!projectId) {
       return false;
@@ -2490,12 +2495,13 @@ export class UserSessionService {
     }
 
     // 查询成功时，远端列表缺失意味着项目已不可访问或已被软删除。
-    // 这里允许列表合法收缩，但仍保留 guest draft / active / real pending changes 项目。
+    // 这里允许列表合法收缩，但仍保留 guest draft / active / pending local write 项目。
     const activeProjectId = this.projectState.activeProjectId();
     const beforePruneCount = updatedProjects.length;
     updatedProjects = updatedProjects.filter(project => {
       if (accessibleProjectIds.has(project.id)) return true;
       if (this.isProtectedLocalOnlyProject(project, guestDraftProjectIds)) return true;
+      if (this.isPendingSyncedProject(project)) return true;
       // 不裁剪当前活跃项目，交由调用方处理
       if (project.id === activeProjectId) return true;
       const hasPendingLocalChanges = this.hasRealLocalChanges(project.id);
@@ -2565,6 +2571,12 @@ export class UserSessionService {
       return;
     }
 
+    if (this.isPendingSyncedProject(localProject)) {
+      this.setProjectAuthoritativeAccessibility(projectId, true);
+      this.logger.warn('空壳项目暂未出现在远端清单，因存在待同步本地项目写入而保留', { projectId });
+      return;
+    }
+
     const guestDraftProjectIds = this.getPersistedGuestDraftProjectIds();
     const hasPendingLocalChanges = this.hasRealLocalChanges(projectId)
       || this.isProtectedLocalOnlyProject(localProject, guestDraftProjectIds);
@@ -2622,6 +2634,12 @@ export class UserSessionService {
       this.projectState.setActiveProjectId(null);
       this.toastService.info('当前项目不可访问，已自动切换');
       return null;
+    }
+
+    if (this.isPendingSyncedProject(localProject)) {
+      this.setProjectAuthoritativeAccessibility(projectId, true);
+      this.logger.warn('activeProject 暂未出现在远端清单，因存在待同步本地项目写入而保留', { projectId });
+      return projectId;
     }
 
     const guestDraftProjectIds = this.getPersistedGuestDraftProjectIds();
