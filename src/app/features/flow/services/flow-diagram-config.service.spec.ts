@@ -57,6 +57,25 @@ function expectEmbeddedCrossTreeLinks(linkDataArray: go.ObjectData[], expectedCo
   expect(fractions.every((fraction): fraction is number => typeof fraction === 'number' && fraction > 0 && fraction < 1)).toBe(true);
 }
 
+function createSiyuanLink(
+  overrides: Pick<ExternalSourceLink, 'id' | 'taskId' | 'targetId' | 'createdAt'>
+    & Partial<Omit<ExternalSourceLink, 'id' | 'taskId' | 'targetId' | 'createdAt'>>,
+): ExternalSourceLink {
+  return {
+    id: overrides.id,
+    taskId: overrides.taskId,
+    sourceType: 'siyuan-block',
+    targetId: overrides.targetId,
+    uri: overrides.uri ?? `siyuan://blocks/${overrides.targetId}?focus=1`,
+    label: overrides.label ?? `思源 ${overrides.targetId}`,
+    role: overrides.role,
+    sortOrder: overrides.sortOrder ?? 0,
+    deletedAt: overrides.deletedAt ?? null,
+    createdAt: overrides.createdAt,
+    updatedAt: overrides.updatedAt ?? overrides.createdAt,
+  };
+}
+
 describe('FlowDiagramConfigService', () => {
   let service: FlowDiagramConfigService;
   let lineageColorService: LineageColorService;
@@ -382,21 +401,122 @@ describe('FlowDiagramConfigService', () => {
     expectEmbeddedCrossTreeLinks(result.linkDataArray, 2);
   });
 
-  it('uses the visible active-link index for the SiYuan badge instead of raw sortOrder', () => {
+  it('uses the project-level SiYuan link order for badges across tasks', () => {
+    const firstTask = createTask({ id: 'first-task-with-siyuan', title: 'First Knowledge Task', stage: 1, displayId: '1' });
+    const secondTask = createTask({ id: 'second-task-with-siyuan', title: 'Second Knowledge Task', stage: 1, displayId: '2' });
+    activeLinksByTask.set(firstTask.id, [
+      createSiyuanLink({
+        id: 'project-link-first',
+        taskId: firstTask.id,
+        targetId: '20260426123456-abc1234',
+        createdAt: '2026-05-28T12:00:00.000Z',
+      }),
+    ]);
+    activeLinksByTask.set(secondTask.id, [
+      createSiyuanLink({
+        id: 'project-link-second',
+        taskId: secondTask.id,
+        targetId: '20260426123456-def5678',
+        createdAt: '2026-05-28T12:01:00.000Z',
+      }),
+    ]);
+
+    const result = service.buildDiagramData(
+      [secondTask, firstTask],
+      createProject([secondTask, firstTask]),
+      '',
+      new Map<string, go.ObjectData>(),
+      { dockedTaskIds: new Set<string>(), focusedTaskId: null },
+    );
+
+    expect(result.nodeDataArray.find(node => node.key === firstTask.id)?.siyuanLinkBadgeIndex).toBe(1);
+    expect(result.nodeDataArray.find(node => node.key === secondTask.id)?.siyuanLinkBadgeIndex).toBe(2);
+  });
+
+  it('normalizes linked-at timestamps before assigning project-level SiYuan badge order', () => {
+    const firstTask = createTask({ id: 'timezone-first-task', title: 'Timezone First', stage: 1, displayId: '1' });
+    const secondTask = createTask({ id: 'timezone-second-task', title: 'Timezone Second', stage: 1, displayId: '2' });
+    activeLinksByTask.set(firstTask.id, [
+      createSiyuanLink({
+        id: 'timezone-link-first',
+        taskId: firstTask.id,
+        targetId: '20260426123456-abc1234',
+        createdAt: '2026-05-28T12:00:00.000+08:00',
+      }),
+    ]);
+    activeLinksByTask.set(secondTask.id, [
+      createSiyuanLink({
+        id: 'timezone-link-second',
+        taskId: secondTask.id,
+        targetId: '20260426123456-def5678',
+        createdAt: '2026-05-28T05:00:00.000Z',
+      }),
+    ]);
+
+    const result = service.buildDiagramData(
+      [secondTask, firstTask],
+      createProject([secondTask, firstTask]),
+      '',
+      new Map<string, go.ObjectData>(),
+      { dockedTaskIds: new Set<string>(), focusedTaskId: null },
+    );
+
+    expect(result.nodeDataArray.find(node => node.key === firstTask.id)?.siyuanLinkBadgeIndex).toBe(1);
+    expect(result.nodeDataArray.find(node => node.key === secondTask.id)?.siyuanLinkBadgeIndex).toBe(2);
+  });
+
+  it('keeps equal-time SiYuan badge order stable across task input order changes', () => {
+    const alphaTask = createTask({ id: 'task-alpha-with-siyuan', title: 'Alpha Knowledge', stage: 1, displayId: '1' });
+    const betaTask = createTask({ id: 'task-beta-with-siyuan', title: 'Beta Knowledge', stage: 1, displayId: '2' });
+    const createdAt = '2026-05-28T12:00:00.000Z';
+    activeLinksByTask.set(alphaTask.id, [
+      createSiyuanLink({
+        id: 'equal-time-alpha-link',
+        taskId: alphaTask.id,
+        targetId: '20260426123456-abc1234',
+        createdAt,
+      }),
+    ]);
+    activeLinksByTask.set(betaTask.id, [
+      createSiyuanLink({
+        id: 'equal-time-beta-link',
+        taskId: betaTask.id,
+        targetId: '20260426123456-def5678',
+        createdAt,
+      }),
+    ]);
+
+    const firstBuild = service.buildDiagramData(
+      [betaTask, alphaTask],
+      createProject([betaTask, alphaTask]),
+      '',
+      new Map<string, go.ObjectData>(),
+      { dockedTaskIds: new Set<string>(), focusedTaskId: null },
+    );
+    const secondBuild = service.buildDiagramData(
+      [alphaTask, betaTask],
+      createProject([alphaTask, betaTask]),
+      '',
+      new Map<string, go.ObjectData>(),
+      { dockedTaskIds: new Set<string>(), focusedTaskId: null },
+    );
+
+    expect(firstBuild.nodeDataArray.find(node => node.key === alphaTask.id)?.siyuanLinkBadgeIndex).toBe(1);
+    expect(firstBuild.nodeDataArray.find(node => node.key === betaTask.id)?.siyuanLinkBadgeIndex).toBe(2);
+    expect(secondBuild.nodeDataArray.find(node => node.key === alphaTask.id)?.siyuanLinkBadgeIndex).toBe(1);
+    expect(secondBuild.nodeDataArray.find(node => node.key === betaTask.id)?.siyuanLinkBadgeIndex).toBe(2);
+  });
+
+  it('uses the visible project active-link index for the SiYuan badge instead of raw sortOrder', () => {
     const task = createTask({ id: 'task-with-siyuan', title: 'Knowledge Task', stage: 1, displayId: '1' });
     activeLinksByTask.set(task.id, [
-      {
+      createSiyuanLink({
         id: 'link-remaining',
         taskId: task.id,
-        sourceType: 'siyuan-block',
         targetId: '20260426123456-abc1234',
-        uri: 'siyuan://blocks/20260426123456-abc1234?focus=1',
-        label: '思源 abc1234',
         sortOrder: 3,
-        deletedAt: null,
         createdAt: '2026-05-28T12:00:00.000Z',
-        updatedAt: '2026-05-28T12:00:00.000Z',
-      },
+      }),
     ]);
 
     const result = service.buildDiagramData(

@@ -148,6 +148,42 @@ describe('ExternalSourceLinkService', () => {
     expect(service.firstActiveLinkForTask('task-1')).toBeNull();
   });
 
+  it('replaces a wrong SiYuan pointer in place and clears stale previews', async () => {
+    const service = TestBed.inject(ExternalSourceLinkService);
+    const cache = TestBed.inject(ExternalSourceCacheService);
+    const link = await service.bindSiyuanBlock('task-1', '20260426123456-abc1234');
+    await cache.savePreview({
+      linkId: link!.id,
+      blockId: '20260426123456-abc1234',
+      fetchedAt: new Date().toISOString(),
+      fetchStatus: 'ready',
+      excerpt: '旧块预览',
+      truncated: false,
+    });
+
+    const replaced = await service.replaceSiyuanBlock(link!.id, '20260426123456-def5678');
+
+    expect(replaced?.id).toBe(link!.id);
+    expect(replaced?.targetId).toBe('20260426123456-def5678');
+    expect(replaced?.uri).toBe('siyuan://blocks/20260426123456-def5678?focus=1');
+    expect(replaced?.label).toBe('思源 2026…5678');
+    expect(replaced?.hpath).toBeUndefined();
+    expect(service.firstActiveLinkForTask('task-1')?.targetId).toBe('20260426123456-def5678');
+    expect(await cache.getPreview(link!.id, '20260426123456-abc1234')).toBeNull();
+  });
+
+  it('switches to an existing matching SiYuan pointer instead of creating an active duplicate', async () => {
+    const service = TestBed.inject(ExternalSourceLinkService);
+    const first = await service.bindSiyuanBlock('task-1', '20260426123456-abc1234');
+    const second = await service.bindSiyuanBlock('task-1', '20260426123456-def5678');
+
+    const result = await service.replaceSiyuanBlock(first!.id, '20260426123456-def5678');
+
+    expect(result?.id).toBe(second!.id);
+    expect(service.activeLinksForTask('task-1').map(link => link.id)).toEqual([second!.id]);
+    expect(service.links().find(link => link.id === first!.id)?.deletedAt).toBeTruthy();
+  });
+
   it('drops pending push on unique-violation (23505) instead of looping forever', async () => {
     const service = TestBed.inject(ExternalSourceLinkService);
     const cache = TestBed.inject(ExternalSourceCacheService);

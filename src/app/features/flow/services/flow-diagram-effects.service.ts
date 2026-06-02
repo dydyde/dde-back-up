@@ -127,6 +127,7 @@ export class FlowDiagramEffectsService {
           link.sourceType,
           link.targetId,
           String(link.sortOrder),
+          link.createdAt,
           link.label ?? '',
           link.hpath ?? '',
           link.updatedAt,

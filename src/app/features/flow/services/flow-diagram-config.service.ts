@@ -45,8 +45,13 @@ export interface GoJSNodeData {
   hasSiyuanLink?: boolean;
   /** 用于流程图节点徽标 hover/click 预览的首个思源锚点 */
   siyuanLink?: ExternalSourceLink;
-  /** 当前流程图徽标对应的可见锚点序号（1-based） */
+  /** 当前项目可见思源锚点的全局序号（1-based） */
   siyuanLinkBadgeIndex?: number;
+}
+
+interface ProjectSiyuanBadgeContext {
+  linksByTask: ReadonlyMap<string, readonly ExternalSourceLink[]>;
+  badgeIndexByLinkId: ReadonlyMap<string, number>;
 }
 
 /**
@@ -187,6 +192,7 @@ export class FlowDiagramConfigService {
     // 过滤显示的任务：只排除已归档的任务
     // 待分配任务（stage === null）也应该显示，不应该因为坐标为(0,0)而被过滤
     const tasksToShow = tasks.filter(t => t.status !== 'archived');
+    const siyuanBadgeContext = this.createProjectSiyuanBadgeContext(tasksToShow);
 
     let newNodeIndex = 0;
     const searchLower = searchQuery.toLowerCase().trim();
@@ -208,11 +214,9 @@ export class FlowDiagramConfigService {
       const isParked = task.parkingMeta?.state === 'parked';
       const isDocked = dockState.dockedTaskIds.has(task.id);
       const isDockFocused = dockState.focusedTaskId === task.id;
-      const siyuanLinks = this.externalSourceLinks?.activeLinksForTask(task.id) ?? [];
+      const siyuanLinks = siyuanBadgeContext.linksByTask.get(task.id) ?? [];
       const siyuanLink = siyuanLinks[0] ?? undefined;
-      const siyuanLinkBadgeIndex = siyuanLink
-        ? Math.max(siyuanLinks.findIndex(link => link.id === siyuanLink.id), 0) + 1
-        : undefined;
+      const siyuanLinkBadgeIndex = siyuanLink ? siyuanBadgeContext.badgeIndexByLinkId.get(siyuanLink.id) : undefined;
 
       nodeDataArray.push({
         key: task.id,
@@ -565,6 +569,62 @@ export class FlowDiagramConfigService {
     if (categoryCompare !== 0) return categoryCompare;
 
     return a.key.localeCompare(b.key);
+  }
+
+  private createProjectSiyuanBadgeContext(tasksToShow: Task[]): ProjectSiyuanBadgeContext {
+    const linksByTask = new Map<string, ExternalSourceLink[]>();
+    const badgeIndexByLinkId = new Map<string, number>();
+    const projectLinks: ExternalSourceLink[] = [];
+
+    if (!this.externalSourceLinks) {
+      return { linksByTask, badgeIndexByLinkId };
+    }
+
+    tasksToShow.forEach((task) => {
+      const links = this.externalSourceLinks
+        ?.activeLinksForTask(task.id)
+        .filter(link => link.sourceType === 'siyuan-block') ?? [];
+      linksByTask.set(task.id, links);
+      projectLinks.push(...links);
+    });
+
+    projectLinks
+      .slice()
+      .sort((a, b) => this.compareProjectSiyuanLinkOrder(a, b))
+      .forEach((link) => {
+        if (!badgeIndexByLinkId.has(link.id)) {
+          badgeIndexByLinkId.set(link.id, badgeIndexByLinkId.size + 1);
+        }
+      });
+
+    return { linksByTask, badgeIndexByLinkId };
+  }
+
+  private compareProjectSiyuanLinkOrder(
+    a: ExternalSourceLink,
+    b: ExternalSourceLink,
+  ): number {
+    const createdAtCompare = this.compareLinkCreatedAt(a.createdAt, b.createdAt);
+    if (createdAtCompare !== 0) return createdAtCompare;
+
+    if (a.taskId !== b.taskId) return a.taskId < b.taskId ? -1 : 1;
+
+    const sortOrderCompare = a.sortOrder - b.sortOrder;
+    if (sortOrderCompare !== 0) return sortOrderCompare;
+
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+  }
+
+  private compareLinkCreatedAt(a: string, b: string): number {
+    const aMs = Date.parse(a);
+    const bMs = Date.parse(b);
+    const aValid = Number.isFinite(aMs);
+    const bValid = Number.isFinite(bMs);
+
+    if (aValid && bValid && aMs !== bMs) return aMs - bMs;
+    if (aValid !== bValid) return aValid ? -1 : 1;
+    if (a !== b) return a < b ? -1 : 1;
+    return 0;
   }
 
   /**

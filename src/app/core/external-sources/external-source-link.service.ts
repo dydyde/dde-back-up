@@ -200,14 +200,8 @@ export class ExternalSourceLinkService {
     input: string,
     role: ExternalSourceRole = "context",
   ): Promise<ExternalSourceLink | null> {
-    const parsed = parseSiyuanBlockLink(input);
-    if (!parsed) {
-      this.toast.error(
-        "思源链接无效",
-        "请粘贴 siyuan://blocks/{id} 或思源块 ID",
-      );
-      return null;
-    }
+    const parsed = this.parseSiyuanInput(input);
+    if (!parsed) return null;
 
     await this.ensureLoaded();
     const existing = this.store
@@ -237,6 +231,55 @@ export class ExternalSourceLinkService {
     await this.cache.upsertPendingLink(link, { resetRetryCount: true });
     void this.flushPendingLinks();
     this.toast.success("已关联思源块");
+    return link;
+  }
+
+  async replaceSiyuanBlock(
+    linkId: string,
+    input: string,
+  ): Promise<ExternalSourceLink | null> {
+    const parsed = this.parseSiyuanInput(input);
+    if (!parsed) return null;
+
+    await this.ensureLoaded();
+    const existing = this.store.getLink(linkId);
+    if (!existing || existing.deletedAt) return null;
+    if (existing.targetId === parsed.blockId) return existing;
+
+    const duplicate = this.store
+      .activeLinksForTask(existing.taskId)
+      .find(
+        (link) =>
+          link.id !== existing.id &&
+          link.sourceType === "siyuan-block" &&
+          link.targetId === parsed.blockId,
+      );
+    if (duplicate) {
+      const now = new Date().toISOString();
+      const tombstone = { ...existing, deletedAt: now, updatedAt: now };
+      await this.persistLocal(tombstone);
+      await this.cache.deletePreviewsForLink(tombstone.id);
+      await this.cache.upsertPendingLink(tombstone, { resetRetryCount: true });
+      void this.flushPendingLinks();
+      this.toast.info("已切换到已有思源关联");
+      return duplicate;
+    }
+
+    const now = new Date().toISOString();
+    const link = this.normalizeLink({
+      ...existing,
+      targetId: parsed.blockId,
+      uri: parsed.uri,
+      label: `思源 ${shortenSiyuanBlockId(parsed.blockId)}`,
+      hpath: undefined,
+      deletedAt: null,
+      updatedAt: now,
+    });
+    await this.persistLocal(link);
+    await this.cache.deletePreviewsForLink(link.id);
+    await this.cache.upsertPendingLink(link, { resetRetryCount: true });
+    void this.flushPendingLinks();
+    this.toast.success("已更新思源关联");
     return link;
   }
 
@@ -576,6 +619,18 @@ export class ExternalSourceLinkService {
       sortOrder: Number.isFinite(link.sortOrder) ? link.sortOrder : 0,
       deletedAt: link.deletedAt ?? null,
     };
+  }
+
+  private parseSiyuanInput(
+    input: string,
+  ): NonNullable<ReturnType<typeof parseSiyuanBlockLink>> | null {
+    const parsed = parseSiyuanBlockLink(input);
+    if (parsed) return parsed;
+    this.toast.error(
+      "思源链接无效",
+      "请粘贴 siyuan://blocks/{id} 或思源块 ID",
+    );
+    return null;
   }
 
   private linkToRow(

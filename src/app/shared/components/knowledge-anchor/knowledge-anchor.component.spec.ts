@@ -22,12 +22,23 @@ describe('KnowledgeAnchorComponent', () => {
   };
 
   let fixture: ComponentFixture<KnowledgeAnchorComponent>;
+  let bindSiyuanBlock: ReturnType<typeof vi.fn>;
   let openLink: ReturnType<typeof vi.fn>;
   let preview: ReturnType<typeof vi.fn>;
+  let removeLink: ReturnType<typeof vi.fn>;
+  let replaceSiyuanBlock: ReturnType<typeof vi.fn>;
+  let editableInput: WritableSignal<boolean>;
   let previewModeInput: WritableSignal<'full' | 'deep-link-only'>;
 
   beforeEach(async () => {
+    bindSiyuanBlock = vi.fn().mockResolvedValue(link);
     openLink = vi.fn();
+    removeLink = vi.fn().mockResolvedValue(undefined);
+    replaceSiyuanBlock = vi.fn().mockResolvedValue({
+      ...link,
+      targetId: '20260426123456-def5678',
+      uri: 'siyuan://blocks/20260426123456-def5678?focus=1',
+    });
     preview = vi.fn().mockResolvedValue({
       status: 'ready',
       preview: {
@@ -47,9 +58,10 @@ describe('KnowledgeAnchorComponent', () => {
           useValue: {
             links: signal(0),
             activeLinksForTask: vi.fn().mockReturnValue([link]),
-            bindSiyuanBlock: vi.fn(),
+            bindSiyuanBlock,
             openLink,
-            removeLink: vi.fn().mockResolvedValue(undefined),
+            removeLink,
+            replaceSiyuanBlock,
           },
         },
         { provide: SiyuanPreviewService, useValue: { preview, abortActive: vi.fn() } },
@@ -58,11 +70,12 @@ describe('KnowledgeAnchorComponent', () => {
     }).compileComponents();
 
     fixture = TestBed.createComponent(KnowledgeAnchorComponent);
+    editableInput = signal(false);
     previewModeInput = signal<'full' | 'deep-link-only'>('full');
     Object.assign(fixture.componentInstance as unknown as Record<string, unknown>, {
       taskId: signal('task-1'),
       isMobile: signal(true),
-      editable: signal(false),
+      editable: editableInput,
       compact: signal(false),
       previewMode: previewModeInput,
     });
@@ -130,5 +143,68 @@ describe('KnowledgeAnchorComponent', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('shows task-block edit and delete actions when the anchor is editable', async () => {
+    editableInput.set(true);
+    fixture.detectChanges();
+
+    const editButton = fixture.nativeElement.querySelector('[data-testid="knowledge-anchor-edit"]') as HTMLButtonElement;
+    const removeButton = fixture.nativeElement.querySelector('[data-testid="knowledge-anchor-remove"]') as HTMLButtonElement;
+
+    expect(editButton).not.toBeNull();
+    expect(removeButton).not.toBeNull();
+
+    removeButton.click();
+    await fixture.whenStable();
+
+    expect(removeLink).toHaveBeenCalledWith(link.id);
+  });
+
+  it('keeps the editable form as an add-link path until edit mode is selected', async () => {
+    editableInput.set(true);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.detectChanges();
+
+    const input = fixture.nativeElement.querySelector('[data-testid="knowledge-anchor-input"]') as HTMLInputElement;
+    input.value = '20260426123456-ghi9012';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.detectChanges();
+
+    const submitButton = input.form?.querySelector('button[type="submit"]') as HTMLButtonElement | null;
+    submitButton?.click();
+    await fixture.whenStable();
+
+    expect(bindSiyuanBlock).toHaveBeenCalledWith('task-1', '20260426123456-ghi9012');
+    expect(replaceSiyuanBlock).not.toHaveBeenCalled();
+  });
+
+  it('replaces the current visible SiYuan link instead of adding a hidden second link', async () => {
+    editableInput.set(true);
+    fixture.detectChanges();
+
+    const editButton = fixture.nativeElement.querySelector('[data-testid="knowledge-anchor-edit"]') as HTMLButtonElement;
+    editButton.click();
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.detectChanges();
+
+    const input = fixture.nativeElement.querySelector('[data-testid="knowledge-anchor-input"]') as HTMLInputElement;
+    expect(input.value).toBe(link.uri);
+    input.value = '20260426123456-def5678';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.detectChanges();
+
+    const submitButton = input.form?.querySelector('button[type="submit"]') as HTMLButtonElement | null;
+    submitButton?.click();
+    await fixture.whenStable();
+
+    expect(replaceSiyuanBlock).toHaveBeenCalledWith(link.id, '20260426123456-def5678');
+    expect(bindSiyuanBlock).not.toHaveBeenCalled();
   });
 });

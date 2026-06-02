@@ -38,35 +38,56 @@ function loadPopoverModule(): Promise<typeof import('./knowledge-anchor-popover.
   template: `
     <div class="knowledge-anchor" [class.knowledge-anchor--compact]="compact()">
       @if (firstLink(); as link) {
-        <button
-          type="button"
-          data-testid="knowledge-anchor-chip"
-          class="knowledge-anchor-chip"
-          [attr.aria-label]="'思源锚点：' + displayLabel(link)"
-          (mouseenter)="onMouseEnter($event, link)"
-          (mouseleave)="onMouseLeave()"
-          (focus)="onFocus($event, link)"
-          (blur)="onMouseLeave()"
-          (contextmenu)="onContextMenu($event, link)"
-          (pointerdown)="onPointerDown($event, link)"
-          (pointermove)="onPointerMove($event)"
-          (pointerup)="onPointerEnd()"
-          (pointercancel)="onPointerEnd()"
-          (click)="onChipClick($event, link)">
-          <span aria-hidden="true">📎</span>
-          <span class="truncate">思源 {{ displayLabel(link) }}</span>
-        </button>
+        <div class="knowledge-anchor-row">
+          <button
+            type="button"
+            data-testid="knowledge-anchor-chip"
+            class="knowledge-anchor-chip"
+            [attr.aria-label]="'思源锚点：' + displayLabel(link)"
+            (mouseenter)="onMouseEnter($event, link)"
+            (mouseleave)="onMouseLeave()"
+            (focus)="onFocus($event, link)"
+            (blur)="onMouseLeave()"
+            (contextmenu)="onContextMenu($event, link)"
+            (pointerdown)="onPointerDown($event, link)"
+            (pointermove)="onPointerMove($event)"
+            (pointerup)="onPointerEnd()"
+            (pointercancel)="onPointerEnd()"
+            (click)="onChipClick($event, link)">
+            <span aria-hidden="true">📎</span>
+            <span class="truncate">思源 {{ displayLabel(link) }}</span>
+          </button>
+          @if (editable()) {
+            <button
+              type="button"
+              data-testid="knowledge-anchor-edit"
+              class="anchor-inline-action"
+              [attr.aria-label]="'修改思源关联：' + displayLabel(link)"
+              (click)="startEdit(link, $event)">修改</button>
+            <button
+              type="button"
+              data-testid="knowledge-anchor-remove"
+              class="anchor-inline-action anchor-inline-danger"
+              [attr.aria-label]="'删除思源关联：' + displayLabel(link)"
+              (click)="removeInline(link, $event)">删除</button>
+          }
+        </div>
       }
 
-      @if (editable()) {
-        <form class="mt-1 flex gap-1" (submit)="bind($event)">
+      @if (showEditorForm()) {
+        <form class="mt-1 flex gap-1" (submit)="bind($event)" (click)="$event.stopPropagation()">
           <input
             name="siyuanLink"
             [(ngModel)]="pendingInput"
             data-testid="knowledge-anchor-input"
             class="min-w-0 flex-1 rounded-md border border-slate-200 bg-white px-2 py-1 text-[11px] text-slate-600 outline-none focus:border-indigo-400 dark:border-stone-700 dark:bg-stone-800 dark:text-stone-200"
-            placeholder="粘贴思源块链接" />
-          <button type="submit" class="rounded-md bg-indigo-600 px-2 py-1 text-[10px] font-bold text-white hover:bg-indigo-500">关联</button>
+            [placeholder]="isReplacing() ? '粘贴新思源块链接，替换当前关联' : (firstLink() ? '粘贴思源块链接，新增关联' : '粘贴思源块链接')" />
+          <button type="submit" class="rounded-md bg-indigo-600 px-2 py-1 text-[10px] font-bold text-white hover:bg-indigo-500">
+            {{ isReplacing() ? '替换' : (firstLink() ? '新增' : '关联') }}
+          </button>
+          @if (isReplacing()) {
+            <button type="button" class="rounded-md border border-slate-200 px-2 py-1 text-[10px] font-bold text-slate-500 hover:bg-slate-50 dark:border-stone-700 dark:text-stone-300 dark:hover:bg-stone-800" (click)="cancelEdit($event)">取消</button>
+          }
         </form>
       }
 
@@ -105,9 +126,10 @@ function loadPopoverModule(): Promise<typeof import('./knowledge-anchor-popover.
               }
             }
           </div>
-          <div class="mt-4 grid grid-cols-3 gap-2">
+          <div class="mt-4 grid grid-cols-2 gap-2">
             <button type="button" class="sheet-action" (click)="open(link)">打开思源</button>
             <button type="button" class="sheet-action" (click)="refreshSheet(link)">刷新缓存</button>
+            @if (editable()) { <button type="button" class="sheet-action" (click)="editFromSheet(link)">修改关联</button> }
             @if (editable()) { <button type="button" class="sheet-action sheet-action-danger" (click)="remove(link)">解除关联</button> }
           </div>
         </section>
@@ -129,6 +151,7 @@ function loadPopoverModule(): Promise<typeof import('./knowledge-anchor-popover.
             <button type="button" class="menu-action" (click)="refreshFromMenu(link)">刷新缓存</button>
           }
           @if (editable()) {
+            <button type="button" class="menu-action" (click)="editFromMenu(link)">修改关联</button>
             <button type="button" class="menu-action menu-action-danger" (click)="removeFromMenu(link)">解除关联</button>
           }
         </section>
@@ -136,10 +159,17 @@ function loadPopoverModule(): Promise<typeof import('./knowledge-anchor-popover.
     </div>
   `,
   styles: [`
+    .knowledge-anchor-row { display: flex; min-width: 0; max-width: 100%; flex-wrap: wrap; align-items: center; gap: .25rem; }
     .knowledge-anchor-chip { display: inline-flex; max-width: 100%; align-items: center; gap: 0.25rem; border-radius: 999px; border: 1px solid rgba(99,102,241,.18); background: rgba(99,102,241,.06); padding: .18rem .45rem; font-size: 10px; color: rgb(79 70 229); transition: box-shadow .15s ease, border-color .15s ease, background .15s ease; }
     .knowledge-anchor-chip:hover, .knowledge-anchor-chip:focus-visible { border-color: rgba(99,102,241,.45); background: rgba(99,102,241,.1); box-shadow: 0 4px 14px rgba(79,70,229,.12); outline: none; }
     :host-context(.dark) .knowledge-anchor-chip { color: rgb(165 180 252); background: rgba(99,102,241,.14); border-color: rgba(129,140,248,.25); }
     .knowledge-anchor--compact .knowledge-anchor-chip { padding: .12rem .35rem; font-size: 9px; }
+    .anchor-inline-action { border-radius: 999px; border: 1px solid rgb(226 232 240); padding: .14rem .4rem; font-size: 10px; font-weight: 700; color: rgb(71 85 105); background: rgba(255,255,255,.84); }
+    .anchor-inline-action:hover, .anchor-inline-action:focus-visible { background: rgb(248 250 252); outline: none; }
+    .anchor-inline-danger { color: rgb(225 29 72); border-color: rgb(254 205 211); }
+    :host-context(.dark) .anchor-inline-action { background: rgba(41,37,36,.8); border-color: rgb(68 64 60); color: rgb(214 211 209); }
+    :host-context(.dark) .anchor-inline-action:hover, :host-context(.dark) .anchor-inline-action:focus-visible { background: rgb(41 37 36); }
+    :host-context(.dark) .anchor-inline-danger { color: rgb(251 113 133); border-color: rgb(136 19 55); }
     .sheet-action { border-radius: .6rem; border: 1px solid rgb(226 232 240); padding: .5rem .25rem; font-size: 11px; font-weight: 700; color: rgb(71 85 105); }
     .sheet-action-danger { color: rgb(225 29 72); }
     .menu-action { display: block; width: 100%; border-radius: .625rem; padding: .7rem .85rem; text-align: left; font-size: 13px; font-weight: 700; color: rgb(51 65 85); }
@@ -173,6 +203,13 @@ export class KnowledgeAnchorComponent implements OnDestroy {
   readonly sheetResult = signal<SiyuanPreviewResult>({ status: 'loading' });
   readonly actionMenuOpen = signal(false);
   readonly menuLink = signal<ExternalSourceLink | null>(null);
+  readonly editingLinkId = signal<string | null>(null);
+  readonly editingLink = computed(() => {
+    const linkId = this.editingLinkId();
+    return linkId ? this.links().find(link => link.id === linkId) ?? null : null;
+  });
+  readonly isReplacing = computed(() => this.editingLink() !== null);
+  readonly showEditorForm = computed(() => this.editable());
   pendingInput = '';
   /**
    * 触发底部 sheet 的元素引用，关闭后将焦点 restore 回原位，符合 dialog/aria-modal 规范。
@@ -211,11 +248,15 @@ export class KnowledgeAnchorComponent implements OnDestroy {
 
   async bind(event: Event): Promise<void> {
     event.preventDefault();
+    event.stopPropagation();
     const input = this.pendingInput.trim();
     const taskId = this.taskId();
     if (!input || !taskId) return;
-    const link = await this.linkService.bindSiyuanBlock(taskId, input);
-    if (link) this.pendingInput = '';
+    const editingLink = this.editingLink();
+    const link = editingLink
+      ? await this.linkService.replaceSiyuanBlock(editingLink.id, input)
+      : await this.linkService.bindSiyuanBlock(taskId, input);
+    if (link) this.clearEditor();
   }
 
   onMouseEnter(event: MouseEvent, link: ExternalSourceLink): void {
@@ -311,7 +352,29 @@ export class KnowledgeAnchorComponent implements OnDestroy {
 
   async remove(link: ExternalSourceLink): Promise<void> {
     await this.linkService.removeLink(link.id);
+    if (this.editingLinkId() === link.id) this.clearEditor();
     this.closeSheet();
+  }
+
+  startEdit(link: ExternalSourceLink, event?: Event): void {
+    event?.preventDefault();
+    event?.stopPropagation();
+    this.closeSheet();
+    this.closeActionMenu();
+    this.pendingInput = link.uri || link.targetId;
+    this.editingLinkId.set(link.id);
+  }
+
+  cancelEdit(event?: Event): void {
+    event?.preventDefault();
+    event?.stopPropagation();
+    this.clearEditor();
+  }
+
+  async removeInline(link: ExternalSourceLink, event: Event): Promise<void> {
+    event.preventDefault();
+    event.stopPropagation();
+    await this.remove(link);
   }
 
   displayLabel(link: ExternalSourceLink): string {
@@ -372,9 +435,22 @@ export class KnowledgeAnchorComponent implements OnDestroy {
     this.openSheet(link, origin, true);
   }
 
+  editFromMenu(link: ExternalSourceLink): void {
+    this.startEdit(link);
+  }
+
+  editFromSheet(link: ExternalSourceLink): void {
+    this.startEdit(link);
+  }
+
   async removeFromMenu(link: ExternalSourceLink): Promise<void> {
     this.closeActionMenu();
     await this.remove(link);
+  }
+
+  private clearEditor(): void {
+    this.pendingInput = '';
+    this.editingLinkId.set(null);
   }
 
   private openSheet(link: ExternalSourceLink, origin?: HTMLElement, forceRefresh = false): void {
