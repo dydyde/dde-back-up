@@ -37,9 +37,32 @@ function createTask(overrides: Partial<Task> & Pick<Task, 'id' | 'title'>): Task
   } as Task;
 }
 
+function createGraphLinksModel(): go.GraphLinksModel {
+  return new go.GraphLinksModel([], [], {
+    linkKeyProperty: 'key',
+    nodeKeyProperty: 'key',
+    linkFromPortIdProperty: 'fromPortId',
+    linkToPortIdProperty: 'toPortId',
+  });
+}
+
+function createDiagram(model: go.GraphLinksModel): go.Diagram {
+  return {
+    model,
+    selection: { each: vi.fn() },
+    nodes: { each: vi.fn() },
+    clearSelection: vi.fn(),
+    startTransaction: vi.fn(),
+    commitTransaction: vi.fn(),
+    skipsUndoManager: false,
+  } as unknown as go.Diagram;
+}
+
 describe('FlowDiagramDataService', () => {
   let service: FlowDiagramDataService;
   let buildDiagramData: ReturnType<typeof vi.fn>;
+  let getLastUpdateType: ReturnType<typeof vi.fn>;
+  let searchQuery: ReturnType<typeof signal<string>>;
 
   const rootTask = createTask({ id: 'root-task', title: 'Root', stage: 1, displayId: '1' });
   const childTask = createTask({
@@ -60,6 +83,8 @@ describe('FlowDiagramDataService', () => {
   };
 
   beforeEach(() => {
+    getLastUpdateType = vi.fn(() => 'content');
+    searchQuery = signal('');
     buildDiagramData = vi.fn(() => ({
       nodeDataArray: [
         { key: 'root-task', stage: 1, status: 'active', parentId: null, loc: '0 0' },
@@ -74,8 +99,8 @@ describe('FlowDiagramDataService', () => {
       providers: [
         FlowDiagramDataService,
         { provide: ProjectStateService, useValue: { activeProject: signal(project), getViewState: vi.fn(() => project.viewState) } },
-        { provide: UiStateService, useValue: { searchQuery: signal(''), activeView: signal<'text' | 'flow'>('flow') } },
-        { provide: TaskOperationAdapterService, useValue: { getLastUpdateType: vi.fn(() => 'data') } },
+        { provide: UiStateService, useValue: { searchQuery, activeView: signal<'text' | 'flow'>('flow') } },
+        { provide: TaskOperationAdapterService, useValue: { getLastUpdateType } },
         { provide: SyncCoordinatorService, useValue: {} },
         { provide: LoggerService, useValue: { category: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() }) } },
         { provide: ToastService, useValue: { error: vi.fn(), info: vi.fn(), success: vi.fn(), warning: vi.fn() } },
@@ -186,5 +211,64 @@ describe('FlowDiagramDataService', () => {
     const refreshedLink = model.linkDataArray.find(link => link.key === 'root-task-child-task');
     expect(refreshedLink?.points).toBeUndefined();
     expect(refreshedLink?.curviness).toBe(20);
+  });
+
+  it('refreshes task blocks when only displayId changes after a position update', () => {
+    buildDiagramData.mockImplementation((tasks: Task[]) => ({
+      nodeDataArray: tasks.map(task => ({
+        key: task.id,
+        title: task.title,
+        displayId: task.displayId,
+        stage: task.stage,
+        status: task.status,
+        parentId: task.parentId,
+        loc: `${task.x} ${task.y}`,
+      })),
+      linkDataArray: [],
+    }));
+    const model = createGraphLinksModel();
+
+    service.setDiagram(createDiagram(model));
+    service.updateDiagram([{ ...rootTask, displayId: '' }], true);
+    getLastUpdateType.mockReturnValue('position');
+    service.updateDiagram([{ ...rootTask, displayId: '1' }]);
+
+    expect(buildDiagramData).toHaveBeenCalledTimes(2);
+    expect(model.nodeDataArray.find(node => node.key === rootTask.id)?.displayId).toBe('1');
+  });
+
+  it('keeps position-only updatedAt changes on the lightweight path', () => {
+    buildDiagramData.mockImplementation((tasks: Task[]) => ({
+      nodeDataArray: tasks.map(task => ({
+        key: task.id,
+        title: task.title,
+        displayId: task.displayId,
+        stage: task.stage,
+        status: task.status,
+        parentId: task.parentId,
+        loc: `${task.x} ${task.y}`,
+      })),
+      linkDataArray: [],
+    }));
+    const model = createGraphLinksModel();
+
+    service.setDiagram(createDiagram(model));
+    service.updateDiagram([rootTask], true);
+    getLastUpdateType.mockReturnValue('position');
+    service.updateDiagram([{ ...rootTask, updatedAt: '2026-06-01T00:00:01.000Z', x: 120, y: 80 }]);
+
+    expect(buildDiagramData).toHaveBeenCalledTimes(1);
+  });
+
+  it('rebuilds when searchable content changes without a displayId change', () => {
+    const model = createGraphLinksModel();
+
+    searchQuery.set('needle');
+    service.setDiagram(createDiagram(model));
+    service.updateDiagram([{ ...rootTask, content: 'old content' }], true);
+    getLastUpdateType.mockReturnValue('position');
+    service.updateDiagram([{ ...rootTask, content: 'needle content', updatedAt: '2026-06-01T00:00:01.000Z' }]);
+
+    expect(buildDiagramData).toHaveBeenCalledTimes(2);
   });
 });

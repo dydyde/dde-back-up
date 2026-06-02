@@ -121,6 +121,21 @@ describe('FlowDiagramConfigService', () => {
     expect(unassignedNode?.displayIdColor).toBe(styles.text.displayIdColor);
   });
 
+  it('falls back to a visible placeholder when an assigned task has no displayId yet', () => {
+    const task = createTask({ id: 'missing-display-id', title: 'Missing Number', stage: 1, displayId: '' });
+    const result = service.buildDiagramData(
+      [task],
+      createProject([task]),
+      '',
+      new Map<string, go.ObjectData>(),
+      { dockedTaskIds: new Set<string>(), focusedTaskId: null },
+    );
+
+    expect(result.nodeDataArray[0]?.displayId).toBe('?');
+    expect(result.nodeDataArray[0]?.parentId).toBeNull();
+    expect(result.nodeDataArray[0]?.status).toBe('active');
+  });
+
   it('keeps cross-tree relation blocks embedded by staggering repeated stage-boundary links along the line', () => {
     const tasks = [
       createTask({ id: 'left-a', title: 'Left A', stage: 1, displayId: '1' }),

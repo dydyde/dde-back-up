@@ -17,6 +17,8 @@ export interface GoJSNodeData {
   title: string;
   displayId: string;
   stage: number | null;
+  parentId: string | null;
+  status: Task['status'];
   rank?: number;
   loc: string;
   color: string;
@@ -212,8 +214,10 @@ export class FlowDiagramConfigService {
       nodeDataArray.push({
         key: task.id,
         title: task.title || '未命名任务',
-        displayId: this.compressDisplayId(task.displayId),
+        displayId: this.compressDisplayId(this.resolveDisplayId(task)),
         stage: task.stage,
+        parentId: task.parentId,
+        status: task.status,
         // 【关键修复 2026-04-16】rank 字段必须下沉到 nodeDataArray，否则
         // 自动布局服务 (FlowLayoutService) 的 compareLayoutNodes/compareRootNodes
         // 会读到 undefined，退化为仅按 key 字符串排序，rank 这个用户意图
@@ -646,6 +650,10 @@ export class FlowDiagramConfigService {
   /**
    * 压缩 displayId 显示（如 A,A,A,A,A → A⁵）
    */
+  private resolveDisplayId(task: Task): string {
+    return task.displayId || '?';
+  }
+
   private compressDisplayId(displayId: string): string {
     if (!displayId || displayId === '?') return displayId;
 

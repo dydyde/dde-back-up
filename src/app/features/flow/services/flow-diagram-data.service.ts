@@ -60,10 +60,11 @@ export class FlowDiagramDataService {
 
   // ========== 【2026-02-25 性能优化】增量更新缓存 ==========
   /**
-   * 上一次成功更新图表时的任务指纹（key: updatedAt + title + parentId + stage + status + parkingMeta）
+    * 上一次成功更新图表时的任务指纹（key: updatedAt + title + displayId + parentId + stage + status + parkingMeta）
    * 用于跳过无变化的 buildDiagramData 全量重建
    */
   private lastTaskFingerprint = '';
+  private lastTaskVisualFingerprint = '';
   private lastConnectionSignatureForData = '';
   private lastSearchQuery = '';
   private lastDockFingerprint = '';
@@ -235,18 +236,20 @@ export class FlowDiagramDataService {
       const model = this.diagram.model as go.GraphLinksModel;
       const activeTasks = tasks.filter(t => !t.deletedAt);
       const searchQuery = this.uiState.searchQuery();
+      const taskFingerprint = this.computeTaskFingerprint(activeTasks);
+      const taskVisualFingerprint = this.computeTaskVisualFingerprint(activeTasks, searchQuery.trim().length > 0);
+      const dockFingerprint = this.computeDockFingerprint();
+      const activeConns = project.connections?.filter(c => !c.deletedAt) ?? [];
+      const connSig = this.computeConnectionSignature(activeConns);
+      const hasTaskDataChange = taskFingerprint !== this.lastTaskFingerprint;
+      const hasTaskVisualChange = taskVisualFingerprint !== this.lastTaskVisualFingerprint;
 
       // 【2026-04-24 性能优化】先做最便宜的指纹短路，避免 30+ 任务场景下
       // 每次 signal emission 都执行 O(n) 的 currentNodeMap 构建 + detectStructuralChange。
-      // 指纹已覆盖 title/updatedAt/parentId/stage/status/parkingMeta，再叠加连接与
+      // 指纹已覆盖 title/updatedAt/displayId/parentId/stage/status/parkingMeta，再叠加连接与
       // docks/search 指纹，足以判断“任何影响图表显示的字段是否变化”。
       if (!forceRefresh) {
-        const taskFingerprint = this.computeTaskFingerprint(activeTasks);
-        const dockFingerprint = this.computeDockFingerprint();
-        const activeConns = project.connections?.filter(c => !c.deletedAt) ?? [];
-        const connSig = this.computeConnectionSignature(activeConns);
-
-        if (taskFingerprint === this.lastTaskFingerprint
+        if (!hasTaskDataChange
             && connSig === this.lastConnectionSignatureForData
             && searchQuery === this.lastSearchQuery
             && dockFingerprint === this.lastDockFingerprint) {
@@ -267,7 +270,7 @@ export class FlowDiagramDataService {
 
       const hasStructuralChange = this.detectStructuralChange(currentNodeMap, activeTasks);
 
-      if (lastUpdateType === 'position' && !forceRefresh && !hasStructuralChange) {
+      if (lastUpdateType === 'position' && !forceRefresh && !hasStructuralChange && !hasTaskVisualChange) {
         return;
       }
 
@@ -317,11 +320,11 @@ export class FlowDiagramDataService {
       this.diagram.commitTransaction('update');
 
       // 【2026-02-25 性能优化】更新指纹缓存，下次无变化时可快速跳过
-      this.lastTaskFingerprint = this.computeTaskFingerprint(activeTasks);
-      const activeConnsForCache = project.connections?.filter(c => !c.deletedAt) ?? [];
-      this.lastConnectionSignatureForData = this.computeConnectionSignature(activeConnsForCache);
+      this.lastTaskFingerprint = taskFingerprint;
+      this.lastTaskVisualFingerprint = taskVisualFingerprint;
+      this.lastConnectionSignatureForData = connSig;
       this.lastSearchQuery = searchQuery;
-      this.lastDockFingerprint = this.computeDockFingerprint();
+      this.lastDockFingerprint = dockFingerprint;
 
       if (selectedKeys.size > 0) {
         // 先清除选中再恢复，确保 selectionChanged 回调触发（数据合并后 binding 可能覆盖了选中态边框）
@@ -558,6 +561,7 @@ export class FlowDiagramDataService {
     this._familyColorLogged = false;
     this.pendingAutoFitToContents = false;
     this.lastTaskFingerprint = '';
+    this.lastTaskVisualFingerprint = '';
     this.lastConnectionSignatureForData = '';
     this.lastSearchQuery = '';
     this.lastDockFingerprint = '';
@@ -577,12 +581,37 @@ export class FlowDiagramDataService {
       parts.push(
         t.id, '|',
         t.title, '|',
+        t.displayId || '', '|',
         t.updatedAt || '', '|',
         t.parentId || '', '|',
         String(t.stage), '|',
         t.status || '', '|',
         t.parkingMeta?.state || '', ';'
       );
+    }
+    return parts.join('');
+  }
+
+  private computeTaskVisualFingerprint(tasks: Task[], includeSearchFields: boolean): string {
+    const parts: string[] = [];
+    for (const t of tasks) {
+      parts.push(
+        t.id, '|',
+        t.title, '|',
+        t.displayId || '', '|',
+        t.parentId || '', '|',
+        String(t.stage), '|',
+        String(t.rank ?? ''), '|',
+        t.status || '', '|',
+        t.parkingMeta?.state || '', ';'
+      );
+      if (includeSearchFields) {
+        parts.push(
+          t.content || '', '|',
+          (t.attachments ?? []).map(attachment => attachment.name).join(','), '|',
+          (t.tags ?? []).join(','), ';'
+        );
+      }
     }
     return parts.join('');
   }
