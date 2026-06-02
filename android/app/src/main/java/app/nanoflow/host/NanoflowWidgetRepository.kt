@@ -4,9 +4,7 @@ import android.appwidget.AppWidgetManager
 import android.content.ComponentName
 import android.content.Context
 import android.net.Uri
-import com.google.firebase.messaging.FirebaseMessaging
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -585,37 +583,13 @@ class NanoflowWidgetRepository(private val context: Context) {
       return
     }
 
-    try {
-      val token = FirebaseMessaging.getInstance().token.await()
-      if (token.isNullOrBlank()) {
-        NanoflowWidgetTelemetry.warn(
-          "widget_push_token_repair_skipped",
-          mapOf(
-            "appWidgetId" to appWidgetId,
-            "reason" to "empty-token",
-          ),
-        )
-        return
-      }
-
-      rememberPushToken(token)
-      NanoflowWidgetTelemetry.info(
-        "widget_push_token_repair_queued",
-        mapOf(
-          "appWidgetId" to appWidgetId,
-          "tokenLength" to token.length,
-        ),
-      )
-    } catch (error: Throwable) {
-      NanoflowWidgetTelemetry.warn(
-        "widget_push_token_repair_failed",
-        mapOf(
-          "appWidgetId" to appWidgetId,
-          "errorClass" to (error::class.simpleName ?: "unknown"),
-        ),
-        error,
-      )
-    }
+    NanoflowWidgetTelemetry.warn(
+      "widget_push_token_repair_skipped",
+      mapOf(
+        "appWidgetId" to appWidgetId,
+        "reason" to "token-fetch-deferred",
+      ),
+    )
   }
 
   suspend fun refreshInstalledWidgets() {

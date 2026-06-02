@@ -6,6 +6,8 @@
     <string name="nanoflow_widget_setup_required">请先打开 NanoFlow 完成初始化</string>
     <string name="nanoflow_widget_setup_title">Widget 尚未连接</string>
     <string name="nanoflow_widget_setup_detail">打开 NanoFlow 后会自动完成绑定并刷新摘要</string>
+    <string name="nanoflow_widget_bootstrap_failed_toast">Widget 连接未完成，请回到桌面重新点按组件</string>
+    <string name="nanoflow_widget_bootstrap_refresh_delayed_toast">Widget 已连接，摘要稍后会自动刷新</string>
     <string name="nanoflow_widget_setup_instance_changed">组件实例已变化，请打开 NanoFlow 重新连接</string>
     <string name="nanoflow_widget_setup_context_fixing">旧摘要上下文已失效，刷新或打开 NanoFlow 即可恢复</string>
     <string name="nanoflow_widget_auth_required">请重新登录 NanoFlow</string>

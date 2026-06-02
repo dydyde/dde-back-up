@@ -6,6 +6,16 @@ function readText(relativePath: string): string {
   return fs.readFileSync(path.join(process.cwd(), relativePath), 'utf8');
 }
 
+function sliceBetween(source: string, startToken: string, endToken: string): string {
+  const start = source.indexOf(startToken);
+  const end = source.indexOf(endToken, start + startToken.length);
+
+  expect(start).toBeGreaterThanOrEqual(0);
+  expect(end).toBeGreaterThan(start);
+
+  return source.slice(start, end);
+}
+
 describe('android host contract', () => {
   it('declares the TWA launcher, bootstrap callback, and widget provider in the manifest', () => {
     const manifest = readText('android/app/src/main/AndroidManifest.xml');
@@ -24,6 +34,11 @@ describe('android host contract', () => {
 
   it('keeps widget launches on the TWA path without launcher watchdog fallback code', () => {
     const launcher = readText('android/app/src/main/java/app/nanoflow/host/NanoflowTwaLauncherActivity.kt');
+    const launchFlow = sliceBetween(
+      launcher,
+      'private fun launchFromCurrentIntent() {',
+      '\n  private fun resetReactiveRefreshGateIfNeeded()',
+    );
 
     expect(launcher).toContain('class NanoflowTwaLauncherActivity : LauncherActivity()');
     expect(launcher).toContain('override fun shouldLaunchImmediately(): Boolean = false');
@@ -37,6 +52,45 @@ describe('android host contract', () => {
     expect(launcher).not.toContain('TWA_LAUNCH_TIMEOUT_MS');
     expect(launcher).not.toContain('scheduleLaunchWatchdog');
     expect(launcher).not.toContain('handleLaunchTimeout');
+    expect(launchFlow.indexOf('launchTwa()')).toBeGreaterThan(launchFlow.indexOf('logLaunchStarted()'));
+    expect(launchFlow).not.toContain('finish()');
+    expect(launchFlow).not.toContain('startActivity(');
+    expect(launchFlow).not.toContain('maybePromptOnLaunch');
+  });
+
+  it('bypasses the ABH saved-state finish branch that caused app-icon white flashes', () => {
+    const launcher = readText('android/app/src/main/java/app/nanoflow/host/NanoflowTwaLauncherActivity.kt');
+    const onCreate = sliceBetween(
+      launcher,
+      'override fun onCreate(savedInstanceState: Bundle?) {',
+      '\n  override fun onDestroy()',
+    );
+    const superOnCreateArgs = Array.from(onCreate.matchAll(/super\.onCreate\(([^)]*)\)/g))
+      .map(match => match[1].trim());
+
+    expect(superOnCreateArgs).toEqual(['null']);
+    expect(onCreate).toContain('launchFromCurrentIntent()');
+    expect(onCreate.indexOf('launchFromCurrentIntent()')).toBeGreaterThan(onCreate.indexOf('super.onCreate(null)'));
+    expect(onCreate).not.toContain('super.onCreate(savedInstanceState)');
+    expect(onCreate).not.toMatch(/\n\s*finish\(\)\s*\n/);
+  });
+
+  it('keeps MIUI autostart repair out of the TWA launcher path', () => {
+    const launcher = readText('android/app/src/main/java/app/nanoflow/host/NanoflowTwaLauncherActivity.kt');
+    const guide = readText('android/app/src/main/java/app/nanoflow/host/MiuiAutostartGuide.kt');
+    const onCreate = sliceBetween(
+      launcher,
+      'override fun onCreate(savedInstanceState: Bundle?) {',
+      '\n  override fun onDestroy()',
+    );
+
+    expect(onCreate).toContain('super.onCreate(null)');
+    expect(onCreate).toContain('launchFromCurrentIntent()');
+    expect(onCreate).not.toContain('MiuiAutostartGuide.maybePromptOnLaunch');
+    expect(onCreate).not.toMatch(/\n\s*finish\(\)\s*\n/);
+    expect(launcher).not.toContain('MiuiAutostartGuide');
+    expect(launcher).not.toContain('startActivity(');
+    expect(guide).toContain('不能放进 NanoflowTwaLauncherActivity 的主启动链路');
   });
 
   it('uses authenticated web bootstrap instead of native widget-register calls', () => {

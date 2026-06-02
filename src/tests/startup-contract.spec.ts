@@ -80,6 +80,22 @@ describe('startup launch contract', () => {
   it('Android TWA launcher should reuse the existing task on warm app-icon opens', () => {
     const manifestPath = path.join(process.cwd(), 'android', 'app', 'src', 'main', 'AndroidManifest.xml');
     const manifest = fs.readFileSync(manifestPath, 'utf8');
+    const launcherPath = path.join(
+      process.cwd(),
+      'android',
+      'app',
+      'src',
+      'main',
+      'java',
+      'app',
+      'nanoflow',
+      'host',
+      'NanoflowTwaLauncherActivity.kt',
+    );
+    const launcher = fs.readFileSync(
+      launcherPath,
+      'utf8',
+    );
     const activityMatch = manifest.match(/<activity\s+[^>]*android:name="app\.nanoflow\.host\.NanoflowTwaLauncherActivity"[\s\S]*?<intent-filter>/);
 
     expect(activityMatch?.[0]).toContain('android:alwaysRetainTaskState="true"');
@@ -89,6 +105,34 @@ describe('startup launch contract', () => {
     expect(activityMatch?.[0]).not.toContain('android:taskAffinity=""');
     expect(activityMatch?.[0]).not.toContain('android:finishOnTaskLaunch="true"');
     expect(activityMatch?.[0]).not.toContain('android:excludeFromRecents="true"');
+    expect(launcher).toContain('super.onCreate(null)');
+    expect(launcher).not.toContain('MiuiAutostartGuide.maybePromptOnLaunch');
+  });
+
+  it('Android TWA launcher should avoid ABH splash bitmap metadata that can stall handoff', () => {
+    const manifestPath = path.join(process.cwd(), 'android', 'app', 'src', 'main', 'AndroidManifest.xml');
+    const stylesPath = path.join(process.cwd(), 'android', 'app', 'src', 'main', 'res', 'values', 'styles.xml');
+    const postSplashPath = path.join(
+      process.cwd(),
+      'android',
+      'app',
+      'src',
+      'main',
+      'res',
+      'drawable',
+      'nanoflow_twa_post_splash.xml',
+    );
+    const manifest = fs.readFileSync(manifestPath, 'utf8');
+    const styles = fs.readFileSync(stylesPath, 'utf8');
+    const postSplash = fs.readFileSync(postSplashPath, 'utf8');
+
+    expect(manifest).not.toContain('android.support.customtabs.trusted.SPLASH_IMAGE_DRAWABLE');
+    expect(manifest).not.toContain('android.support.customtabs.trusted.SPLASH_SCREEN_BACKGROUND_COLOR');
+    expect(manifest).not.toContain('android.support.customtabs.trusted.SPLASH_SCREEN_FADE_OUT_DURATION');
+    expect(styles).toContain('<style name="Theme.NanoFlow.Twa.Launcher" parent="Theme.SplashScreen">');
+    expect(styles).toContain('<item name="postSplashScreenTheme">@style/Theme.NanoFlow.Twa</item>');
+    expect(postSplash).toContain('@color/nanoflow_twa_launch_background');
+    expect(postSplash).not.toContain('nanoflow_launcher_icon');
   });
 
   it('manifest launch colors should match native TWA and web loader background', () => {

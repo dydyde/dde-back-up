@@ -10,6 +10,7 @@ import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import kotlinx.coroutines.tasks.await
+import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.TimeUnit
 
 class NanoflowWidgetRefreshWorker(
@@ -21,16 +22,10 @@ class NanoflowWidgetRefreshWorker(
     val reason = inputData.getString("reason") ?: "unknown"
     NanoflowWidgetTelemetry.info("widget_refresh_started", mapOf("reason" to reason))
 
-    // 2026-04-21 FCM 收敛补丁：每次 refresh 时机会性地确保本地 pendingPushToken 有值。
-    // 理由：`FirebaseMessagingService.onNewToken` 只在 token 发生变化时回调，首装 token
-    // 可能在 FCM 自动注册瞬间回调但 Service 还没起来就被丢；或者 token 因 Play 服务重置
-    // 丢失后永远补不上。通过 FirebaseMessaging.getInstance().token 显式拉取可覆盖这些
-    // edge case —— 调用本身幂等，拉到已有 token 只写一次 DataStore。guard 在 FCM 未就绪
-    // 构建（无 google-services.json）时完全跳过，不引入运行时依赖。
-    ensureFcmTokenPersisted(applicationContext)
-
-    return runCatching {
+    var refreshSucceeded = false
+    val result = runCatching {
       repository.refreshInstalledWidgets()
+      refreshSucceeded = true
       NanoflowWidgetTelemetry.info("widget_refresh_succeeded", mapOf("reason" to reason))
       Result.success()
     }.getOrElse { error ->
@@ -40,10 +35,13 @@ class NanoflowWidgetRefreshWorker(
         error,
       )
       Result.retry()
-    }.also {
-      // 通知所有已安装 widget 重新渲染（原生 RemoteViews 路径）。
-      NanoflowWidgetReceiver.refreshAllWidgets(applicationContext)
     }
+    // 通知所有已安装 widget 重新渲染（原生 RemoteViews 路径）。
+    NanoflowWidgetReceiver.refreshAllWidgets(applicationContext)
+    if (refreshSucceeded) {
+      ensureFcmTokenPersisted(applicationContext)
+    }
+    return result
   }
 
   private suspend fun ensureFcmTokenPersisted(context: Context) {
@@ -52,16 +50,30 @@ class NanoflowWidgetRefreshWorker(
       return
     }
     try {
-      val token = com.google.firebase.messaging.FirebaseMessaging.getInstance()
-        .token
-        .await()
-      if (!token.isNullOrBlank()) {
-        NanoflowWidgetRepository(context).rememberPushToken(token)
-        NanoflowWidgetTelemetry.info(
-          "widget_push_token_ensured",
-          mapOf("tokenLength" to token.length, "source" to "worker-ensure"),
-        )
+      val token = withTimeoutOrNull(FCM_TOKEN_ENSURE_TIMEOUT_MS) {
+        com.google.firebase.messaging.FirebaseMessaging.getInstance()
+          .token
+          .await()
       }
+      if (token == null) {
+        NanoflowWidgetTelemetry.warn(
+          "widget_push_token_ensure_skipped",
+          mapOf("reason" to "token-timeout", "timeoutMs" to FCM_TOKEN_ENSURE_TIMEOUT_MS),
+        )
+        return
+      }
+      if (token.isBlank()) {
+        NanoflowWidgetTelemetry.warn(
+          "widget_push_token_ensure_skipped",
+          mapOf("reason" to "empty-token"),
+        )
+        return
+      }
+      NanoflowWidgetRepository(context).rememberPushToken(token)
+      NanoflowWidgetTelemetry.info(
+        "widget_push_token_ensured",
+        mapOf("tokenLength" to token.length, "source" to "worker-post-refresh"),
+      )
     } catch (error: Throwable) {
       NanoflowWidgetTelemetry.warn(
         "widget_push_token_ensure_failed",
@@ -78,6 +90,7 @@ class NanoflowWidgetRefreshWorker(
     private const val FOCUS_WAIT_REMINDER_WORK_PREFIX = "nanoflow-widget-focus-wait-reminder"
     private const val GATE_READ_COOLDOWN_REFRESH_WORK_PREFIX = "nanoflow-widget-gate-read-cooldown"
     private const val GATE_READ_REAPPEAR_COOLDOWN_MS = 30 * 60 * 1000L
+    private const val FCM_TOKEN_ENSURE_TIMEOUT_MS = 2_000L
     private const val TWA_SESSION_BURST_PREFS = "nanoflow-widget-twa-session-burst"
     private const val TWA_SESSION_BURST_LAST_AT_KEY = "last_scheduled_at"
     private const val TWA_SESSION_BURST_MIN_INTERVAL_MS = 30_000L

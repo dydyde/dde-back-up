@@ -35,8 +35,9 @@ object MiuiAutostartGuide {
   private const val KEY_LAST_PROMPTED_VERSION_CODE = "last_prompted_version_code"
 
   /**
-   * 应在 LauncherActivity.onCreate 尾部调用。内部自带"每版本只引导一次"节流，
-   * 返回 true 表示已成功拉起设置页，调用方应停止当前 app 启动链，避免把设置页盖掉。
+   * 只能由明确的自启动修复入口调用，不能放进 NanoflowTwaLauncherActivity 的主启动链路。
+   * TWA Launcher 是纯 trampoline；在 launchTwa() 前拉起设置页并 finish
+   * 会让桌面图标启动退化为白屏闪退。内部自带"每版本只引导一次"节流。
    */
   fun maybePromptOnLaunch(context: Context): Boolean {
     if (!isMiuiLikeDevice()) {
