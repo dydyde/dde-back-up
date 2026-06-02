@@ -12,6 +12,7 @@ const authClientMock = {
     getSession: vi.fn().mockResolvedValue({ data: { session: null }, error: null }),
     signInWithPassword: vi.fn().mockResolvedValue({ data: {}, error: null }),
     signOut: vi.fn().mockResolvedValue(undefined),
+    refreshSession: vi.fn().mockResolvedValue({ data: { session: null }, error: null }),
     startAutoRefresh: vi.fn().mockResolvedValue(undefined),
     stopAutoRefresh: vi.fn().mockResolvedValue(undefined),
   },
@@ -70,6 +71,7 @@ describe('SupabaseClientService', () => {
     authClientMock.auth.getSession.mockResolvedValue({ data: { session: null }, error: null });
     authClientMock.auth.signInWithPassword.mockResolvedValue({ data: {}, error: null });
     authClientMock.auth.signOut.mockResolvedValue(undefined);
+    authClientMock.auth.refreshSession.mockResolvedValue({ data: { session: null }, error: null });
     authClientMock.auth.startAutoRefresh.mockResolvedValue(undefined);
     authClientMock.auth.stopAutoRefresh.mockResolvedValue(undefined);
     setVisibilityState('visible');
@@ -395,6 +397,138 @@ describe('SupabaseClientService', () => {
       expect(fetchSpy).toHaveBeenCalledTimes(2);
       expect(response.status).toBe(200);
       expect(service.isOfflineMode()).toBe(false);
+    });
+
+    it('只读 RPC POST 返回 504 时，应按网关瞬时故障路径重试', async () => {
+      vi.useFakeTimers();
+      const mutable = service as unknown as {
+        canInitialize: boolean;
+        supabaseUrl: string;
+        supabaseAnonKey: string;
+        buildClientOptions: () => { global: { fetch: (url: RequestInfo | URL, options?: RequestInit) => Promise<Response> } };
+      };
+      mutable.canInitialize = true;
+      mutable.supabaseUrl = 'https://example.supabase.co';
+      mutable.supabaseAnonKey = 'anon-key';
+      fetchSpy
+        .mockResolvedValueOnce(new Response('Gateway timeout', { status: 504 }))
+        .mockResolvedValueOnce(new Response('{"ok":true}', { status: 200 }));
+
+      const responsePromise = mutable.buildClientOptions().global.fetch(
+        'https://example.supabase.co/rest/v1/rpc/get_full_project_data',
+        { method: 'POST', body: '{"p_project_id":"proj-1"}' }
+      );
+
+      await vi.runAllTimersAsync();
+      const response = await responsePromise;
+
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+      expect(response.status).toBe(200);
+      expect(service.isOfflineMode()).toBe(false);
+    });
+
+    it('写入 RPC POST 返回 504 时，不应自动网关重试', async () => {
+      const mutable = service as unknown as {
+        canInitialize: boolean;
+        supabaseUrl: string;
+        supabaseAnonKey: string;
+        buildClientOptions: () => { global: { fetch: (url: RequestInfo | URL, options?: RequestInit) => Promise<Response> } };
+      };
+      mutable.canInitialize = true;
+      mutable.supabaseUrl = 'https://example.supabase.co';
+      mutable.supabaseAnonKey = 'anon-key';
+      fetchSpy.mockResolvedValueOnce(new Response('Gateway timeout', { status: 504 }));
+
+      const response = await mutable.buildClientOptions().global.fetch(
+        'https://example.supabase.co/rest/v1/rpc/sync_upsert_task',
+        { method: 'POST', body: '{"payload":{}}' }
+      );
+
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      expect(response.status).toBe(504);
+    });
+
+    it('Request 对象写入 RPC POST 返回 504 时，不应按默认 GET 重试', async () => {
+      const mutable = service as unknown as {
+        canInitialize: boolean;
+        supabaseUrl: string;
+        supabaseAnonKey: string;
+        buildClientOptions: () => { global: { fetch: (url: RequestInfo | URL, options?: RequestInit) => Promise<Response> } };
+      };
+      mutable.canInitialize = true;
+      mutable.supabaseUrl = 'https://example.supabase.co';
+      mutable.supabaseAnonKey = 'anon-key';
+      fetchSpy.mockResolvedValueOnce(new Response('Gateway timeout', { status: 504 }));
+      const request = new Request('https://example.supabase.co/rest/v1/rpc/sync_upsert_task', {
+        method: 'POST',
+        body: '{"payload":{}}',
+      });
+
+      const response = await mutable.buildClientOptions().global.fetch(request);
+
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      expect(response.status).toBe(504);
+    });
+
+    it('写入 RPC 401 自愈后返回 504 时，不应叠加自动网关重试', async () => {
+      const mutable = service as unknown as {
+        canInitialize: boolean;
+        supabaseUrl: string;
+        supabaseAnonKey: string;
+        supabase: typeof authClientMock;
+        buildClientOptions: () => { global: { fetch: (url: RequestInfo | URL, options?: RequestInit) => Promise<Response> } };
+      };
+      mutable.canInitialize = true;
+      mutable.supabaseUrl = 'https://example.supabase.co';
+      mutable.supabaseAnonKey = 'anon-key';
+      mutable.supabase = authClientMock;
+      authClientMock.auth.refreshSession.mockResolvedValueOnce({
+        data: { session: { access_token: 'new-token' } },
+        error: null,
+      });
+      fetchSpy
+        .mockResolvedValueOnce(new Response('expired', { status: 401 }))
+        .mockResolvedValueOnce(new Response('Gateway timeout', { status: 504 }));
+
+      const response = await mutable.buildClientOptions().global.fetch(
+        'https://example.supabase.co/rest/v1/rpc/sync_upsert_task',
+        {
+          method: 'POST',
+          body: '{"payload":{}}',
+          headers: { Authorization: 'Bearer old-token' },
+        }
+      );
+      const retryInit = fetchSpy.mock.calls[1]?.[1] as RequestInit;
+
+      expect(authClientMock.auth.refreshSession).toHaveBeenCalledTimes(1);
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+      expect(retryInit).toEqual(expect.objectContaining({
+        method: 'POST',
+        body: '{"payload":{}}',
+      }));
+      expect(new Headers(retryInit.headers).get('Authorization')).toBe('Bearer new-token');
+      expect(response.status).toBe(504);
+    });
+
+    it('畸形编码的 RPC URL 不应触发只读 RPC 网关重试', async () => {
+      const mutable = service as unknown as {
+        canInitialize: boolean;
+        supabaseUrl: string;
+        supabaseAnonKey: string;
+        buildClientOptions: () => { global: { fetch: (url: RequestInfo | URL, options?: RequestInit) => Promise<Response> } };
+      };
+      mutable.canInitialize = true;
+      mutable.supabaseUrl = 'https://example.supabase.co';
+      mutable.supabaseAnonKey = 'anon-key';
+      fetchSpy.mockResolvedValueOnce(new Response('Gateway timeout', { status: 504 }));
+
+      const response = await mutable.buildClientOptions().global.fetch(
+        'https://example.supabase.co/rest/v1/rpc/get_full_project_data%E0%A4%A',
+        { method: 'POST', body: '{"p_project_id":"proj-1"}' }
+      );
+
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      expect(response.status).toBe(504);
     });
 
     it('client 初始化后应接管 Auth 自动刷新，并在可见状态下启动', async () => {

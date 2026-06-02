@@ -32,6 +32,19 @@ type RealtimeHeartbeatPayload = string | {
  */
 const SENSITIVE_KEY_PATTERNS = ['service_role', 'secret', 'private', 'admin'];
 
+const READ_ONLY_RPC_FUNCTIONS = new Set([
+  'batch_get_tombstones',
+  'get_accessible_project_probe',
+  'get_black_box_sync_watermark',
+  'get_full_project_data',
+  'get_project_sync_watermark',
+  'get_resume_recovery_probe',
+  'get_server_time',
+  'get_user_projects_watermark',
+  'list_project_heads_since',
+  'sync_check_protocol',
+]);
+
 function decodeBase64UrlJson(segment: string): Record<string, unknown> | null {
   if (!segment) return null;
 
@@ -738,11 +751,11 @@ export class SupabaseClientService {
       return Promise.reject(createBrowserNetworkSuspendedError());
     }
 
-    // 【鲁棒性 8】请求去重：5s 内的重复幂等请求复用前一个结果（仅限 GET/HEAD，写操作不去重）
-    const httpMethod = options?.method?.toUpperCase() ?? 'GET';
-    const isIdempotentRequest = httpMethod === 'GET' || httpMethod === 'HEAD';
+    // 【鲁棒性 8】请求去重：5s 内的重复读取请求复用前一个结果（GET/HEAD + 只读 RPC，写操作不去重）
+    const httpMethod = this.getRequestMethod(url, options);
+    const isGatewayRetrySafeRequest = this.isGatewayRetrySafeRequest(url, options, httpMethod);
 
-    if (isIdempotentRequest) {
+    if (isGatewayRetrySafeRequest) {
       const signature = this.buildRequestSignature(url, options);
       const cached = this.requestDeduplicationCache.get(signature);
 
@@ -765,7 +778,7 @@ export class SupabaseClientService {
       // 缓存本次请求的 promise，后续请求会 await 它而不是重新发送
       const fetchPromise = (async () => {
         try {
-          // 【根因修复 2026-04-20】幂等请求启用网关 5xx 静默重试，吸收 Supabase edge
+          // 【根因修复 2026-04-20】读取请求启用网关 5xx 静默重试，吸收 Supabase edge
           // 瞬时 502/503/504（浏览器常误报为 CORS 错误），避免上抛到 UI。
           const response = await this.fetchWithGatewayRetry(url, options);
           const cacheEntry = this.requestDeduplicationCache.get(signature);
@@ -794,6 +807,72 @@ export class SupabaseClientService {
     // 非幂等请求（POST/PATCH/PUT/DELETE 等）：直接发送，不去重
     const directResponse = await this.fetchWithTimeout(url, options);
     return await this.handle401Retry(url, options, directResponse);
+  }
+
+  private getRequestMethod(url: RequestInfo | URL, options: RequestInit): string {
+    if (typeof options.method === 'string' && options.method.length > 0) {
+      return options.method.toUpperCase();
+    }
+
+    if (this.isRequestObject(url) && typeof url.method === 'string' && url.method.length > 0) {
+      return url.method.toUpperCase();
+    }
+
+    return 'GET';
+  }
+
+  private isGatewayRetrySafeRequest(url: RequestInfo | URL, options: RequestInit, httpMethod: string): boolean {
+    return httpMethod === 'GET'
+      || httpMethod === 'HEAD'
+      || this.isReadOnlyRpcRequest(url, options, httpMethod);
+  }
+
+  private isReadOnlyRpcRequest(url: RequestInfo | URL, options: RequestInit, httpMethod: string): boolean {
+    if (httpMethod !== 'POST') {
+      return false;
+    }
+
+    if (this.isRequestObject(url) && options.body === undefined) {
+      return false;
+    }
+
+    const rpcFunctionName = this.extractRpcFunctionName(url);
+    return rpcFunctionName !== null && READ_ONLY_RPC_FUNCTIONS.has(rpcFunctionName);
+  }
+
+  private isRequestObject(url: RequestInfo | URL): url is Request {
+    return typeof Request !== 'undefined' && url instanceof Request;
+  }
+
+  private extractRpcFunctionName(url: RequestInfo | URL): string | null {
+    const raw = typeof url === 'string'
+      ? url
+      : url instanceof URL
+        ? url.href
+        : (url as Request).url;
+
+    if (!raw) {
+      return null;
+    }
+
+    try {
+      const parsed = new URL(raw, 'http://localhost');
+      const pathSegments = parsed.pathname.split('/').filter(Boolean);
+      const rpcIndex = pathSegments.lastIndexOf('rpc');
+      const functionName = rpcIndex >= 0 ? pathSegments[rpcIndex + 1] : undefined;
+      return functionName ? this.safeDecodeURIComponent(functionName) : null;
+    } catch {
+      const match = raw.match(/\/rpc\/([^/?#]+)/);
+      return match?.[1] ? this.safeDecodeURIComponent(match[1]) : null;
+    }
+  }
+
+  private safeDecodeURIComponent(value: string): string | null {
+    try {
+      return decodeURIComponent(value);
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -825,7 +904,10 @@ export class SupabaseClientService {
             this.fetch401RetryCount.set(retryKey, currentRetryCount + 1);
             const retryOptions = this.replaceAuthorizationHeader(options, data.session.access_token);
             try {
-              const retryResponse = await this.fetchWithTimeout(url, retryOptions);
+              const retryMethod = this.getRequestMethod(url, retryOptions);
+              const retryResponse = this.isGatewayRetrySafeRequest(url, retryOptions, retryMethod)
+                ? await this.fetchWithGatewayRetry(url, retryOptions)
+                : await this.fetchWithTimeout(url, retryOptions);
               this.fetch401RetryCount.delete(retryKey);
               return retryResponse;
             } catch (retryError) {
@@ -905,7 +987,7 @@ export class SupabaseClientService {
       : url instanceof URL
         ? url.href
         : (url as Request).url;
-    const method = options.method?.toUpperCase() ?? 'GET';
+    const method = this.getRequestMethod(url, options);
     // 基于 URL + HTTP method 作为重试计数的 key，粒度更细致
     return `${method}:${urlStr}`;
   }
@@ -940,21 +1022,13 @@ export class SupabaseClientService {
   }
 
   /**
-   * 【根因修复 2026-04-20】幂等请求的网关 5xx 瞬时错误静默重试。
+   * 【根因修复 2026-04-20】读取请求的网关 5xx 瞬时错误静默重试。
    *
    * 问题链条：
    *  1. Supabase edge 偶发返回 502/503/504（上游 PostgREST 扩缩容 / 连接池抖动）。
    *  2. 这些 5xx 响应经常缺失 `Access-Control-Allow-Origin`，被浏览器升级为
    *     刺眼的 CORS 错误刷屏。
    *  3. 单次失败直接上抛会破坏本地同步流水（batch-sync / canonical-match 等）。
-   *
-   * 策略：仅对 GET/HEAD（调用方已通过 isIdempotentRequest 判定）重试 5xx；指数
-   * 退避 + 少量抖动；遇到挂起 / 离线立即放弃；其他 HTTP 状态直接返回；抛错保留
-   * 原有语义交由上层处理。
-   *
-   * 为什么不把此逻辑合入 fetchWithTimeout？
-   *  - 写请求不允许自动重试（会造成重复提交），而 fetchWithTimeout 被读写共用。
-   *  - handle401Retry 需要看到未重试的首个响应；把重试放在更外层会与它叠加。
    *    目前 401 与 5xx 互斥（401 不会被 5xx 判定捕获），层级清晰。
    */
   private async fetchWithGatewayRetry(url: RequestInfo | URL, options: RequestInit): Promise<Response> {
