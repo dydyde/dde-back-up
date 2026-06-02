@@ -32,6 +32,13 @@ describe('StrataService', () => {
     error: ReturnType<typeof vi.fn>;
   };
 
+  const getLocalDateString = (date = new Date()): string => {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  };
+
   const createMockStrataItem = (overrides: Partial<StrataItem> = {}): StrataItem => ({
     id: crypto.randomUUID(),
     title: '已完成项目',
@@ -273,7 +280,7 @@ describe('StrataService', () => {
 
   describe('getLayerOpacity', () => {
     it('今天的层应该是完全不透明', () => {
-      const today = new Date().toISOString().split('T')[0];
+      const today = getLocalDateString();
       const layer: StrataLayer = {
         date: today,
         items: [],
@@ -289,7 +296,7 @@ describe('StrataService', () => {
       const pastDate = new Date();
       pastDate.setDate(pastDate.getDate() - 7);
       const layer: StrataLayer = {
-        date: pastDate.toISOString().split('T')[0],
+        date: getLocalDateString(pastDate),
         items: [],
         opacity: 1
       };
@@ -325,21 +332,21 @@ describe('StrataService', () => {
       oldDate.setDate(oldDate.getDate() - 31);
 
       strataLayers.set([
-        { date: today.toISOString().split('T')[0], items: [createMockStrataItem()], opacity: 1 },
-        { date: oldDate.toISOString().split('T')[0], items: [createMockStrataItem()], opacity: 0.3 }
+        { date: getLocalDateString(today), items: [createMockStrataItem()], opacity: 1 },
+        { date: getLocalDateString(oldDate), items: [createMockStrataItem()], opacity: 0.3 }
       ]);
 
       service.clearOldLayers(30);
 
       const layers = strataLayers();
       expect(layers.length).toBe(1);
-      expect(layers[0].date).toBe(today.toISOString().split('T')[0]);
+      expect(layers[0].date).toBe(getLocalDateString(today));
     });
   });
 
   describe('collapseLayer', () => {
     it('应该切换层的折叠状态', () => {
-      const today = new Date().toISOString().split('T')[0];
+      const today = getLocalDateString();
       strataLayers.set([
         { date: today, items: [createMockStrataItem()], opacity: 1, collapsed: false }
       ]);
@@ -377,7 +384,7 @@ describe('StrataService', () => {
 
   describe('getLayerLabel', () => {
     it('今天应该返回具体日期（如 2月18日）', () => {
-      const today = new Date().toISOString().split('T')[0];
+      const today = getLocalDateString();
       const label = service.getLayerLabel(today);
       const d = new Date(today);
       const expected = `${d.getMonth() + 1}月${d.getDate()}日`;

@@ -409,6 +409,7 @@ describe('GateService', () => {
       setBlackBoxEntries([entry, second]);
 
       service.checkGate();
+      service.onEnteringComplete();
 
       (service as unknown as {
         syncReviewingQueueWithPending: (pending: BlackBoxEntry[], source: 'checkGate' | 'signal' | 'remote') => void;
@@ -442,6 +443,7 @@ describe('GateService', () => {
       setBlackBoxEntries([entry, second]);
 
       service.checkGate();
+      service.onEnteringComplete();
 
       (service as unknown as {
         syncReviewingQueueWithPending: (pending: BlackBoxEntry[], source: 'checkGate' | 'signal' | 'remote') => void;
@@ -495,6 +497,7 @@ describe('GateService', () => {
       setBlackBoxEntries([first, second]);
 
       service.checkGate();
+      service.onEnteringComplete();
       service.markAsRead();
 
       (service as unknown as {
@@ -522,6 +525,7 @@ describe('GateService', () => {
       setBlackBoxEntries([first, second]);
 
       service.checkGate();
+      service.onEnteringComplete();
       service.markAsRead();
       service.onHeaveReadComplete();
 

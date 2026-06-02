@@ -7,11 +7,6 @@ import { pushStartupTrace } from './src/utils/startup-trace';
 import { ensureBrowserNetworkSuspensionTracking } from './src/utils/browser-network-suspension';
 import { applyStartupVersionAction, decideStartupVersionAction } from './src/utils/startup-version-policy';
 import { forceClearCacheImpl, type ForceClearCacheDeps } from './src/utils/force-clear-cache-impl';
-import {
-  isGojsOverviewOriginRectNoise,
-  extractErrorStack as extractAnyErrorStack,
-  extractErrorMessageLoose,
-} from './src/utils/gojs-overview-noise';
 // ============= 【P0 启动优化 2026-03-26】受控 dynamic import + head modulepreload =============
 // 关键模块改回 dynamic import，以缩小 main 静态闭包并通过 perf-startup-guard。
 // 配套保障：
@@ -51,6 +46,61 @@ const logError = (msg: string, err?: unknown) => {
   const elapsed = Date.now() - START_TIME;
   console.error(`[NanoFlow +${elapsed}ms] ❌ ${msg}`, err || '');
 };
+
+const NULL_WIDTH_PATTERN = /Cannot read properties of null \(reading [\u2018\u2019'"]width[\u2018\u2019'"]\)/i;
+const ORIGIN_RECT_PATTERN = /_getOriginRect/;
+
+function isGojsOverviewOriginRectNoise(
+  message: string | null | undefined,
+  stack: string | null | undefined,
+): boolean {
+  if (!message || typeof message !== 'string') return false;
+  if (!stack || typeof stack !== 'string') return false;
+  return NULL_WIDTH_PATTERN.test(message) && ORIGIN_RECT_PATTERN.test(stack);
+}
+
+function extractAnyErrorStack(error: unknown): string | undefined {
+  if (typeof error === 'string') return error;
+  if (!error || typeof error !== 'object') return undefined;
+
+  const direct = (error as { stack?: unknown }).stack;
+  if (typeof direct === 'string' && direct.length > 0) return direct;
+
+  const nestedError = (error as { error?: unknown }).error;
+  if (nestedError && typeof nestedError === 'object') {
+    const nestedStack = (nestedError as { stack?: unknown }).stack;
+    if (typeof nestedStack === 'string' && nestedStack.length > 0) return nestedStack;
+  }
+
+  const reason = (error as { reason?: unknown }).reason;
+  if (reason && typeof reason === 'object') {
+    const reasonStack = (reason as { stack?: unknown }).stack;
+    if (typeof reasonStack === 'string' && reasonStack.length > 0) return reasonStack;
+  }
+
+  return undefined;
+}
+
+function extractErrorMessageLoose(error: unknown): string {
+  if (typeof error === 'string') return error;
+  if (error instanceof Error) return error.message;
+  if (error && typeof error === 'object') {
+    const message = (error as { message?: unknown }).message;
+    if (typeof message === 'string') return message;
+    const nested = (error as { error?: { message?: unknown } }).error;
+    if (nested && typeof nested === 'object') {
+      const nestedMsg = nested.message;
+      if (typeof nestedMsg === 'string') return nestedMsg;
+    }
+    const reason = (error as { reason?: unknown }).reason;
+    if (typeof reason === 'string') return reason;
+    if (reason && typeof reason === 'object') {
+      const reasonMsg = (reason as { message?: unknown }).message;
+      if (typeof reasonMsg === 'string') return reasonMsg;
+    }
+  }
+  return String(error ?? '');
+}
 
 interface StartupSentryReporter {
   captureException(error: unknown, context?: Record<string, unknown>): void;

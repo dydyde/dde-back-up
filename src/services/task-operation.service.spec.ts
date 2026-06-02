@@ -372,6 +372,12 @@ describe('TaskOperationService (moveTaskToStage parentId validation)', () => {
   it('移动父任务时应级联更新所有子任务的 stage', () => {
     // 场景：root 在 stage=1，child 在 stage=2，grandchild 在 stage=3
     // 当 root 移动到 stage=3 时，child 应变为 stage=4，grandchild 应变为 stage=5
+    const stageOneAnchor = createTask({
+      id: 'stage-one-anchor',
+      stage: 1,
+      parentId: null,
+      rank: 5000,
+    });
     const root = createTask({
       id: 'root',
       stage: 1,
@@ -391,7 +397,7 @@ describe('TaskOperationService (moveTaskToStage parentId validation)', () => {
       rank: 30000,
     });
 
-    project = createProject({ tasks: [root, child, grandchild] });
+    project = createProject({ tasks: [stageOneAnchor, root, child, grandchild] });
 
     // 移动 root 到 stage=3
     service.moveTaskToStage({ taskId: 'root', newStage: 3 });
