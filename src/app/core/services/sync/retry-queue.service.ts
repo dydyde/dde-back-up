@@ -67,6 +67,8 @@ export interface RetryQueueItem {
   taskIdsToDelete?: string[];
 }
 
+type RetryQueueData = Task | Project | Connection | BlackBoxEntry | { id: string };
+
 interface LegacyRetryReviewItem {
   item: RetryQueueItem;
   reason: string;
@@ -633,32 +635,17 @@ export class RetryQueueService {
     );
     
     if (existingIndex !== -1) {
-      // 更新已存在的项
-      const existing = targetQueue[existingIndex];
-      const safeData = this.preserveBlackBoxContentWhenBlankSnapshot(type, data, existing.data);
-      targetQueue[existingIndex] = {
-        ...existing,
+      return this.refreshExistingQueueItem(
+        targetQueue,
+        existingIndex,
+        type,
         operation,
-        data: safeData,
-        projectId: projectId ?? existing.projectId,
-        createdAt: Date.now(),
-        sourceUserId: existing.sourceUserId ?? targetOwnerUserId,
-        taskIdsToDelete: taskIdsToDelete ?? existing.taskIdsToDelete,
-      };
-      this.lastDrainCompletedBySuccess = false;
-      this.touchQueueState();
-      this.logger.debug('更新队列中的现有项', { 
-        type, 
-        operation, 
-        dataId: data.id,
-        retryCount: existing.retryCount,
-        hidden: targetQueue === this.hiddenQueueItems,
-      });
-      if (persistMode === 'debounced') {
-        this.saveToStorage();
-      }
-      this.checkCapacityWarning();
-      return true;
+        data,
+        projectId,
+        targetOwnerUserId,
+        taskIdsToDelete,
+        persistMode,
+      );
     }
 
     const absoluteLimit = this.maxQueueSize * this.MAX_QUEUE_OVERFLOW_FACTOR;
@@ -725,11 +712,133 @@ export class RetryQueueService {
     return true;
   }
 
+  private refreshExistingQueueItem(
+    targetQueue: RetryQueueItem[], existingIndex: number, type: RetryableEntityType,
+    operation: RetryableOperation, data: RetryQueueData, projectId: string | undefined,
+    targetOwnerUserId: string, taskIdsToDelete: string[] | undefined, persistMode: 'debounced' | 'manual',
+  ): boolean {
+    const existing = targetQueue[existingIndex];
+    const safeData = this.preserveBlackBoxContentWhenBlankSnapshot(type, data, existing.data);
+    const nextProjectId = projectId ?? existing.projectId;
+    const nextSourceUserId = existing.sourceUserId ?? targetOwnerUserId;
+    const nextTaskIdsToDelete = taskIdsToDelete ?? existing.taskIdsToDelete;
+
+    if (this.isBlackBoxRetryRefreshNoop(
+      existing,
+      operation,
+      safeData,
+      nextProjectId,
+      nextSourceUserId,
+      nextTaskIdsToDelete,
+    )) {
+      this.logger.debug('黑匣子重试项重复入队但 payload 未变化，跳过队列刷新', {
+        entryId: data.id,
+        sourceUserId: nextSourceUserId,
+      });
+      return true;
+    }
+
+    targetQueue[existingIndex] = {
+      ...existing,
+      operation,
+      data: safeData,
+      projectId: nextProjectId,
+      createdAt: Date.now(),
+      sourceUserId: nextSourceUserId,
+      taskIdsToDelete: nextTaskIdsToDelete,
+    };
+    this.lastDrainCompletedBySuccess = false;
+    this.touchQueueState();
+    this.logger.debug('更新队列中的现有项', {
+      type,
+      operation,
+      dataId: data.id,
+      retryCount: existing.retryCount,
+      hidden: targetQueue === this.hiddenQueueItems,
+    });
+    if (persistMode === 'debounced') {
+      this.saveToStorage();
+    }
+    this.checkCapacityWarning();
+    return true;
+  }
+
+  private isBlackBoxRetryRefreshNoop(
+    existing: RetryQueueItem,
+    operation: RetryableOperation,
+    incoming: RetryQueueData,
+    projectId: string | undefined,
+    sourceUserId: string,
+    taskIdsToDelete: string[] | undefined,
+  ): boolean {
+    if (existing.type !== 'blackbox' || operation !== existing.operation) {
+      return false;
+    }
+
+    if (existing.projectId !== projectId || this.resolveItemOwnerUserId(existing) !== sourceUserId) {
+      return false;
+    }
+
+    if (!this.areStringArraysEqual(existing.taskIdsToDelete, taskIdsToDelete)) {
+      return false;
+    }
+
+    return this.buildBlackBoxRetryDataFingerprint(existing.data as BlackBoxEntry)
+      === this.buildBlackBoxRetryDataFingerprint(incoming as BlackBoxEntry);
+  }
+
+  private areStringArraysEqual(left: string[] | undefined, right: string[] | undefined): boolean {
+    const leftValues = left ?? [];
+    const rightValues = right ?? [];
+    if (leftValues.length !== rightValues.length) {
+      return false;
+    }
+
+    return leftValues.every((value, index) => value === rightValues[index]);
+  }
+
+  private buildBlackBoxRetryDataFingerprint(entry: BlackBoxEntry): string {
+    const focusMeta = entry.focusMeta
+      ? {
+          source: entry.focusMeta.source,
+          sessionId: entry.focusMeta.sessionId,
+          title: entry.focusMeta.title,
+          detail: entry.focusMeta.detail ?? null,
+          lane: entry.focusMeta.lane,
+          expectedMinutes: entry.focusMeta.expectedMinutes ?? null,
+          waitMinutes: entry.focusMeta.waitMinutes ?? null,
+          cognitiveLoad: entry.focusMeta.cognitiveLoad,
+          dockEntryId: entry.focusMeta.dockEntryId,
+        }
+      : null;
+
+    return JSON.stringify({
+      id: entry.id,
+      projectId: entry.projectId ?? null,
+      userId: entry.userId,
+      content: entry.content,
+      date: entry.date,
+      createdAt: entry.createdAt,
+      updatedAt: entry.updatedAt,
+      completedAt: entry.completedAt ?? null,
+      isRead: entry.isRead,
+      isCompleted: entry.isCompleted,
+      isArchived: entry.isArchived,
+      snoozeUntil: entry.snoozeUntil ?? null,
+      snoozeCount: entry.snoozeCount ?? 0,
+      deletedAt: entry.deletedAt ?? null,
+      syncStatus: entry.syncStatus ?? null,
+      localCreatedAt: entry.localCreatedAt ?? null,
+      originalAudioDuration: entry.originalAudioDuration ?? null,
+      focusMeta,
+    });
+  }
+
   private preserveBlackBoxContentWhenBlankSnapshot(
     type: RetryableEntityType,
-    incoming: Task | Project | Connection | BlackBoxEntry | { id: string },
-    existing: Task | Project | Connection | BlackBoxEntry | { id: string },
-  ): Task | Project | Connection | BlackBoxEntry | { id: string } {
+    incoming: RetryQueueData,
+    existing: RetryQueueData,
+  ): RetryQueueData {
     if (type !== 'blackbox') {
       return incoming;
     }

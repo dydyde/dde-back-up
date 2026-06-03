@@ -105,6 +105,8 @@ const mockProjectState = {
 
 const mockBlackBoxService = {
   update: vi.fn(),
+  getEntry: vi.fn().mockReturnValue(undefined),
+  markAsCompleted: vi.fn().mockReturnValue({ ok: true, value: {} }),
 };
 
 // ── Test suite ──
@@ -116,6 +118,7 @@ describe('DockTaskSyncService', () => {
     vi.clearAllMocks();
     projectsSignal.set([]);
     activeProjectIdSignal.set(null);
+    mockBlackBoxService.getEntry.mockReturnValue(undefined);
 
     const injector = Injector.create({
       providers: [
@@ -222,6 +225,68 @@ describe('DockTaskSyncService', () => {
 
       expect(mockTaskOps.updateTaskContent).toHaveBeenCalledWith('task-1', 'updated detail');
       expect(mockBlackBoxService.update).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('syncInlineCompletion', () => {
+    it('should mark the source black-box entry completed for dock-created entries', () => {
+      const entry = createMockDockEntry({
+        taskId: 'inline-task',
+        sourceKind: 'dock-created',
+        sourceBlackBoxEntryId: 'bb-inline-task',
+      });
+
+      service.syncInlineCompletion(entry);
+
+      expect(mockBlackBoxService.markAsCompleted).toHaveBeenCalledWith('bb-inline-task');
+    });
+
+    it('should no-op when a dock-created entry has no source black-box entry', () => {
+      const entry = createMockDockEntry({
+        sourceKind: 'dock-created',
+        sourceBlackBoxEntryId: null,
+      });
+
+      service.syncInlineCompletion(entry);
+
+      expect(mockBlackBoxService.markAsCompleted).not.toHaveBeenCalled();
+    });
+
+    it('should skip source black-box entries that are already completed', () => {
+      mockBlackBoxService.getEntry.mockReturnValue({ isCompleted: true });
+      const entry = createMockDockEntry({
+        sourceKind: 'dock-created',
+        sourceBlackBoxEntryId: 'bb-completed',
+      });
+
+      service.syncInlineCompletion(entry);
+
+      expect(mockBlackBoxService.markAsCompleted).not.toHaveBeenCalled();
+    });
+
+    it('should sync every completed dock-created entry in a restored entries batch', () => {
+      service.syncCompletedInlineEntries([
+        createMockDockEntry({
+          taskId: 'inline-completed',
+          sourceKind: 'dock-created',
+          sourceBlackBoxEntryId: 'bb-completed-inline',
+          status: 'completed',
+        }),
+        createMockDockEntry({
+          taskId: 'inline-active',
+          sourceKind: 'dock-created',
+          sourceBlackBoxEntryId: 'bb-active-inline',
+          status: 'pending_start',
+        }),
+        createMockDockEntry({
+          taskId: 'project-completed',
+          sourceKind: 'project-task',
+          status: 'completed',
+        }),
+      ]);
+
+      expect(mockBlackBoxService.markAsCompleted).toHaveBeenCalledTimes(1);
+      expect(mockBlackBoxService.markAsCompleted).toHaveBeenCalledWith('bb-completed-inline');
     });
   });
 

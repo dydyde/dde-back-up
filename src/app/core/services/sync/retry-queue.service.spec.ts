@@ -473,6 +473,26 @@ describe('RetryQueueService', () => {
     ]);
   });
 
+  it('处理中的 blackbox 快照被同 payload 重复入队时，不应刷新队列项导致下一轮重复回放', async () => {
+    const entry = createBlackBoxEntry('same-payload-reentry', {
+      updatedAt: '2026-04-21T00:00:05.000Z',
+      syncStatus: 'pending',
+    });
+
+    service.add('blackbox', 'upsert', entry, undefined, 'test-user');
+    online = true;
+    (handler.pushBlackBoxEntry as ReturnType<typeof vi.fn>).mockImplementationOnce(async () => {
+      service.add('blackbox', 'upsert', { ...entry }, undefined, 'test-user');
+      return true;
+    });
+
+    const result = await service.processQueueSlice({ maxItems: 1, maxDurationMs: 1000 });
+
+    expect(result.processed).toBe(1);
+    expect(handler.pushBlackBoxEntry).toHaveBeenCalledWith(entry, 'test-user');
+    expect(service.getItems()).toEqual([]);
+  });
+
   it('更新同一 blackbox 重试项时，空正文不能覆盖已有完整正文', () => {
     const entryId = stableUUID('blackbox-preserve-content');
     const fullEntry = createBlackBoxEntry('content-full', {

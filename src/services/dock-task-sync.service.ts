@@ -134,6 +134,31 @@ export class DockTaskSyncService {
     this.applyCrossProjectTaskPatch(taskId, projectId, normalizedPatch);
   }
 
+  syncInlineCompletion(entry: DockEntry): void {
+    if (entry.sourceKind !== 'dock-created') return;
+    const blackBoxEntryId = entry.sourceBlackBoxEntryId ?? null;
+    if (!blackBoxEntryId) return;
+
+    if (this.blackBoxService.getEntry(blackBoxEntryId)?.isCompleted) return;
+
+    const result = this.blackBoxService.markAsCompleted(blackBoxEntryId);
+    if (!result.ok) {
+      this.logger.warn('Inline dock completion failed to mark source black-box entry completed', {
+        dockEntryId: entry.taskId,
+        blackBoxEntryId,
+        message: result.error.message,
+      });
+    }
+  }
+
+  syncCompletedInlineEntries(entries: readonly DockEntry[]): void {
+    for (const entry of entries) {
+      if (entry.status === 'completed') {
+        this.syncInlineCompletion(entry);
+      }
+    }
+  }
+
   applyCrossProjectTaskPatch(
     taskId: string,
     projectId: string,

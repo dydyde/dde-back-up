@@ -71,6 +71,7 @@ describe('DockEngineService', () => {
         content: payload?.content ?? payload?.focusMeta?.title ?? '',
       },
     })),
+    getEntry: vi.fn(() => undefined),
     archive: vi.fn(() => ({ ok: true as const, value: undefined })),
     markAsCompleted: vi.fn(() => ({ ok: true as const, value: undefined })),
   };
@@ -213,6 +214,8 @@ describe('DockEngineService', () => {
     mockTaskOps.updateTaskStatus.mockClear();
     mockTaskOps.addTask.mockClear();
     mockBlackBoxService.create.mockClear();
+    mockBlackBoxService.getEntry.mockClear();
+    mockBlackBoxService.getEntry.mockReturnValue(undefined);
     mockBlackBoxService.archive.mockClear();
     mockBlackBoxService.markAsCompleted.mockClear();
     mockProjectState.updateProjects.mockClear();
@@ -2584,6 +2587,50 @@ describe('DockEngineService', () => {
     expect(service.focusMode()).toBe(false);
     expect(service.exportSnapshot().focusMode).toBe(false);
     expect(service.exportSnapshot().focusSessionState).toBeNull();
+  });
+
+  it('completeTask should complete the source black-box entry for dock-created tasks before save exit', () => {
+    mockBlackBoxService.create.mockReturnValueOnce({
+      ok: true,
+      value: { id: 'bb-inline-completed-before-exit', content: 'Inline Temp' },
+    });
+    seedTask('A');
+    service.dockTask('A');
+    const inlineTaskId = service.createInDock('Inline Temp', 'backup', 'low');
+    expect(inlineTaskId).not.toBeNull();
+    service.toggleFocusMode();
+
+    service.completeTask(inlineTaskId!);
+    service.markExitAction('save_exit');
+    service.toggleFocusMode();
+
+    expect(service.entries().find(entry => entry.taskId === inlineTaskId)?.status).toBe('completed');
+    expect(mockBlackBoxService.markAsCompleted).toHaveBeenCalledWith('bb-inline-completed-before-exit');
+    expect(mockBlackBoxService.archive).not.toHaveBeenCalledWith('bb-inline-completed-before-exit');
+  });
+
+  it('save exit should backfill completed dock-created black-box sources restored from older snapshots', () => {
+    mockBlackBoxService.create.mockReturnValueOnce({
+      ok: true,
+      value: { id: 'bb-inline-restored-completed', content: 'Restored Temp' },
+    });
+    seedTask('A');
+    service.dockTask('A');
+    const inlineTaskId = service.createInDock('Restored Temp', 'backup', 'low');
+    expect(inlineTaskId).not.toBeNull();
+    service.toggleFocusMode();
+    service.entries.update(entries =>
+      entries.map(entry =>
+        entry.taskId === inlineTaskId
+          ? { ...entry, status: 'completed' }
+          : entry,
+      ),
+    );
+
+    service.markExitAction('save_exit');
+    service.toggleFocusMode();
+
+    expect(mockBlackBoxService.markAsCompleted).toHaveBeenCalledWith('bb-inline-restored-completed');
   });
 
   it('clearDockForExit should clear entries but keep exit chrome alive until final cleanup', () => {

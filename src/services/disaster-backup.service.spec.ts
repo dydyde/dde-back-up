@@ -244,10 +244,24 @@ describe('DisasterBackupService', () => {
           const tx = db.transaction('offline_mutation_queue', 'readwrite');
           tx.objectStore('offline_mutation_queue').put({
             id: 'retry-1',
-            type: 'task',
+            type: 'blackbox',
             operation: 'upsert',
-            data: { id: 'task-1' },
-            projectId: 'project-1',
+            data: {
+              id: 'bb-inline-retry',
+              content: 'Inline Temp',
+              focusMeta: {
+                source: 'focus-console-inline',
+                sessionId: 'focus-session-1',
+                title: 'Inline Temp',
+                detail: null,
+                lane: 'backup',
+                expectedMinutes: null,
+                waitMinutes: null,
+                cognitiveLoad: 'low',
+                dockEntryId: 'dock-inline-1',
+              },
+            },
+            projectId: null,
             retryCount: 1,
             createdAt: 123,
             sourceUserId: 'user-1',
@@ -508,7 +522,15 @@ describe('DisasterBackupService', () => {
     expect(payload.localState!.retryQueue).toEqual([
       expect.objectContaining({
         id: 'retry-1',
-        data: { id: 'task-1' },
+        type: 'blackbox',
+        data: expect.objectContaining({
+          id: 'bb-inline-retry',
+          content: 'Inline Temp',
+          focusMeta: expect.objectContaining({
+            source: 'focus-console-inline',
+            dockEntryId: 'dock-inline-1',
+          }),
+        }),
         sourceUserId: 'user-1',
       }),
     ]);

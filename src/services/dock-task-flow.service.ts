@@ -180,6 +180,7 @@ export class DockTaskFlowService {
    * 之间出现不一致窗口（effects 在下一个 microtask 才能感知变更）。
    */
   private exitFocusMode(): void {
+    this.taskSync.syncCompletedInlineEntries(this.ctx.entries());
     this.ctx.clearFirstMainSelectionWindow();
     this.ctx.suspendRecommendationLocked.set(false);
     this.ctx.suspendChainRootTaskId.set(null);
@@ -249,7 +250,7 @@ export class DockTaskFlowService {
 
   private executeCompleteTask(taskId: string): void {
     const entry = this.ctx.entries().find(item => item.taskId === taskId);
-    if (!entry) return;
+    if (!entry || entry.status === 'completed') return;
     const wasMaster = entry.isMain;
 
     this.trackBurnoutIfHighLoad(entry);
@@ -263,7 +264,7 @@ export class DockTaskFlowService {
       }),
     );
 
-    this.syncTaskCompletion(taskId);
+    this.syncTaskCompletion(taskId, entry);
     this.completionFlow.resolveAfterCompletion(taskId);
     if (wasMaster && !this.ctx.pendingDecision()) {
       this.promotionService.promoteFocusedTaskToMaster();
@@ -295,7 +296,8 @@ export class DockTaskFlowService {
   }
 
   /** 同步任务完成状态到项目数据层 */
-  private syncTaskCompletion(taskId: string): void {
+  private syncTaskCompletion(taskId: string, entry: DockEntry): void {
+    this.taskSync.syncInlineCompletion(entry);
     const task = this.taskStore.getTask(taskId);
     const projectId = this.taskSync.resolveTaskProjectId(taskId);
     if (task && projectId) {
