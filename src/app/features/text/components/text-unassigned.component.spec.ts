@@ -46,6 +46,9 @@ describe('TextUnassignedComponent', () => {
   const mockUiState = {
     isTextSidebarVisible: signal(true),
     isTextUnassignedOpen: signal(true),
+    toggleTextUnassignedOpen: vi.fn(),
+    setTextUnassignedOpen: vi.fn((open: boolean) => mockUiState.isTextUnassignedOpen.set(open)),
+    hasTextUnassignedOpenPreference: vi.fn(() => true),
   };
   const mockProjectState = {
     unassignedTasks: tasks,
@@ -72,6 +75,15 @@ describe('TextUnassignedComponent', () => {
   beforeEach(async () => {
     vi.clearAllMocks();
     tasks.set([createTask()]);
+    mockUiState.isTextSidebarVisible.set(true);
+    mockUiState.isTextUnassignedOpen.set(true);
+    mockUiState.toggleTextUnassignedOpen.mockImplementation(() => {
+      mockUiState.isTextUnassignedOpen.set(!mockUiState.isTextUnassignedOpen());
+    });
+    mockUiState.setTextUnassignedOpen.mockImplementation((open: boolean) => {
+      mockUiState.isTextUnassignedOpen.set(open);
+    });
+    mockUiState.hasTextUnassignedOpenPreference.mockReturnValue(true);
     mockUserSession.isHintOnlyStartupPlaceholderVisible.mockReturnValue(false);
     mockProjectState.getTask.mockImplementation((taskId: string) => tasks().find(task => task.id === taskId) ?? null);
 
@@ -152,18 +164,38 @@ describe('TextUnassignedComponent', () => {
     expect(parkButton?.disabled).toBe(true);
   });
 
-  it('should reopen unassigned tasks when they return after becoming empty', () => {
+  it('should preserve the unassigned panel preference when task count changes', () => {
     mockUiState.isTextUnassignedOpen.set(true);
     tasks.set([]);
     fixture.detectChanges();
 
-    expect(mockUiState.isTextUnassignedOpen()).toBe(false);
+    expect(mockUiState.isTextUnassignedOpen()).toBe(true);
+    expect(fixture.nativeElement.textContent).toContain('无待分配任务');
+
+    mockUiState.isTextUnassignedOpen.set(false);
 
     tasks.set([createTask({ id: 'restored-task' })]);
     fixture.detectChanges();
 
+    expect(mockUiState.isTextUnassignedOpen()).toBe(false);
+    expect(fixture.nativeElement.querySelector('[data-unassigned-task="restored-task"]')).toBeNull();
+  });
+
+  it('should open the unassigned panel for creation without storing a panel preference', () => {
+    const internal = component as unknown as {
+      createUnassigned: { emit: () => void };
+    };
+    const emitSpy = vi.spyOn(internal.createUnassigned, 'emit');
+    mockUiState.isTextUnassignedOpen.set(false);
+    fixture.detectChanges();
+
+    const createButton = fixture.nativeElement.querySelector('[data-testid="add-task-btn"]') as HTMLButtonElement | null;
+    createButton?.click();
+
     expect(mockUiState.isTextUnassignedOpen()).toBe(true);
-    expect(fixture.nativeElement.querySelector('[data-unassigned-task="restored-task"]')).not.toBeNull();
+    expect(mockUiState.setTextUnassignedOpen).not.toHaveBeenCalled();
+    expect(mockUiState.toggleTextUnassignedOpen).not.toHaveBeenCalled();
+    expect(emitSpy).toHaveBeenCalledOnce();
   });
 
   it('should block parking while hint-only startup placeholder is read-only', () => {

@@ -20,7 +20,7 @@ import { UnfinishedItem } from './text-view.types';
       [ngClass]="{'mx-4 mt-4': !isMobile(), 'mx-2': isMobile()}">
       
       <header 
-        (click)="uiState.isTextUnfinishedOpen.set(!uiState.isTextUnfinishedOpen())" 
+        (click)="uiState.toggleTextUnfinishedOpen()"
         class="py-2 cursor-pointer flex justify-between items-center group select-none">
         <span class="font-bold text-retro-dark dark:text-stone-200 flex items-center gap-2 tracking-tight"
               [ngClass]="{'text-sm': !isMobile(), 'text-xs': isMobile()}">
@@ -75,8 +75,12 @@ export class TextUnfinishedComponent {
   readonly jumpToTask = output<string>();
 
   constructor() {
-    // 没有待办事项时自动折叠，减少移动端空白区域
+    // 未产生用户偏好前，空列表仍默认收起；用户点过后保持记忆状态，避免空态展开被抢回。
     effect(() => {
+      if (this.uiState.hasTextUnfinishedOpenPreference()) {
+        return;
+      }
+
       if (this.projectState.unfinishedItems().length === 0) {
         this.uiState.isTextUnfinishedOpen.set(false);
       }

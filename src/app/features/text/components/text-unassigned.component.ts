@@ -31,7 +31,7 @@ import type { TaskTouchStartPayload } from './text-view.types';
       
       <div class="px-2 pb-1 rounded-xl bg-retro-teal/10 dark:bg-retro-teal/5 border border-retro-teal/30 dark:border-retro-teal/20">
         <header 
-          (click)="uiState.isTextUnassignedOpen.set(!uiState.isTextUnassignedOpen()); $event.stopPropagation()" 
+          (click)="uiState.toggleTextUnassignedOpen(); $event.stopPropagation()"
           class="py-2 cursor-pointer flex justify-between items-center group select-none touch-manipulation"
           style="-webkit-tap-highlight-color: transparent;">
           <span class="font-bold text-retro-dark dark:text-stone-200 flex items-center gap-2 tracking-tight pointer-events-none"
@@ -293,8 +293,12 @@ export class TextUnassignedComponent implements OnDestroy {
       }
     });
 
-    // 没有待分配任务时自动折叠，减少移动端空白区域
+    // 未产生用户偏好前维持空列表省空间策略；用户点过后不再抢回折叠状态。
     effect(() => {
+      if (this.uiState.hasTextUnassignedOpenPreference()) {
+        return;
+      }
+
       const taskCount = this.projectState.unassignedTasks().length;
       const previousTaskCount = this.previousUnassignedTaskCount;
       this.previousUnassignedTaskCount = taskCount;

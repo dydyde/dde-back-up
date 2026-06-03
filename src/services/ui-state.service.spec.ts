@@ -3,10 +3,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { UiStateService } from './ui-state.service';
 
 const LAST_ACTIVE_VIEW_KEY = 'nanoflow.last-active-view';
+const TEXT_UNFINISHED_OPEN_KEY = 'nanoflow.text-unfinished-open';
+const TEXT_UNASSIGNED_OPEN_KEY = 'nanoflow.text-unassigned-open';
 
 describe('UiStateService', () => {
   beforeEach(() => {
     localStorage.removeItem(LAST_ACTIVE_VIEW_KEY);
+    localStorage.removeItem(TEXT_UNFINISHED_OPEN_KEY);
+    localStorage.removeItem(TEXT_UNASSIGNED_OPEN_KEY);
     TestBed.configureTestingModule({
       providers: [UiStateService],
     });
@@ -14,6 +18,8 @@ describe('UiStateService', () => {
 
   afterEach(() => {
     localStorage.removeItem(LAST_ACTIVE_VIEW_KEY);
+    localStorage.removeItem(TEXT_UNFINISHED_OPEN_KEY);
+    localStorage.removeItem(TEXT_UNASSIGNED_OPEN_KEY);
     TestBed.resetTestingModule();
   });
 
@@ -43,6 +49,33 @@ describe('UiStateService', () => {
     expect(service.activeView()).toBe('flow');
     expect(service.getLastActiveView()).toBe('flow');
     expect(localStorage.getItem(LAST_ACTIVE_VIEW_KEY)).toBe('flow');
+  });
+
+  it('应记住文本视图待办事项和待分配面板的折叠偏好', () => {
+    const service = TestBed.inject(UiStateService);
+    expect(service.hasTextUnfinishedOpenPreference()).toBe(false);
+    expect(service.hasTextUnassignedOpenPreference()).toBe(false);
+
+    service.setTextUnfinishedOpen(false);
+    service.toggleTextUnassignedOpen();
+
+    expect(service.isTextUnfinishedOpen()).toBe(false);
+    expect(service.isTextUnassignedOpen()).toBe(false);
+    expect(service.hasTextUnfinishedOpenPreference()).toBe(true);
+    expect(service.hasTextUnassignedOpenPreference()).toBe(true);
+    expect(localStorage.getItem(TEXT_UNFINISHED_OPEN_KEY)).toBe('false');
+    expect(localStorage.getItem(TEXT_UNASSIGNED_OPEN_KEY)).toBe('false');
+
+    TestBed.resetTestingModule();
+    TestBed.configureTestingModule({
+      providers: [UiStateService],
+    });
+
+    const restored = TestBed.inject(UiStateService);
+    expect(restored.isTextUnfinishedOpen()).toBe(false);
+    expect(restored.isTextUnassignedOpen()).toBe(false);
+    expect(restored.hasTextUnfinishedOpenPreference()).toBe(true);
+    expect(restored.hasTextUnassignedOpenPreference()).toBe(true);
   });
 
   // ========== 编辑状态管理 ==========

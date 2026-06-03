@@ -35,6 +35,10 @@ describe('Feature Flags 安全校验', () => {
     expect(FEATURE_FLAGS.OFFLINE_SNAPSHOT_IDB_ENABLED).toBe(false);
   });
 
+  it('PROJECT_FULL_DATA_RPC_V1 应默认关闭以避免大项目批量聚合 504', () => {
+    expect(FEATURE_FLAGS.PROJECT_FULL_DATA_RPC_V1).toBe(false);
+  });
+
   it('LIFECYCLE_RECOVERY_V1 应默认启用', () => {
     expect(FEATURE_FLAGS.LIFECYCLE_RECOVERY_V1).toBe(true);
   });

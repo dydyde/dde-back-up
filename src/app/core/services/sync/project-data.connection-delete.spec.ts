@@ -9,8 +9,16 @@ import { SyncStateService } from './sync-state.service';
 import { TombstoneService } from './tombstone.service';
 import { SentryLazyLoaderService } from '../../../../services/sentry-lazy-loader.service';
 import { resetBrowserNetworkSuspensionTrackingForTests } from '../../../../utils/browser-network-suspension';
+import { FEATURE_FLAGS } from '../../../../config/feature-flags.config';
 
 const OFFLINE_SNAPSHOT_LOCAL_STORAGE_KEY = 'nanoflow.offline-cache-v2';
+
+type MutableProjectDataFeatureFlags = {
+  PROJECT_FULL_DATA_RPC_V1: boolean;
+};
+
+const projectDataFeatureFlags = FEATURE_FLAGS as unknown as MutableProjectDataFeatureFlags;
+const initialProjectFullDataRpcFlag = FEATURE_FLAGS.PROJECT_FULL_DATA_RPC_V1;
 
 function createProjectDataService(options: {
   client?: unknown;
@@ -75,8 +83,13 @@ function createProjectDataService(options: {
 
 describe('ProjectDataService connection delete regressions', () => {
   beforeEach(() => {
+    projectDataFeatureFlags.PROJECT_FULL_DATA_RPC_V1 = false;
     localStorage.clear();
     resetBrowserNetworkSuspensionTrackingForTests();
+  });
+
+  afterEach(() => {
+    projectDataFeatureFlags.PROJECT_FULL_DATA_RPC_V1 = initialProjectFullDataRpcFlag;
   });
 
   it('loadFullProject fallback 应保留 soft-deleted connections', async () => {
@@ -146,6 +159,8 @@ describe('ProjectDataService connection delete regressions', () => {
   });
 
   it('loadFullProjectOptimized 主 RPC 路径应保留未 tombstone 的 soft-deleted connection', async () => {
+    projectDataFeatureFlags.PROJECT_FULL_DATA_RPC_V1 = true;
+
     const deletedConnectionRow = {
       id: 'conn-rpc-1',
       source_id: 'task-1',

@@ -21,6 +21,8 @@ export class UiStateService {
   private destroyRef = inject(DestroyRef);
   private static readonly LAST_ACTIVE_VIEW_STORAGE_KEY = 'nanoflow.last-active-view';
   private static readonly PARKING_DOCK_OPEN_KEY = 'nanoflow.parking-dock-open';
+  private static readonly TEXT_UNFINISHED_OPEN_KEY = 'nanoflow.text-unfinished-open';
+  private static readonly TEXT_UNASSIGNED_OPEN_KEY = 'nanoflow.text-unassigned-open';
   
   // ========== 响应式状态 ==========
   
@@ -71,6 +73,8 @@ export class UiStateService {
   
   /** 文本视图 - 未分配任务面板展开 */
   readonly isTextUnassignedOpen = signal(true);
+  private readonly hasTextUnfinishedOpenPreferenceSignal = signal(false);
+  private readonly hasTextUnassignedOpenPreferenceSignal = signal(false);
 
   /** 文本视图 - 侧边栏可见性 */
   readonly isTextSidebarVisible = signal(true);
@@ -286,6 +290,52 @@ export class UiStateService {
   }
 
   /**
+   * 切换文本视图待办事项面板，并记住用户偏好
+   */
+  toggleTextUnfinishedOpen(): void {
+    this.setTextUnfinishedOpen(!this.isTextUnfinishedOpen());
+  }
+
+  /**
+   * 设置文本视图待办事项面板展开偏好
+   */
+  setTextUnfinishedOpen(open: boolean): void {
+    this.hasTextUnfinishedOpenPreferenceSignal.set(true);
+    this.isTextUnfinishedOpen.set(open);
+    this.persistBooleanPreference(UiStateService.TEXT_UNFINISHED_OPEN_KEY, open);
+  }
+
+  /**
+   * 是否已有文本视图待办事项面板的用户偏好
+   */
+  hasTextUnfinishedOpenPreference(): boolean {
+    return this.hasTextUnfinishedOpenPreferenceSignal();
+  }
+
+  /**
+   * 切换文本视图待分配面板，并记住用户偏好
+   */
+  toggleTextUnassignedOpen(): void {
+    this.setTextUnassignedOpen(!this.isTextUnassignedOpen());
+  }
+
+  /**
+   * 设置文本视图待分配面板展开偏好
+   */
+  setTextUnassignedOpen(open: boolean): void {
+    this.hasTextUnassignedOpenPreferenceSignal.set(true);
+    this.isTextUnassignedOpen.set(open);
+    this.persistBooleanPreference(UiStateService.TEXT_UNASSIGNED_OPEN_KEY, open);
+  }
+
+  /**
+   * 是否已有文本视图待分配面板的用户偏好
+   */
+  hasTextUnassignedOpenPreference(): boolean {
+    return this.hasTextUnassignedOpenPreferenceSignal();
+  }
+
+  /**
    * 切换停泊坞展开偏好（带 localStorage 持久化）
    */
   toggleParkingDock(): void {
@@ -305,6 +355,13 @@ export class UiStateService {
     if (typeof localStorage === 'undefined') return;
     try {
       localStorage.setItem(UiStateService.PARKING_DOCK_OPEN_KEY, String(this.isParkingDockOpen()));
+    } catch { /* ignore */ }
+  }
+
+  private persistBooleanPreference(key: string, value: boolean): void {
+    if (typeof localStorage === 'undefined') return;
+    try {
+      localStorage.setItem(key, String(value));
     } catch { /* ignore */ }
   }
   
@@ -408,6 +465,18 @@ export class UiStateService {
     const parkingDockOpen = localStorage.getItem(UiStateService.PARKING_DOCK_OPEN_KEY);
     if (parkingDockOpen === 'true') {
       this.isParkingDockOpen.set(true);
+    }
+
+    const textUnfinishedOpen = localStorage.getItem(UiStateService.TEXT_UNFINISHED_OPEN_KEY);
+    if (textUnfinishedOpen === 'true' || textUnfinishedOpen === 'false') {
+      this.hasTextUnfinishedOpenPreferenceSignal.set(true);
+      this.isTextUnfinishedOpen.set(textUnfinishedOpen === 'true');
+    }
+
+    const textUnassignedOpen = localStorage.getItem(UiStateService.TEXT_UNASSIGNED_OPEN_KEY);
+    if (textUnassignedOpen === 'true' || textUnassignedOpen === 'false') {
+      this.hasTextUnassignedOpenPreferenceSignal.set(true);
+      this.isTextUnassignedOpen.set(textUnassignedOpen === 'true');
     }
 
     // 恢复文本列比例

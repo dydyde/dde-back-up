@@ -12,6 +12,7 @@ import { StartupPlaceholderStateService } from '../../../../services/startup-pla
 import { AUTH_CONFIG } from '../../../../config/auth.config';
 import { TIMEOUT_CONFIG } from '../../../../config/timeout.config';
 import { FIELD_SELECT_CONFIG } from '../../../../config/sync.config';
+import { FEATURE_FLAGS } from '../../../../config/feature-flags.config';
 import { resetBrowserNetworkSuspensionTrackingForTests } from '../../../../utils/browser-network-suspension';
 import { hasTaskContentMissingFromSource } from '../../../../utils/task-content-guard';
 import { resetTaskSchemaCompatibilityForTests } from '../../../../utils/task-schema-compat';
@@ -21,6 +22,25 @@ const OFFLINE_SNAPSHOT_DB_NAME = 'nanoflow-offline-snapshots';
 const OFFLINE_SNAPSHOT_STORE_NAME = 'snapshots';
 const OFFLINE_SNAPSHOT_RECORD_ID = 'offline-snapshot';
 const OFFLINE_SNAPSHOT_LOCAL_STORAGE_KEY = 'nanoflow.offline-cache-v2';
+
+type MutableProjectDataFeatureFlags = {
+  PROJECT_FULL_DATA_RPC_V1: boolean;
+};
+
+const projectDataFeatureFlags = FEATURE_FLAGS as unknown as MutableProjectDataFeatureFlags;
+const initialProjectFullDataRpcFlag = FEATURE_FLAGS.PROJECT_FULL_DATA_RPC_V1;
+
+function enableProjectFullDataRpcForTest(): void {
+  projectDataFeatureFlags.PROJECT_FULL_DATA_RPC_V1 = true;
+}
+
+function disableProjectFullDataRpcForTest(): void {
+  projectDataFeatureFlags.PROJECT_FULL_DATA_RPC_V1 = false;
+}
+
+function restoreProjectFullDataRpcFlagForTest(): void {
+  projectDataFeatureFlags.PROJECT_FULL_DATA_RPC_V1 = initialProjectFullDataRpcFlag;
+}
 
 function getOfflineSnapshotRecordId(ownerUserId?: string | null): string {
   return typeof ownerUserId === 'string' && ownerUserId.length > 0
@@ -162,6 +182,7 @@ async function clearAllOfflineSnapshotsIdb(): Promise<void> {
 
 describe('ProjectDataService', () => {
   beforeEach(async () => {
+    disableProjectFullDataRpcForTest();
     resetTaskSchemaCompatibilityForTests();
     localStorage.clear();
     setVisibilityState('visible');
@@ -169,6 +190,7 @@ describe('ProjectDataService', () => {
   });
 
   afterEach(() => {
+    restoreProjectFullDataRpcFlagForTest();
     resetBrowserNetworkSuspensionTrackingForTests();
     setVisibilityState('visible');
   });
@@ -244,6 +266,8 @@ describe('ProjectDataService', () => {
   });
 
   it('P0001 Access Denied 时不应 fallback 到 loadFullProject', async () => {
+    enableProjectFullDataRpcForTest();
+
     const rpc = vi.fn().mockResolvedValue({
       data: null,
       error: {
@@ -465,6 +489,8 @@ describe('ProjectDataService', () => {
   });
 
   it('RPC 函数不存在时应回退并熔断后续 RPC 调用', async () => {
+    enableProjectFullDataRpcForTest();
+
     const rpc = vi
       .fn()
       .mockResolvedValueOnce({
@@ -583,6 +609,8 @@ describe('ProjectDataService', () => {
   });
 
   it('PGRST202 schema cache miss 时应识别为 RPC 缺失并回退', async () => {
+    enableProjectFullDataRpcForTest();
+
     const rpc = vi.fn().mockResolvedValue({
       data: null,
       error: {
@@ -666,6 +694,8 @@ describe('ProjectDataService', () => {
   });
 
   it('RPC 504 时应短时熔断批量 RPC，并在冷却期内直接走顺序加载', async () => {
+    enableProjectFullDataRpcForTest();
+
     const rpc = vi.fn().mockResolvedValue({
       data: null,
       error: {
@@ -742,6 +772,77 @@ describe('ProjectDataService', () => {
 
     expect(rpc).toHaveBeenCalledTimes(1);
     expect(fallbackSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('默认应绕开完整项目批量 RPC，直接使用分段加载以避免首发 504', async () => {
+    const rpc = vi.fn();
+    const injector = Injector.create({
+      providers: [
+        { provide: ProjectDataService, useClass: ProjectDataService },
+        {
+          provide: SupabaseClientService,
+          useValue: {
+            isConfigured: true,
+            clientAsync: vi.fn(async () => ({ rpc })),
+          },
+        },
+        {
+          provide: AuthService,
+          useValue: {
+            currentUserId: vi.fn(() => 'user-1'),
+          },
+        },
+        {
+          provide: LoggerService,
+          useValue: {
+            category: () => ({
+              debug: vi.fn(),
+              info: vi.fn(),
+              warn: vi.fn(),
+              error: vi.fn(),
+            }),
+          },
+        },
+        {
+          provide: RequestThrottleService,
+          useValue: {
+            execute: vi.fn(),
+          },
+        },
+        {
+          provide: SyncStateService,
+          useValue: {
+            setSyncError: vi.fn(),
+          },
+        },
+        {
+          provide: TombstoneService,
+          useValue: {
+            getTombstonesWithCache: vi.fn().mockResolvedValue({ data: [], error: null }),
+            getLocalTombstones: vi.fn().mockReturnValue(new Set()),
+          },
+        },
+        {
+          provide: SentryLazyLoaderService,
+          useValue: {
+            addBreadcrumb: vi.fn(),
+            captureException: vi.fn(),
+            captureMessage: vi.fn(),
+          },
+        },
+      ],
+    });
+
+    const service = injector.get(ProjectDataService);
+    const fallbackSpy = vi.spyOn(
+      service as unknown as { loadFullProject: (projectId: string, expectedUserId?: string) => Promise<Project | null> },
+      'loadFullProject'
+    ).mockResolvedValue(null);
+
+    await service.loadFullProjectOptimized('proj-default-stable', 'user-1');
+
+    expect(rpc).not.toHaveBeenCalled();
+    expect(fallbackSpy).toHaveBeenCalledWith('proj-default-stable', 'user-1');
   });
 
   it('loadProjectsFromCloud 应将 owner hint 传递给完整项目加载链路', async () => {
@@ -842,6 +943,8 @@ describe('ProjectDataService', () => {
   });
 
   it('loadProjectsFromCloud 首个项目触发 RPC 504 后，后续项目应命中短熔断不再重复调用 batch RPC', async () => {
+    enableProjectFullDataRpcForTest();
+
     const projectsOrder = {
       order: vi.fn().mockResolvedValue({
         data: [

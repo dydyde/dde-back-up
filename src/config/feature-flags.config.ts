@@ -104,6 +104,8 @@ export const FEATURE_FLAGS = {
   SYNC_UNIFIED_QUEUE_SEMANTICS_ENABLED: true,
   /** 离线快照使用 IndexedDB 替代 localStorage（缓解 5MB 上限） */
   OFFLINE_SNAPSHOT_IDB_ENABLED: false,
+  /** 完整项目批量 RPC 快路：默认关闭，避免大项目 JSON 聚合触发网关 504 */
+  PROJECT_FULL_DATA_RPC_V1: false,
 
   // ==================== PWA 生命周期与体验 ====================
   /** 生命周期恢复编排（前后台切换自愈） */

@@ -26,6 +26,7 @@ import { openIndexedDBAdaptive } from '../../../../utils/indexeddb-open';
 import { REQUEST_THROTTLE_CONFIG, FIELD_SELECT_CONFIG, CACHE_CONFIG, CIRCUIT_BREAKER_CONFIG } from '../../../../config/sync.config';
 import { AUTH_CONFIG } from '../../../../config/auth.config';
 import { FOCUS_CONFIG } from '../../../../config/focus.config';
+import { FEATURE_FLAGS } from '../../../../config/feature-flags.config';
 import { TIMEOUT_CONFIG } from '../../../../config/timeout.config';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { SentryLazyLoaderService } from '../../../../services/sentry-lazy-loader.service';
@@ -324,13 +325,17 @@ export class ProjectDataService {
   }
   
   /**
-   * 使用 RPC 批量加载完整项目数据
-   * 
-   * 优化效果：
-   * - 将 4+ 个 API 请求合并为 1 个 RPC 调用
-   * - 减少 ~70% 的网络往返时间
+   * 加载完整项目数据。
+   *
+   * 默认走分段读取，避免大项目在 get_full_project_data JSON 聚合阶段触发网关 504。
+   * 批量 RPC 快路仅通过 PROJECT_FULL_DATA_RPC_V1 显式打开，便于服务端优化后灰度恢复。
    */
   async loadFullProjectOptimized(projectId: string, expectedUserId?: string): Promise<Project | null> {
+    if (!FEATURE_FLAGS.PROJECT_FULL_DATA_RPC_V1) {
+      this.logger.debug('完整项目批量 RPC 已关闭，使用分段加载', { projectId });
+      return this.loadFullProject(projectId, expectedUserId);
+    }
+
     const client = await this.getSupabaseClient(expectedUserId);
     if (!client) return null;
 
