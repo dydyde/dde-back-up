@@ -377,8 +377,9 @@ describe('SyncRpcClientService', () => {
         date: '2026-04-29',
         createdAt: '2026-04-29T00:00:00Z',
         updatedAt: '2026-04-29T00:01:00Z',
+        completedAt: '2026-06-03T09:15:00Z',
         isRead: true,
-        isCompleted: false,
+        isCompleted: true,
         isArchived: false,
         snoozeUntil: '2026-04-30',
         snoozeCount: 1,
@@ -395,8 +396,9 @@ describe('SyncRpcClientService', () => {
     expect(cap.entry.user_id).toBe('user-1');
     expect(cap.entry.date).toBe('2026-04-29');
     expect(cap.entry.updated_at).toBe('2026-04-29T00:01:00Z');
+    expect(cap.entry.completed_at).toBe('2026-06-03T09:15:00Z');
     expect(cap.entry.is_read).toBe(true);
-    expect(cap.entry.is_completed).toBe(false);
+    expect(cap.entry.is_completed).toBe(true);
     expect(cap.entry.is_archived).toBe(false);
     expect(cap.entry.snooze_until).toBe('2026-04-30');
     expect(cap.entry.snooze_count).toBe(1);

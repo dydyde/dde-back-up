@@ -362,6 +362,7 @@ export class DisasterBackupService {
       date: entry.date,
       createdAt: entry.createdAt,
       updatedAt: entry.updatedAt,
+      completedAt: entry.completedAt,
       isRead: entry.isRead,
       isCompleted: entry.isCompleted,
       isArchived: entry.isArchived,

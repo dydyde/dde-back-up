@@ -224,6 +224,30 @@ describe('BlackBoxSyncService', () => {
     localStorage.removeItem(AUTH_CONFIG.LOCAL_MODE_CACHE_KEY);
   });
 
+  it('mapRowToEntry 应保留黑匣子 completed_at 作为稳定完成时间', () => {
+    const entry = (service as unknown as {
+      mapRowToEntry: (row: Record<string, unknown>) => BlackBoxEntry;
+    }).mapRowToEntry({
+      id: crypto.randomUUID(),
+      project_id: null,
+      user_id: 'user-1',
+      content: 'entry',
+      focus_meta: null,
+      date: '2026-05-24',
+      created_at: '2026-05-24T10:00:00.000Z',
+      updated_at: '2026-06-04T07:30:00.000Z',
+      completed_at: '2026-06-03T21:00:00.000Z',
+      is_read: true,
+      is_completed: true,
+      is_archived: false,
+      snooze_until: null,
+      snooze_count: 0,
+      deleted_at: null,
+    });
+
+    expect(entry.completedAt).toBe('2026-06-03T21:00:00.000Z');
+  });
+
   it('direct black-box widget notify should skip while browser network is suspended', async () => {
     const supabase = TestBed.inject(SupabaseClientService) as unknown as {
       clientAsync: ReturnType<typeof vi.fn>;

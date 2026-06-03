@@ -152,6 +152,7 @@ export interface BackupBlackBoxEntry {
   date?: string;
   createdAt?: string;
   updatedAt?: string;
+  completedAt?: string | null;
   isRead?: boolean;
   isCompleted?: boolean;
   isArchived?: boolean;

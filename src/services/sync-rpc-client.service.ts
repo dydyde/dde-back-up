@@ -439,6 +439,8 @@ export class SyncRpcClientService {
       date: entry.date,
       created_at: (entry as unknown as { createdAt?: string }).createdAt ?? null,
       updated_at: entry.updatedAt,
+      completed_at: entry.completedAt ?? null,
+      completedAt: entry.completedAt ?? null,
       is_read: entry.isRead,
       is_completed: entry.isCompleted,
       is_archived: entry.isArchived,

@@ -142,7 +142,7 @@ export class BlackBoxSyncService {
   private readonly BLACKBOX_PULL_MAX_PAGES = 10;
   private readonly BLACKBOX_PULL_MAX_DURATION_MS = 20_000;
   private readonly BLACKBOX_ENTRY_SELECT_COLUMNS =
-    'id, project_id, user_id, content, focus_meta, date, created_at, updated_at, is_read, is_completed, is_archived, snooze_until, snooze_count, deleted_at';
+    'id, project_id, user_id, content, focus_meta, date, created_at, updated_at, completed_at, is_read, is_completed, is_archived, snooze_until, snooze_count, deleted_at';
   private initIndexedDBPromise: Promise<void> | null = null;
   private realtimeChannel: RealtimeChannel | null = null;
   private realtimeSubscribedUserId: string | null = null;
@@ -1590,6 +1590,7 @@ export class BlackBoxSyncService {
     return {
       ...entry,
       projectId: entry.projectId ?? null,
+      completedAt: entry.completedAt ?? null,
       snoozeUntil: entry.snoozeUntil ?? undefined,
       snoozeCount: entry.snoozeCount ?? 0,
       deletedAt: entry.deletedAt ?? null,
@@ -1620,6 +1621,7 @@ export class BlackBoxSyncService {
       && normalizedLocal.content === normalizedRemote.content
       && normalizedLocal.date === normalizedRemote.date
       && this.hasSameInstant(normalizedLocal.createdAt, normalizedRemote.createdAt)
+      && this.hasSameInstant(normalizedLocal.completedAt, normalizedRemote.completedAt)
       && normalizedLocal.isRead === normalizedRemote.isRead
       && normalizedLocal.isCompleted === normalizedRemote.isCompleted
       && normalizedLocal.isArchived === normalizedRemote.isArchived
@@ -2284,7 +2286,7 @@ export class BlackBoxSyncService {
       try {
         let preflightQuery = client
           .from('black_box_entries')
-          .select('id, project_id, user_id, content, focus_meta, date, created_at, updated_at, is_read, is_completed, is_archived, snooze_until, snooze_count, deleted_at');
+          .select(this.BLACKBOX_ENTRY_SELECT_COLUMNS);
         const eqUserQuery = this.getOptionalQueryMethod<[string, string]>(preflightQuery, 'eq');
         if (!eqUserQuery) {
           this.logger.warn('黑匣子推送预检缺少 user_id 查询能力，延后推送以避免覆盖未对账的服务端状态', {
@@ -2367,6 +2369,7 @@ export class BlackBoxSyncService {
                   ...entry,
                   isRead: entry.isRead || serverEntry.isRead,
                   isCompleted: entry.isCompleted || serverEntry.isCompleted,
+                  completedAt: entry.completedAt ?? serverEntry.completedAt ?? null,
                   deletedAt: entry.deletedAt ?? serverEntry.deletedAt,
                 };
 
@@ -2453,6 +2456,7 @@ export class BlackBoxSyncService {
         focus_meta: (entry.focusMeta ?? null) as unknown as Json | null,
         date: entry.date,
         created_at: entry.createdAt,
+        completed_at: entry.completedAt ?? null,
         is_read: entry.isRead,
         is_completed: entry.isCompleted,
         is_archived: entry.isArchived,
@@ -2466,6 +2470,7 @@ export class BlackBoxSyncService {
         focus_meta: (entry.focusMeta ?? null) as unknown as Json | null,
         date: entry.date,
         created_at: entry.createdAt,
+        completed_at: entry.completedAt ?? null,
         is_read: entry.isRead,
         is_completed: entry.isCompleted,
         is_archived: entry.isArchived,
@@ -3192,6 +3197,7 @@ export class BlackBoxSyncService {
           ...local,
           isRead: local.isRead || remote.isRead,
           isCompleted: local.isCompleted || remote.isCompleted,
+          completedAt: local.completedAt ?? remote.completedAt ?? null,
           deletedAt: local.deletedAt ?? remote.deletedAt,
           // 保持 pending 状态，后续 push 会带着合并后的真值再次与服务端对齐
           syncStatus: 'pending',
@@ -3268,6 +3274,7 @@ export class BlackBoxSyncService {
       date: (row['date'] as string) || new Date().toISOString().split('T')[0],
       createdAt: (row['created_at'] as string) || new Date().toISOString(),
       updatedAt: (row['updated_at'] as string) || new Date().toISOString(),
+      completedAt: (row['completed_at'] as string | null) ?? null,
       isRead: (row['is_read'] as boolean) ?? false,
       isCompleted: (row['is_completed'] as boolean) ?? false,
       isArchived: (row['is_archived'] as boolean) ?? false,

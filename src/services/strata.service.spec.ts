@@ -16,6 +16,17 @@ import {
 } from '../state/focus-stores';
 import { StrataItem, StrataLayer } from '../models/focus';
 
+type MockStrataTask = {
+  id: string;
+  title?: string;
+  content?: string;
+  status: 'active' | 'completed' | 'archived';
+  completedAt?: string | null;
+  updatedAt?: string;
+  createdDate?: string | null;
+  deletedAt?: string | null;
+};
+
 describe('StrataService', () => {
   let service: StrataService;
   let mockBlackBoxService: {
@@ -24,7 +35,7 @@ describe('StrataService', () => {
   };
   let mockProjectStateService: {
     activeProjectId: ReturnType<typeof signal>;
-    tasks: ReturnType<typeof signal>;
+    tasks: ReturnType<typeof signal<MockStrataTask[]>>;
   };
   let mockLoggerService: {
     debug: ReturnType<typeof vi.fn>;
@@ -69,7 +80,7 @@ describe('StrataService', () => {
 
     mockProjectStateService = {
       activeProjectId: signal('test-project'),
-      tasks: signal([])
+      tasks: signal<MockStrataTask[]>([])
     };
 
     mockLoggerService = {
@@ -196,6 +207,36 @@ describe('StrataService', () => {
       expect(layers.map(layer => layer.date)).not.toContain('2026-05-19');
       expect(layers[0].date).toBe('2026-05-18');
       expect(service.getLayerLabel(layers[0].date)).toBe('5月18日');
+    });
+
+    it('黑匣子应按完成日进入地质层，而不是按捕获日或后续 updatedAt', () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-06-04T08:00:00.000Z'));
+      setBlackBoxEntries([
+        {
+          id: 'gate-completed-entry',
+          projectId: null,
+          userId: 'user-1',
+          content: '5月24日捕获，6月3日完成',
+          date: '2026-05-24',
+          createdAt: '2026-05-24T10:00:00.000Z',
+          updatedAt: '2026-06-04T07:30:00.000Z',
+          completedAt: '2026-06-03T09:00:00.000Z',
+          isRead: true,
+          isCompleted: true,
+          isArchived: false,
+          deletedAt: null,
+          syncStatus: 'synced',
+          focusMeta: null,
+        },
+      ]);
+
+      service.refresh();
+
+      const layers = strataLayers();
+      expect(layers.map(layer => layer.date)).toEqual(['2026-06-03']);
+      expect(layers[0].items[0].completedAt).toBe('2026-06-03T09:00:00.000Z');
+      expect(service.getLayerLabel(layers[0].date)).toBe('6月3日');
     });
 
     it('completedAt 缺失时不应把 5月31日 的 updatedAt 修复脉冲当作历史层日期', () => {

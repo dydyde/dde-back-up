@@ -446,6 +446,7 @@ CREATE TABLE IF NOT EXISTS public.black_box_entries (
   date DATE NOT NULL DEFAULT CURRENT_DATE,
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW(),
+  completed_at TIMESTAMPTZ DEFAULT NULL,
   
   -- 状态字段
   is_read BOOLEAN DEFAULT FALSE,
@@ -465,6 +466,7 @@ COMMENT ON TABLE public.black_box_entries IS '黑匣子条目表 - 语音转写�
 COMMENT ON COLUMN public.black_box_entries.id IS '由客户端 crypto.randomUUID() 生成';
 COMMENT ON COLUMN public.black_box_entries.content IS '语音转写后的文本内容';
 COMMENT ON COLUMN public.black_box_entries.date IS 'YYYY-MM-DD 格式，用于按日分组';
+COMMENT ON COLUMN public.black_box_entries.completed_at IS '完成状态首次落地时间，用于地质层按完成日稳定分组';
 COMMENT ON COLUMN public.black_box_entries.is_read IS '是否已读；已读但未完成条目仍会在大门中出现';
 COMMENT ON COLUMN public.black_box_entries.is_completed IS '是否已完成，计入地质层';
 COMMENT ON COLUMN public.black_box_entries.is_archived IS '是否已归档，不显示在主列表';
@@ -501,6 +503,34 @@ DROP TRIGGER IF EXISTS update_black_box_entries_updated_at ON public.black_box_e
 CREATE TRIGGER update_black_box_entries_updated_at
   BEFORE UPDATE ON public.black_box_entries
   FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+CREATE OR REPLACE FUNCTION public.set_black_box_completed_at()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SET search_path = public, pg_temp
+AS $$
+BEGIN
+  IF COALESCE(NEW.is_completed, FALSE) = FALSE THEN
+    NEW.completed_at := NULL;
+    RETURN NEW;
+  END IF;
+
+  IF TG_OP = 'UPDATE' AND COALESCE(OLD.is_completed, FALSE) = TRUE THEN
+    NEW.completed_at := COALESCE(OLD.completed_at, NEW.completed_at);
+    RETURN NEW;
+  END IF;
+
+  NEW.completed_at := COALESCE(NEW.completed_at, NOW());
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS set_black_box_completed_at ON public.black_box_entries;
+CREATE TRIGGER set_black_box_completed_at
+  BEFORE INSERT OR UPDATE OF is_completed, completed_at ON public.black_box_entries
+  FOR EACH ROW EXECUTE FUNCTION public.set_black_box_completed_at();
+
+REVOKE ALL ON FUNCTION public.set_black_box_completed_at() FROM PUBLIC, anon, authenticated;
 
 -- RLS 策略（使用优化的 helper 函数）
 ALTER TABLE public.black_box_entries ENABLE ROW LEVEL SECURITY;

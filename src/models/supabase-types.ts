@@ -725,6 +725,7 @@ export interface BlackBoxEntryRow {
   date: string;
   created_at: string | null;
   updated_at: string | null;
+  completed_at: string | null;
   is_read: boolean | null;
   is_completed: boolean | null;
   is_archived: boolean | null;
@@ -743,6 +744,7 @@ export interface BlackBoxEntryInsert {
   user_id?: string | null;
   created_at?: string | null;
   updated_at?: string | null;
+  completed_at?: string | null;
   is_read?: boolean | null;
   is_completed?: boolean | null;
   is_archived?: boolean | null;
@@ -764,6 +766,7 @@ export interface BlackBoxEntryUpdate {
   snooze_count?: number | null;
   deleted_at?: string | null;
   updated_at?: string | null;
+  completed_at?: string | null;
 }
 
 // ============================================

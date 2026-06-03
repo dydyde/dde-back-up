@@ -2,7 +2,7 @@
  * BlackBox 服务单元测试
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { TestBed } from '@angular/core/testing';
 import { signal } from '@angular/core';
 import { BlackBoxService } from './black-box.service';
@@ -83,6 +83,10 @@ describe('BlackBoxService', () => {
     });
 
     service = TestBed.inject(BlackBoxService);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   describe('create', () => {
@@ -332,6 +336,8 @@ describe('BlackBoxService', () => {
 
   describe('markAsCompleted', () => {
     it('应该标记条目为完成', () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-06-03T09:15:00.000Z'));
       const createResult = service.create({ content: '测试' });
       if (!createResult.ok) throw new Error('Create failed');
       mockSyncService.scheduleSync.mockClear();
@@ -341,11 +347,44 @@ describe('BlackBoxService', () => {
       expect(result.ok).toBe(true);
       if (result.ok) {
         expect(result.value.isCompleted).toBe(true);
+        expect(result.value.completedAt).toBe('2026-06-03T09:15:00.000Z');
       }
       expect(mockSyncService.scheduleSync).toHaveBeenCalledWith(
-        expect.objectContaining({ id: createResult.value.id, isCompleted: true }),
+        expect.objectContaining({
+          id: createResult.value.id,
+          isCompleted: true,
+          completedAt: '2026-06-03T09:15:00.000Z',
+        }),
         { immediate: true, widgetNotifyAction: 'complete' },
       );
+    });
+
+    it('取消完成时应清空完成时间，避免下次完成沿用旧日期', () => {
+      setBlackBoxEntries([
+        {
+          id: 'entry-restore-completed',
+          projectId: null,
+          userId: 'test-user',
+          content: '待恢复',
+          date: '2026-05-24',
+          createdAt: '2026-05-24T08:00:00.000Z',
+          updatedAt: '2026-06-03T09:15:00.000Z',
+          completedAt: '2026-06-03T09:15:00.000Z',
+          isRead: true,
+          isCompleted: true,
+          isArchived: false,
+          deletedAt: null,
+          syncStatus: 'synced',
+        },
+      ]);
+
+      const result = service.update('entry-restore-completed', { isCompleted: false });
+
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.value.isCompleted).toBe(false);
+        expect(result.value.completedAt).toBeNull();
+      }
     });
 
     it('完成后应从黑匣子条目仓数量中移除', () => {

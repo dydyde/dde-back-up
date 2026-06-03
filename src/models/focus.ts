@@ -46,6 +46,8 @@ export interface BlackBoxEntry {
   createdAt: string;
   /** 最后更新时间戳，LWW 关键字段 */
   updatedAt: string;
+  /** 完成状态首次落地时间，用于地质层按完成日稳定分组 */
+  completedAt?: string | null;
   
   // 状态
   /** 是否已读 */

@@ -319,7 +319,7 @@ async function handleRequest(req: Request): Promise<Response> {
   //   * `complete` → 设 `is_completed=true`，条目从大门队列移除，并进入项目历史回顾。
   const patch: Record<string, unknown> = action === 'read'
     ? { is_read: true }
-    : { is_completed: true };
+    : { is_completed: true, completed_at: new Date().toISOString() };
 
   const update = await client
     .from('black_box_entries')
@@ -327,7 +327,7 @@ async function handleRequest(req: Request): Promise<Response> {
     .eq('id', entryId)
     .eq('user_id', device.user_id)
     .is('deleted_at', null)
-    .select('id,is_read,is_completed,snooze_until,updated_at')
+    .select('id,is_read,is_completed,snooze_until,updated_at,completed_at')
     .maybeSingle();
 
   if (update.error) {
@@ -355,6 +355,7 @@ async function handleRequest(req: Request): Promise<Response> {
       action,
       isRead: update.data.is_read,
       isCompleted: update.data.is_completed,
+      completedAt: update.data.completed_at ?? null,
       snoozeUntil: update.data.snooze_until ?? null,
       updatedAt: update.data.updated_at,
     },

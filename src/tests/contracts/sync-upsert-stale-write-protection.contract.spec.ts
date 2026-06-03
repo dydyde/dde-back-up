@@ -14,9 +14,10 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const migrationPath = 'supabase/migrations/20260515100000_sync_rpc_stale_write_protection.sql';
+const blackBoxCompletedAtMigrationPath = 'supabase/migrations/20260603120000_black_box_completed_at.sql';
 
-function readMigration(): string {
-  return fs.readFileSync(path.join(process.cwd(), migrationPath), 'utf8');
+function readMigration(filePath = migrationPath): string {
+  return fs.readFileSync(path.join(process.cwd(), filePath), 'utf8');
 }
 
 function normalize(sql: string): string {
@@ -161,5 +162,27 @@ describe('Sync RPC stale-write protection migration contract (P0 遗留项)', ()
         'v_local_updated IS NOT NULL',
       );
     }
+  });
+});
+
+describe('BlackBox completed_at migration contract', () => {
+  it('新增完成时间列、触发器，并将 completed_at 纳入黑匣子 Sync RPC 状态保护', () => {
+    const sql = readMigration(blackBoxCompletedAtMigrationPath);
+    const normalizedSql = normalize(sql);
+    const section = normalize(getFunctionSection(sql, 'sync_upsert_blackbox_entry'));
+
+    expect(normalizedSql).toContain('ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ NULL');
+    expect(normalizedSql).toContain('CREATE OR REPLACE FUNCTION public.set_black_box_completed_at()');
+    expect(normalizedSql).toContain('CREATE TRIGGER set_black_box_completed_at');
+    expect(normalizedSql).toContain('REVOKE ALL ON FUNCTION public.set_black_box_completed_at() FROM PUBLIC, anon, authenticated');
+
+    expect(section).toContain('v_existing_completed_at TIMESTAMPTZ');
+    expect(section).toContain('b.completed_at');
+    expect(section).toContain('completed_at, is_archived');
+    expect(section).toContain("NULLIF(v_entry->>'completed_at','')::TIMESTAMPTZ");
+    expect(section).toContain("NULLIF(v_entry->>'completedAt','')::TIMESTAMPTZ");
+    expect(section).toContain(
+      'completed_at = CASE WHEN v_is_stale THEN v_existing_completed_at ELSE EXCLUDED.completed_at END',
+    );
   });
 });

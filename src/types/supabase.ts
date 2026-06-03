@@ -41,6 +41,7 @@ export type Database = {
       black_box_entries: {
         Row: {
           content: string
+          completed_at: string | null
           created_at: string | null
           date: string
           deleted_at: string | null
@@ -57,6 +58,7 @@ export type Database = {
         }
         Insert: {
           content: string
+          completed_at?: string | null
           created_at?: string | null
           date?: string
           deleted_at?: string | null
@@ -73,6 +75,7 @@ export type Database = {
         }
         Update: {
           content?: string
+          completed_at?: string | null
           created_at?: string | null
           date?: string
           deleted_at?: string | null

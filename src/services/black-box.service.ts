@@ -90,6 +90,9 @@ export class BlackBoxService {
       // 同步元数据不同"误判为不等价，触发 upgrade-non-equivalent 分支保留 pending，
       // 表现为黑匣子条目永远显示 "⏳ 待同步"。
       focusMeta: safeData.focusMeta ?? null,
+      completedAt: (safeData.isCompleted ?? false)
+        ? safeData.completedAt ?? now
+        : null,
       syncStatus: this.resolveSyncStatusForMode(userId),
     };
     
@@ -179,14 +182,17 @@ export class BlackBoxService {
     }
 
     const safeUpdates = this.preserveContentWhenBlankUpdate(entry, updates);
+    const now = new Date().toISOString();
+    const completionPatch = this.resolveCompletionPatch(entry, safeUpdates, now);
     
     const updated: BlackBoxEntry = {
       ...entry,
       ...safeUpdates,
+      ...completionPatch,
       // 【2026-05-18 根因修复·阶段 1】update 同样归一化 focusMeta（即便基线 entry
       // 是补丁前持久化的旧数据，也确保后续等价判定不会因 undefined vs null 漂移）。
       focusMeta: (safeUpdates.focusMeta !== undefined ? safeUpdates.focusMeta : entry.focusMeta) ?? null,
-      updatedAt: new Date().toISOString(),
+      updatedAt: now,
       syncStatus: this.resolveSyncStatusForMode(entry.userId),
     };
     
@@ -219,6 +225,34 @@ export class BlackBoxService {
     }
 
     return updates;
+  }
+
+  private resolveCompletionPatch(
+    entry: BlackBoxEntry,
+    updates: Partial<BlackBoxEntry>,
+    now: string,
+  ): Partial<Pick<BlackBoxEntry, 'completedAt'>> {
+    const hasCompletionStateUpdate = Object.prototype.hasOwnProperty.call(updates, 'isCompleted');
+    const hasCompletedAtUpdate = Object.prototype.hasOwnProperty.call(updates, 'completedAt');
+
+    if (!hasCompletionStateUpdate && !hasCompletedAtUpdate) {
+      return {};
+    }
+
+    const nextIsCompleted = updates.isCompleted ?? entry.isCompleted;
+    if (!nextIsCompleted) {
+      return { completedAt: null };
+    }
+
+    if (typeof updates.completedAt === 'string' && updates.completedAt.trim().length > 0) {
+      return { completedAt: updates.completedAt };
+    }
+
+    if (entry.isCompleted) {
+      return { completedAt: entry.completedAt ?? null };
+    }
+
+    return { completedAt: entry.completedAt ?? now };
   }
   
   /**
@@ -304,12 +338,38 @@ export class BlackBoxService {
       .filter(e => e.isCompleted && !e.deletedAt);
     
     if (date) {
-      return entries.filter(e => e.date === date);
+      return entries.filter(entry => this.getCompletionLocalDate(entry) === date);
     }
     
-    return entries.sort((a, b) => 
-      new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
+    return entries.sort((leftEntry, rightEntry) =>
+      new Date(this.getCompletionTimestamp(rightEntry)).getTime()
+      - new Date(this.getCompletionTimestamp(leftEntry)).getTime()
     );
+  }
+
+  private getCompletionLocalDate(entry: BlackBoxEntry): string {
+    return this.getLocalDate(this.getCompletionTimestamp(entry));
+  }
+
+  private getCompletionTimestamp(entry: BlackBoxEntry): string {
+    if (typeof entry.completedAt === 'string' && entry.completedAt.trim().length > 0) {
+      return entry.completedAt;
+    }
+
+    if (this.getLocalDate(entry.createdAt) === entry.date) {
+      return entry.createdAt;
+    }
+
+    return `${entry.date}T00:00:00.000`;
+  }
+
+  private getLocalDate(timestamp: string): string {
+    const date = new Date(timestamp);
+    if (Number.isNaN(date.getTime())) return timestamp.split('T')[0];
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
   }
   
   /**
